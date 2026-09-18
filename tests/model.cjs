@@ -4,23 +4,51 @@ const vm = require('node:vm');
 const model = {};
 vm.createContext(model);
 vm.runInContext(fs.readFileSync('ActionsModel.js', 'utf8'), model);
-const repos = [{repo: 'owner/repo', runs: [{id: 7, status: 'in_progress', name: 'CI', head_branch: 'main', run_number: 3}]}];
-const expanded = {'repo:owner/repo': true, 'owner/repo:7': true, 'owner/repo:7:8': true};
-const details = {'owner/repo:7': {jobs: [{id: 8, name: 'build', status: 'in_progress', steps: [{number: 1, name: 'Checkout', status: 'completed', conclusion: 'success'}]}]}};
-const rows = model.rows(repos, expanded, details, '', Date.now());
-assert.equal(rows.length, 4);
-assert.equal(rows[3].title, 'Checkout');
+const repos = [{repo: 'group/sub/project', url: 'https://gitlab.com/group/sub/project', runs: [{id: 7, status: 'in_progress', conclusion: 'running', name: 'CI', head_branch: 'main', run_number: 3, html_url: 'https://gitlab.com/p/-/pipelines/7'}]}];
+const runKey = 'group/sub/project:7';
+const expanded = {'repo:group/sub/project': true, [runKey]: true, [runKey + ':stage:build']: true};
+const jobs = [
+  {id: 8, name: 'compile', stage: 'build', status: 'completed', conclusion: 'success', started_at: '2026-01-01T00:00:00Z', completed_at: '2026-01-01T00:01:00Z', html_url: 'https://gitlab.com/p/-/jobs/8'},
+  {id: 9, name: 'lint', stage: 'build', status: 'in_progress', conclusion: 'running', started_at: '2026-01-01T00:00:30Z'},
+  {id: 10, name: 'unit', stage: 'test', status: 'queued', conclusion: 'created'}];
+const details = {[runKey]: {jobs}};
+const rows = model.rows(repos, expanded, details, '', Date.parse('2026-01-01T00:02:00Z'));
+assert.equal(rows.map(r => r.kind).join(), 'repo,run,stage,job,job,stage');
+assert.equal(rows[0].url, 'https://gitlab.com/group/sub/project/-/pipelines');
+assert.equal(rows[0].status, 'running');
+assert.equal(rows[2].title, 'build');
+assert.equal(rows[2].status, 'running');
+assert.equal(rows[2].info, '1/2 jobs · 2m 0s');
+assert.equal(rows[3].title, 'compile');
 assert.equal(rows[3].status, 'success');
-assert.equal(rows[2].info.startsWith('1/1 steps'), true);
-assert.equal(model.selection(rows, 'owner/repo:7:8', 0), 2);
+assert.equal(rows[3].url, 'https://gitlab.com/p/-/jobs/8');
+assert.equal(rows[3].parent, rows[2].key);
+assert.equal(rows[5].title, 'test');
+assert.equal(rows[5].status, 'pending');
+assert.equal(model.selection(rows, runKey + ':stage:build', 0), 2);
 assert.equal(model.selection([], 'missing', 5), 0);
 assert.equal(model.rows(repos, {}, details, '', Date.now()).length, 1);
-assert.equal(model.rows(repos, {}, {}, 'main', Date.now()).length, 1);
+assert.equal(model.rows(repos, {'repo:group/sub/project': true}, {}, 'main', Date.now()).length, 2);
+assert.equal(model.rows(repos, {'repo:group/sub/project': true}, {}, 'running', Date.now()).length, 2);
 assert.equal(model.rows(repos, expanded, details, 'missing', Date.now()).length, 0);
 assert.equal(model.rows(repos, expanded, {}, '', Date.now())[2].title, 'Loading jobs…');
+// Stage aggregation, in GitLab's precedence.
+const agg = (...c) => model.stageStatus(c.map(x => ({conclusion: x.replace('?', ''), allow_failure: x.endsWith('?')})));  // '?' = allow_failure
+assert.equal(agg('failed', 'running'), 'running');
+assert.equal(agg('success', 'failed'), 'failed');
+assert.equal(agg('success', 'failed?'), 'success', 'allowed failures do not fail the stage');
+assert.equal(agg('success', 'pending'), 'pending');
+assert.equal(agg('canceled', 'success'), 'canceled');
+assert.equal(agg('manual', 'manual'), 'manual');
+assert.equal(agg('manual', 'skipped'), 'skipped');
 assert.equal(model.duration({started_at:'2026-01-01T00:00:00Z'}, Date.parse('2026-01-01T00:01:15Z')), '1m 15s');
-assert.equal(model.icon('cancelled'), '⊘');
-assert.equal(model.icon('failure'), '✕');
+assert.equal(model.icon('success'), '✓');
+assert.equal(model.icon('failed'), '✕');
+assert.equal(model.icon('running'), '◷');
+assert.equal(model.icon('canceling'), '◷');
+assert.equal(model.icon('canceled'), '⊘');
+for (const status of ['skipped', 'manual', 'scheduled']) assert.equal(model.icon(status), '−');
+assert.equal(model.icon('pending'), '○');
 assert.equal(model.reply('{"repos":[]}', '', 0), '{"repos":[]}');
 assert.equal(JSON.parse(model.reply('', 'python3: cannot open helper', 2)).error, 'python3: cannot open helper');
 assert.equal(JSON.parse(model.reply('', '', 1)).error, 'Workflow helper returned no data (exit 1)');
@@ -52,4 +80,4 @@ assert.equal(backing[1], originalA, 'Reordering moves the row instead of recreat
 model.syncRows(list, [first[0]]);
 assert.equal(list.count, 1);
 assert.equal(backing[0].rowKey, 'a');
-console.log('Model: hierarchy, filtering, progress, selection and duration passed');
+console.log('Model: stage hierarchy, aggregation, filtering, progress, selection and duration passed');
