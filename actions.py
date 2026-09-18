@@ -1,4 +1,4 @@
-"""Read-only GitHub Actions data, using gh's existing authentication."""
+"""Read-only GitLab pipeline data, using glab's existing authentication."""
 import argparse
 import json
 import re
@@ -7,27 +7,37 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import quote
 
 
-ACTIVE = ("queued", "in_progress", "waiting", "pending", "requested")
+# Unfinished statuses polled by a full summary; "running" is also the activity check.
+PHASES = ("running", "pending", "created", "waiting_for_resource", "preparing")
+IN_PROGRESS = ("running", "canceling")
+QUEUED = ("created", "waiting_for_resource", "preparing", "pending")
+SEGMENT = r"[A-Za-z0-9_.][A-Za-z0-9_.-]*"
 
 
 class DeadlineExceeded(Exception):
     pass
 
 
-def repo_name(value):
-    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value):
-        raise ValueError("Repository must be owner/name")
+def project_path(value):
+    if not isinstance(value, str) or not re.fullmatch(SEGMENT + r"(?:/" + SEGMENT + r")+", value):
+        raise ValueError("Project must be group/project")
     if any(part in (".", "..") for part in value.split("/")):
-        raise ValueError("Invalid repository")
+        raise ValueError("Invalid project")
     return value
 
 
-def request(endpoint, include=False):
+def host_name(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]{1,5})?", value):
+        raise ValueError("Invalid GitLab host")
+    return value
+
+
+def request(endpoint, host="gitlab.com"):
     child = subprocess.Popen(
-        ["gh", "api", "--hostname", "github.com"] + (["--include"] if include else []) + [endpoint],
+        ["glab", "api", "--hostname", host_name(host), "--include", endpoint],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     try:
@@ -39,20 +49,6 @@ def request(endpoint, include=False):
     return stdout, stderr, child.returncode
 
 
-def api(endpoint):
-    stdout, stderr, code = request(endpoint)
-    if code:
-        error = stderr.lower()
-        if "rate limit" in error or "http 429" in error:
-            raise RuntimeError("GitHub rate limit; refresh will back off")
-        if "auth login" in error or "http 401" in error:
-            raise RuntimeError("Authenticate with gh auth login")
-        if "http 403" in error or "http 404" in error:
-            raise RuntimeError("Repository unavailable or Actions read permission missing")
-        raise RuntimeError("GitHub request failed; check connection and gh auth status")
-    return json.loads(stdout)
-
-
 def page_endpoint(task):
     if not isinstance(task, dict) or task.get("kind") not in ("catalogue", "activity", "summary", "jobs", "run"):
         raise ValueError("Invalid page operation")
@@ -61,21 +57,22 @@ def page_endpoint(task):
         raise ValueError("Invalid page number")
     if type(task.get("requestId")) is not int or task["requestId"] < 1:
         raise ValueError("Invalid request identity")
+    host_name(task.get("host", "gitlab.com"))
     if task["kind"] == "catalogue":
-        return f"user/repos?affiliation=owner,collaborator,organization_member&sort=pushed&direction=desc&per_page=100&page={number}"
-    base = "repos/" + repo_name(task.get("repo")) + "/actions/runs"
+        return f"projects?membership=true&per_page=100&page={number}"
+    base = "projects/" + quote(project_path(task.get("repo")), safe="") + "/pipelines"
     if task["kind"] in ("jobs", "run"):
         run = str(task.get("run", ""))
         if not re.fullmatch(r"[0-9]+", run) or int(run) < 1:
-            raise ValueError("Invalid run ID")
+            raise ValueError("Invalid pipeline ID")
         if task["kind"] == "run":
             return f"{base}/{run}"
-        return f"{base}/{run}/jobs?filter=latest&per_page=100&page={number}"
-    status = "in_progress" if task["kind"] == "activity" else task.get("status", "recent")
+        return f"{base}/{run}/jobs?include_retried=false&per_page=100&page={number}"
+    status = "running" if task["kind"] == "activity" else task.get("status", "recent")
     if status == "recent":
         return f"{base}?per_page=10"
-    if status not in ACTIVE:
-        raise ValueError("Invalid workflow status")
+    if status not in PHASES:
+        raise ValueError("Invalid pipeline status")
     return f"{base}?status={status}&per_page=100&page={number}"
 
 
@@ -102,22 +99,54 @@ def http_reply(stdout):
     return status, headers, text
 
 
-def next_page(endpoint, headers):
-    for link in headers.get("link", "").split(","):
-        match = re.search(r'<([^>]+)>;\s*rel="next"', link)
-        if not match:
-            continue
-        target = urlsplit(match[1])
-        source = urlsplit("https://api.github.com/" + endpoint)
-        query, expected = parse_qs(target.query), parse_qs(source.query)
-        page = query.pop("page", [])
-        previous = expected.pop("page", ["1"])
-        if (target.scheme != "https" or target.netloc != "api.github.com"
-                or target.path != source.path or target.fragment or query != expected
-                or len(page) != 1 or not page[0].isdigit() or int(page[0]) != int(previous[0]) + 1):
-            raise ValueError("Invalid pagination link")
-        return int(page[0])
-    return 0
+def next_page(headers, page):
+    value = headers.get("x-next-page", "")
+    if not value:
+        return 0
+    if not value.isdigit() or int(value) != page + 1:
+        raise ValueError("Invalid pagination header")
+    return int(value)
+
+
+def state(status):
+    if status in IN_PROGRESS:
+        return "in_progress"
+    return "queued" if status in QUEUED else "completed"
+
+
+def entry(row):
+    if not isinstance(row, dict) or type(row.get("id")) is not int or row["id"] < 1 or not isinstance(row.get("status"), str):
+        raise ValueError("Invalid pipeline entry")
+    return row
+
+
+# The panel's model and scheduler consume GitHub-shaped fields; conclusion keeps GitLab's status.
+def pipeline(row):
+    entry(row)
+    status = state(row["status"])
+    return {"id": row["id"], "run_number": row.get("iid"),
+            "name": row.get("name") or str(row.get("source") or "").replace("_", " ") or "Pipeline",
+            "display_title": str(row.get("sha") or "")[:8], "head_branch": row.get("ref") or "",
+            "html_url": row.get("web_url") or "", "run_started_at": row.get("started_at") or row.get("created_at"),
+            "completed_at": row.get("finished_at"), "updated_at": row.get("updated_at"),
+            "status": status, "conclusion": row["status"],
+            # A retried job changes a finished pipeline's updated_at: that is the rerun signal.
+            "run_attempt": (row.get("updated_at") or 1) if status == "completed" else "active"}
+
+
+def job(row):
+    entry(row)
+    return {"id": row["id"], "name": row.get("name") or "Job", "stage": str(row.get("stage") or ""),
+            "status": state(row["status"]), "conclusion": row["status"], "allow_failure": bool(row.get("allow_failure")),
+            "started_at": row.get("started_at"), "completed_at": row.get("finished_at"), "html_url": row.get("web_url") or ""}
+
+
+def project(row):
+    if not isinstance(row, dict):
+        raise ValueError("Invalid project entry")
+    return {"repo": project_path(row.get("path_with_namespace")), "description": row.get("description") or "",
+            "url": row.get("web_url") or "", "lastActivity": row.get("last_activity_at") or "",
+            "archived": bool(row.get("archived")), "disabled": row.get("builds_access_level") == "disabled"}
 
 
 def read_page(task):
@@ -126,16 +155,16 @@ def read_page(task):
               "data": None, "error": "", "errorType": "", "retryAt": 0,
               "remaining": None, "resetAt": 0}
     try:
-        stdout, stderr, code = request(endpoint, include=True)
+        stdout, stderr, code = request(endpoint, task.get("host", "gitlab.com"))
         if not stdout.strip() and "auth login" in stderr.lower():
-            result.update(errorType="auth", error="Authenticate with gh auth login")
+            result.update(errorType="auth", error="Authenticate with glab auth login")
             return result
         status, headers, raw_body = http_reply(stdout)
         result["httpStatus"] = status
-        if headers.get("x-ratelimit-remaining", "").isdigit():
-            result["remaining"] = int(headers["x-ratelimit-remaining"])
-        if headers.get("x-ratelimit-reset", "").isdigit():
-            result["resetAt"] = int(headers["x-ratelimit-reset"]) * 1000
+        if headers.get("ratelimit-remaining", "").isdigit():
+            result["remaining"] = int(headers["ratelimit-remaining"])
+        if headers.get("ratelimit-reset", "").isdigit():
+            result["resetAt"] = int(headers["ratelimit-reset"]) * 1000
         retry = headers.get("retry-after", "")
         if retry:
             try:
@@ -149,108 +178,44 @@ def read_page(task):
             if status < 400:
                 raise
             body = None
-        result["data"] = body
         if status >= 400 or code:
-            message = str(body.get("message", "")) if isinstance(body, dict) else ""
-            if status == 429 or result["remaining"] == 0 or result["retryAt"] or "rate limit" in message.lower() or "secondary rate" in message.lower():
-                result.update(errorType="rate", error="GitHub rate limit")
+            message = str(body.get("message", body.get("error", ""))) if isinstance(body, dict) else ""
+            if status == 429 or result["remaining"] == 0 or result["retryAt"] or "rate limit" in message.lower():
+                result.update(errorType="rate", error="GitLab rate limit")
             elif status == 401:
-                result.update(errorType="auth", error="Authenticate with gh auth login")
+                result.update(errorType="auth", error="Authenticate with glab auth login")
             elif status in (403, 404):
-                result.update(errorType="permission", error="Resource unavailable or Actions read permission missing")
+                result.update(errorType="permission", error="Project unavailable or read_api scope missing")
             else:
-                result.update(errorType="network", error="GitHub request failed")
+                result.update(errorType="network", error="GitLab request failed")
             return result
         kind = task["kind"]
-        if kind == "catalogue":
-            if not isinstance(body, list):
-                raise ValueError("Invalid repository response")
-            if any(not isinstance(row, dict) for row in body):
-                raise ValueError("Invalid repository entry")
-            result["data"] = [{"repo": repo_name(row["full_name"]), "description": row.get("description") or "",
-                               "archived": bool(row.get("archived")), "disabled": bool(row.get("disabled"))} for row in body]
-        elif kind == "run":
-            if not isinstance(body, dict) or str(body.get("id")) != str(task["run"]) or "status" not in body:
-                raise ValueError("Invalid run response")
+        if kind == "run":
+            if not isinstance(body, dict) or str(body.get("id")) != str(task["run"]):
+                raise ValueError("Invalid pipeline response")
+            result["data"] = pipeline(body)
         else:
-            key = "jobs" if kind == "jobs" else "workflow_runs"
-            if not isinstance(body, dict) or not isinstance(body.get(key), list):
-                raise ValueError("Invalid workflow response")
-            if any(not isinstance(row, dict) or type(row.get("id")) is not int or row["id"] < 1 or not isinstance(row.get("status"), str) for row in body[key]):
-                raise ValueError("Invalid workflow entry")
-            if kind == "jobs" and any(not isinstance(row.get("steps", []), list) for row in body[key]):
-                raise ValueError("Invalid job steps")
-            result["data"] = body[key]
-        if kind != "run" and not (kind == "summary" and task.get("status", "recent") == "recent"):
-            result["nextPage"] = next_page(endpoint, headers)
-    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
-        result.update(errorType="network", error="GitHub request timed out or returned invalid data")
-    return result
-
-
-def pages(endpoint, key):
-    page = 1
-    while True:
-        separator = "&" if "?" in endpoint else "?"
-        data = api(f"{endpoint}{separator}per_page=100&page={page}")
-        rows = data[key]
-        if not isinstance(rows, list):
-            raise ValueError("Unexpected GitHub response")
-        yield from rows
-        if len(rows) < 100:
-            break
-        page += 1
-
-
-def runs(repo):
-    base = f"repos/{repo_name(repo)}/actions/runs"
-    found = {}
-    for status in ACTIVE:
-        for run in pages(f"{base}?status={status}", "workflow_runs"):
-            found[run["id"]] = run
-    # Include recent completions; querying them last resolves completion races.
-    for run in api(f"{base}?per_page=10")["workflow_runs"]:
-        found[run["id"]] = run
-    return sorted(found.values(), key=lambda run: (run["status"] == "completed", -run["id"]))
-
-
-def repositories_page(page):
-    if not page.isdigit() or int(page) < 1:
-        raise ValueError("Repository page must be a positive number")
-    rows = api("user/repos?affiliation=owner,collaborator,organization_member"
-               f"&sort=pushed&direction=desc&per_page=100&page={page}")
-    if not isinstance(rows, list):
-        raise ValueError("Unexpected repository response")
-    return {"repos": [{"repo": repo_name(row["full_name"]),
-                       "description": row.get("description") or "",
-                       "archived": row.get("archived", False),
-                       "disabled": row.get("disabled", False)} for row in rows],
-            "nextPage": int(page) + 1 if len(rows) == 100 else 0}
-
-
-def activity(repo):
-    repo = repo_name(repo)
-    running = list(pages(f"repos/{repo}/actions/runs?status=in_progress", "workflow_runs"))
-    return {"repo": repo, "runs": running, "active": len(running)}
-
-
-def summary(repos):
-    result = []
-    for repo in dict.fromkeys(repo_name(value) for value in repos):
-        try:
-            result.append({"repo": repo, "runs": runs(repo), "error": ""})
-        except (RuntimeError, ValueError, KeyError, OSError, subprocess.TimeoutExpired) as exc:
-            message = str(exc) if isinstance(exc, RuntimeError) else "Unable to read GitHub workflow data"
-            result.append({"repo": repo, "error": message})
+            if not isinstance(body, list):
+                raise ValueError("Invalid list response")
+            if kind == "catalogue":
+                result["data"] = [project(row) for row in body]
+            elif kind == "jobs":
+                result["data"] = sorted((job(row) for row in body), key=lambda row: row["id"])
+            else:
+                result["data"] = [pipeline(row) for row in body]
+            if not (kind == "summary" and task.get("status", "recent") == "recent"):
+                result["nextPage"] = next_page(headers, task.get("page", 1))
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+        result.update(data=None, errorType="network", error="GitLab request timed out or returned invalid data")
     return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("summary", "jobs", "repositories", "activity", "page"))
-    parser.add_argument("targets", nargs="+")
+    parser.add_argument("mode", choices=("page",))
+    parser.add_argument("request")
     args = parser.parse_args()
-    # Bound the complete request, including all pages/repositories.
+    # Bound the complete request, including glab start-up.
     def timed_out(*_):
         raise DeadlineExceeded()
 
@@ -261,29 +226,10 @@ def main():
     signal.signal(signal.SIGTERM, cancelled)
     signal.alarm(90)
     try:
-        if args.mode == "page":
-            if len(args.targets) != 1:
-                raise ValueError("page requires one JSON request")
-            data = read_page(json.loads(args.targets[0]))
-        elif args.mode == "repositories":
-            if len(args.targets) != 1:
-                raise ValueError("repositories requires one page number")
-            data = repositories_page(args.targets[0])
-        elif args.mode == "activity":
-            if len(args.targets) != 1:
-                raise ValueError("activity requires one repository")
-            data = activity(args.targets[0])
-        elif args.mode == "summary":
-            data = {"repos": summary(args.targets)}
-        else:
-            if len(args.targets) != 2 or not args.targets[1].isdigit():
-                raise ValueError("jobs requires owner/repo and numeric run ID")
-            repo, run = repo_name(args.targets[0]), args.targets[1]
-            data = {"jobs": list(pages(f"repos/{repo}/actions/runs/{run}/jobs?filter=latest", "jobs"))}
-        data["updated"] = datetime.now(timezone.utc).isoformat()
+        data = read_page(json.loads(args.request))
         print(json.dumps(data))
-    except (RuntimeError, ValueError, KeyError, OSError, subprocess.TimeoutExpired, DeadlineExceeded) as exc:
-        message = str(exc) if isinstance(exc, (RuntimeError, ValueError)) else "GitHub request timed out or returned invalid data"
+    except (ValueError, DeadlineExceeded) as exc:
+        message = str(exc) if isinstance(exc, ValueError) else "GitLab request timed out"
         print(json.dumps({"error": message}))
         return 1
     finally:
