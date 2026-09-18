@@ -23,6 +23,7 @@ Item {
     property alias filterText: searchField.text
     readonly property bool filtering: searchField.activeFocus
     property string error: ""
+    property string host: "gitlab.com"
     property string updated: ""
     property var polling: Polling.create()
     property var requestInfo: null
@@ -30,7 +31,7 @@ Item {
     property double now: Date.now()
     readonly property bool loading: workerBusy
     readonly property bool discoveryComplete: polling.catalogueComplete
-    readonly property string cooldownText: now < polling.cooldown ? "GitHub paused until " + new Date(polling.cooldown).toLocaleTimeString() : ""
+    readonly property string cooldownText: now < polling.cooldown ? "GitLab paused until " + new Date(polling.cooldown).toLocaleTimeString() : ""
     readonly property int checkedCount: repos.filter(function(repo) { return !!repo.checked || repo.archived || repo.disabled }).length
     readonly property real textScale: 1.5
     readonly property var current: entries[cursor] || null
@@ -108,7 +109,7 @@ Item {
                 selectionChanged(false)
                 return
             }
-        } else if (["repo", "run", "job"].indexOf(row.kind) >= 0) {
+        } else if (["repo", "run", "stage"].indexOf(row.kind) >= 0) {
             next[row.key] = !next[row.key]
         }
         expanded = next
@@ -119,10 +120,13 @@ Item {
     function configure(text) {
         try {
             var config = JSON.parse(text)
-            var entry = (config.plugins || []).filter(function(p) { return p.id === "olafkfreund.github-actions" })[0]
-            var names = entry && Array.isArray(entry.repositories) ? entry.repositories : []
+            var entry = (config.plugins || []).filter(function(p) { return p.id === "olafkfreund.gitlab-pipelines" })[0]
+            var configured = entry && typeof entry.host === "string" ? entry.host : "gitlab.com"
+            if (!/^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$/.test(configured)) throw new Error("invalid host " + configured)
+            host = configured
+            var names = entry && Array.isArray(entry.projects) ? entry.projects : []
             if (!polling.repos.length && names.length)
-                polling.repos = names.filter(function(name) { return typeof name === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(name) }).map(function(name) { return {repo:name} })
+                polling.repos = names.filter(function(name) { return typeof name === "string" && /^[A-Za-z0-9_.][A-Za-z0-9_.-]*(\/[A-Za-z0-9_.][A-Za-z0-9_.-]*)+$/.test(name) && !/(^|\/)\.\.?(\/|$)/.test(name) }).map(function(name) { return {repo:name} })
             adopt()
         } catch (e) { error = "Configuration: " + e.message }
     }
@@ -149,6 +153,7 @@ Item {
         if (!opened || workerBusy) return
         var request = Polling.next(polling, Date.now())
         if (!request) return
+        request.host = host
         requestInfo = request
         workerBusy = true
         requestProc.command = ["python3", helper, "page", JSON.stringify(request)]
@@ -169,12 +174,12 @@ Item {
         }
     }
     function statusColor(status) {
-        if (["failure", "timed_out", "startup_failure", "error"].indexOf(status) >= 0) return Color.urgent
-        if (status === "in_progress" || status === "success") return Color.accent
+        if (status === "failed" || status === "error") return Color.urgent
+        if (status === "running" || status === "success") return Color.accent
         return Color.menu.text
     }
     function openBrowser() {
-        if (current && /^https:\/\/github\.com\//.test(current.url || ""))
+        if (current && (current.url || "").indexOf("https://" + host + "/") === 0)
             Quickshell.execDetached(["xdg-open", current.url])
     }
 
@@ -187,7 +192,7 @@ Item {
         command: ["python3", decodeURIComponent(Qt.resolvedUrl("menu.py").toString().replace(/^file:\/\//, "")), "register"]
         stderr: StdioCollector { id: registrationErrors }
         onExited: function(code) {
-            if (code !== 0) console.warn("GitHub Actions menu registration failed: " + registrationErrors.text.trim())
+            if (code !== 0) console.warn("GitLab Pipelines menu registration failed: " + registrationErrors.text.trim())
         }
     }
     ListModel { id: visibleRows; dynamicRoles: true }
@@ -217,7 +222,7 @@ Item {
         anchors { top: true; bottom: true; left: true; right: true }
         color: "transparent"
         exclusionMode: ExclusionMode.Ignore
-        WlrLayershell.namespace: "omarchy-github-actions"
+        WlrLayershell.namespace: "omarchy-gitlab-pipelines"
         WlrLayershell.layer: WlrLayer.Overlay
         WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
 
@@ -265,7 +270,7 @@ Item {
                     spacing: Style.spacing.md
                     Text {
                         width: parent.width
-                        text: "GitHub Actions  ·  " + root.repositories.length + (root.repositories.length === 1 ? " repository" : " repositories")
+                        text: "GitLab Pipelines  ·  " + root.repositories.length + (root.repositories.length === 1 ? " project" : " projects")
                         color: Color.menu.text
                         font { family: Style.font.menuFamily; pixelSize: Math.round(Style.font.title * root.textScale); bold: true }
                         textFormat: Text.PlainText
@@ -297,8 +302,8 @@ Item {
                         Text {
                             anchors.fill: parent
                             visible: searchField.text.length === 0
-                            text: root.filtering ? "Search repositories…" : root.cooldownText || root.error ||
-                                (root.discoveryComplete ? "Activity checked " + root.checkedCount + "/" + root.repositories.length + " · running first · / search repositories" : "Discovering repositories… " + root.repositories.length + " found")
+                            text: root.filtering ? "Search projects…" : root.cooldownText || root.error ||
+                                (root.discoveryComplete ? "Activity checked " + root.checkedCount + "/" + root.repositories.length + " · running first · / search projects" : "Discovering projects… " + root.repositories.length + " found")
                             color: root.error || root.cooldownText ? Color.urgent : Color.menu.text
                             opacity: 0.75
                             font: searchField.font
@@ -339,7 +344,7 @@ Item {
                                     anchors.verticalCenter: parent.verticalCenter
                                     Text {
                                         width: parent.width
-                                        text: (["repo", "run", "job"].indexOf(modelData.kind) >= 0 ? (root.expanded[modelData.key] ? "▾ " : "▸ ") : "") + modelData.title
+                                        text: (["repo", "run", "stage"].indexOf(modelData.kind) >= 0 ? (root.expanded[modelData.key] ? "▾ " : "▸ ") : "") + modelData.title
                                         color: index === root.cursor ? Color.menu.selectedText : Color.menu.text
                                         font { family: Style.font.menuFamily; pixelSize: Math.round(Style.font.body * root.textScale); bold: modelData.kind === "repo" }
                                         elide: Text.ElideRight
@@ -371,7 +376,7 @@ Item {
                         Text {
                             anchors.centerIn: parent
                             visible: root.entries.length === 0
-                            text: "No matching repositories or workflows"
+                            text: "No matching projects or pipelines"
                             color: Color.menu.text
                             font { family: Style.font.menuFamily; pixelSize: Math.round(Style.font.body * root.textScale) }
                         }
@@ -379,7 +384,7 @@ Item {
                     Text {
                         id: footer
                         width: parent.width
-                        text: root.cooldownText || "↑↓ move  ←→ expand  / search  r refresh  R repos  o GitHub  Esc close"
+                        text: root.cooldownText || "↑↓ move  ←→ expand  / search  r refresh  R projects  o GitLab  Esc close"
                         color: Color.menu.text
                         opacity: 0.65
                         font { family: Style.font.menuFamily; pixelSize: Math.round(Style.font.caption * root.textScale) }

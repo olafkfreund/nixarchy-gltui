@@ -1,4 +1,4 @@
-"""Exercise the real QML worker with a temporary fake API; no live GitHub requests."""
+"""Exercise the real QML worker with a temporary fake API; no live GitLab requests."""
 import argparse
 import os
 from pathlib import Path
@@ -12,7 +12,7 @@ source = parser.parse_args().plugin_dir.resolve()
 required = ('manifest.json', 'ActionsPanel.qml', 'ActionsModel.js', 'Polling.js',
             'actions.py', 'menu.py', 'menu.example.json', 'keybindings.sh')
 if not source.is_dir() or any(not (source / name).is_file() for name in required):
-    parser.error('plugin_dir must contain the complete GitHub Actions plugin')
+    parser.error('plugin_dir must contain the complete GitLab Pipelines plugin')
 shell = Path(os.environ['OMARCHY_PATH']) / 'shell'
 colors = tomllib.loads((Path.home() / '.local/state/omarchy/current/theme/colors.toml').read_text())
 for scenario in ('fresh', 'managed'):
@@ -25,11 +25,12 @@ for scenario in ('fresh', 'managed'):
         (root / 'actions.py').write_text('''import json, sys, time
 request=json.loads(sys.argv[2]); kind=request['kind']
 time.sleep(0.1)
-run={'id':7,'name':'CI','status':'in_progress','run_attempt':1,'head_branch':'main','run_number':1}
-if kind=='catalogue': data=[{'repo':'one/repo'},{'repo':'two/repo'}]
-elif kind=='jobs': data=[{'id':8,'name':'build','status':'in_progress','steps':[{'number':1,'name':'Checkout','status':'completed','conclusion':'success'}]}]
+assert request.get('host')=='gitlab.example.org', request
+run={'id':7,'name':'CI','status':'in_progress','conclusion':'running','run_attempt':'active','head_branch':'main','run_number':1}
+if kind=='catalogue': data=[{'repo':'one/sub/repo','url':'https://gitlab.example.org/one/sub/repo'},{'repo':'two/repo'}]
+elif kind=='jobs': data=[{'id':8,'name':'compile','stage':'build','status':'in_progress','conclusion':'running'},{'id':9,'name':'unit','stage':'test','status':'queued','conclusion':'created'}]
 elif kind=='run': data=run
-else: data=[run] if request['repo']=='one/repo' and request.get('status','in_progress') in ('recent','in_progress') else []
+else: data=[run] if request['repo']=='one/sub/repo' and request.get('status','running') in ('recent','running') else []
 print(json.dumps({'requestId':request['requestId'],'data':data,'nextPage':0,'error':'','errorType':'','remaining':4000}))
 ''')
         home = root / 'home'
@@ -78,12 +79,12 @@ ShellRoot {
             menuFile.reload()
             check(!panel.opened && panel.polling.requests===0,"registration does not open or poll")
             if (Quickshell.env("MENU_SCENARIO") === "fresh")
-                check(menuFile.text().indexOf('"apps.github-actions"') >= 0,"registered while closed")
+                check(menuFile.text().indexOf('"apps.gitlab-pipelines"') >= 0,"registered while closed")
             panel.polling=Polling.create()
-            panel.configure('{"plugins":[{"id":"olafkfreund.github-actions","repositories":["one/repo","two/repo"]}]}')
-            check(panel.entries.length===2,"configured repositories")
-            panel.polling.repos[0].runs=[{id:7,name:"CI",status:"in_progress",run_attempt:1}]
-            panel.expanded={"repo:one/repo":true}
+            panel.configure('{"plugins":[{"id":"olafkfreund.gitlab-pipelines","host":"gitlab.example.org","projects":["one/sub/repo","two/repo","bad/../x"]}]}')
+            check(panel.entries.length===2 && panel.host==="gitlab.example.org","configured projects and host")
+            panel.polling.repos[0].runs=[{id:7,name:"CI",status:"in_progress",conclusion:"running",run_attempt:"active"}]
+            panel.expanded={"repo:one/sub/repo":true}
             panel.adopt()
             panel.move(1)
             check(panel.current.kind==="run","keyboard selection")
@@ -106,10 +107,11 @@ ShellRoot {
     Timer {
         interval: 250; running: true; repeat: true
         onTriggered: {
-            if(stage===1 && panel.polling.requests>=6 && panel.details["one/repo:7"] && panel.polling.catalogueComplete) {
+            if(stage===1 && panel.polling.requests>=6 && panel.details["one/sub/repo:7"] && panel.polling.catalogueComplete) {
                 check(panel.error==="","async API has no error")
                 check(panel.current.key===selected && panel.filterText==="repo","poll preserves searched selection")
-                check(panel.details["one/repo:7"].jobs[0].steps.length===1,"jobs and steps arrive")
+                check(panel.details["one/sub/repo:7"].jobs.length===2,"jobs arrive")
+                check(panel.entries.filter(function(row) { return row.kind==="stage" }).length===2,"jobs grouped into stages")
                 check(panel.polling.catalogueComplete,"catalogue completed")
                 panel.close()
                 closedRequests=panel.polling.requests
@@ -142,8 +144,8 @@ ShellRoot {
         if result.returncode or 'QML_CHECKS_PASSED' not in output or any(term in output for term in ('ERROR:', 'ReferenceError','TypeError','CHECK FAILED')):
             raise SystemExit('QML smoke check failed')
         if scenario == 'managed':
-            assert 'GitHub Actions menu registration failed:' in output and 'Menu is managed:' in output
+            assert 'GitLab Pipelines menu registration failed:' in output and 'Menu is managed:' in output
             assert menu_path.is_symlink() and menu_path.read_text() == '{}\n'
         else:
             assert 'menu registration failed' not in output
-            assert '"apps.github-actions"' in menu_path.read_text()
+            assert '"apps.gitlab-pipelines"' in menu_path.read_text()
