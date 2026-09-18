@@ -1,0 +1,19 @@
+{
+  "apps.gitlab-pipelines": {
+    "icon": "",
+    "label": "GitLab Pipelines",
+    "description": "Project pipelines, stages and jobs · Super+Alt+P",
+    "aliases": [
+      "gitlab",
+      "pipelines",
+      "ci"
+    ],
+    "action": "python3 ~/.config/omarchy/plugins/olafkfreund.gitlab-pipelines/menu.py"
+  },
+  "learn.gitlab-pipelines-keybindings": {
+    "icon": "",
+    "label": "GitLab Pipelines keybindings",
+    "description": "All pipeline panel controls · Super+Ctrl+Alt+P",
+    "action": "python3 ~/.config/omarchy/plugins/olafkfreund.gitlab-pipelines/menu.py keys"
+  }
+}

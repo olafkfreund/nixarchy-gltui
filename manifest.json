@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "olafkfreund.gitlab-pipelines",
+  "name": "GitLab Pipelines",
+  "version": "0.1.0",
+  "keepLoaded": true,
+  "author": "olafkfreund",
+  "description": "Keyboard-driven pipeline, stage and job monitor",
+  "kinds": [
+    "panel"
+  ],
+  "entryPoints": {
+    "panel": "ActionsPanel.qml"
+  }
+}
