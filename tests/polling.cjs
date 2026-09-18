@@ -28,7 +28,7 @@ function simulation(activeCount=0, duration=1800000) {
       const req=flight.req; let data=[],next=0;
       const i=Number(req.repo.split('r').pop());
       if(req.kind==='catalogue') { data=req.page===1?repos.slice(0,100):repos.slice(100); next=req.page===1?2:0; }
-      else if(req.kind==='activity' || req.kind==='summary' && ['recent','in_progress'].includes(req.status)) data=i<activeCount?[run(i)]:[];
+      else if(req.kind==='activity' || req.kind==='summary' && ['recent','running'].includes(req.status)) data=i<activeCount?[run(i)]:[];
       else if(req.kind==='jobs') data=[{id:1,status:'in_progress',steps:[]}];
       polling.complete(s,response(req,data,next),now); flight=null;
       if(!catalogue && s.catalogueComplete) catalogue=now;
@@ -170,3 +170,16 @@ assert.equal(overlap.repos[0].checked,undefined);
 req=polling.next(overlap,1000); polling.complete(overlap,response(req,[{id:7,status:'in_progress'}]),1100);
 assert.equal(overlap.repos[0].active,1,'overlapping pages cannot double-count active workflows');
 console.log('Polling: overlapping pages deduplicate workflow IDs');
+
+const sorted=polling.create(); polling.open(sorted,0); sorted.discover=true;
+req=polling.next(sorted,0); assert.equal(req.kind,'catalogue');
+polling.complete(sorted,response(req,[{repo:'g/old',lastActivity:'2026-01-01T00:00:00Z'},{repo:'g/none'},{repo:'g/new',lastActivity:'2026-09-01T00:00:00Z'}]),100);
+assert.equal(sorted.repos.map(r=>r.repo).join(),'g/new,g/old,g/none','catalogue ordered by last activity');
+
+const rerun=polling.create(); rerun.repos=[{repo:'a/b',runs:[{id:7,status:'in_progress',run_attempt:'active'}]}];
+rerun.details['a/b:7']={jobs:[]};
+polling.mergeRuns(rerun,rerun.repos[0],[{id:7,status:'completed',run_attempt:'t1'}]);
+assert.ok(rerun.details['a/b:7'],'finishing does not discard jobs');
+polling.mergeRuns(rerun,rerun.repos[0],[{id:7,status:'completed',run_attempt:'t2'}]);
+assert.equal(rerun.details['a/b:7'],undefined,'finished pipeline with new updated_at is a rerun');
+console.log('Polling: GitLab catalogue order and rerun detection passed');

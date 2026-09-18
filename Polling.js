@@ -1,5 +1,5 @@
 // One page at a time; all time is injected so scheduling can be tested without Qt.
-var phases = ["recent", "in_progress", "queued", "waiting", "pending", "requested"];
+var phases = ["recent", "running", "pending", "created", "waiting_for_resource", "preparing"];
 function create() {
     return {opened:false, generation:0, serial:0, order:0, slot:0, starts:[], cooldown:0,
         rateFailures:0, auth:false, tasks:{}, flight:null, repos:[], details:{}, selected:"", inspected:"",
@@ -122,7 +122,8 @@ function union(a,b) {
 function invalidateJobs(s,r,incoming) {
     incoming.forEach(function(run) {
         var old=(r.runs || []).filter(function(x) { return x.id===run.id })[0];
-        if (old && ((old.run_attempt || 1)!==(run.run_attempt || 1) || old.status==="completed" && run.status!=="completed"))
+        // Only a finished pipeline can be rerun; active pipelines change attempt when they finish.
+        if (old && old.status==="completed" && ((old.run_attempt || 1)!==(run.run_attempt || 1) || run.status!=="completed"))
             delete s.details[r.repo + ":" + run.id];
     });
 }
@@ -204,13 +205,13 @@ function complete(s,reply,now) {
     if (t.kind==="catalogue") {
         var names=t.items.map(function(repo) { return repo.repo });
         s.repos=s.repos.filter(function(repo) { return names.indexOf(repo.repo)>=0 });
-        // GitHub's pushed-descending catalogue order is retained across refreshes.
-        s.repos.sort(function(a,b) { return names.indexOf(a.repo)-names.indexOf(b.repo) });
+        // Most recently active first; gitlab.com cannot sort membership by activity server-side.
+        s.repos.sort(function(a,b) { return String(b.lastActivity || "").localeCompare(String(a.lastActivity || "")) || names.indexOf(a.repo)-names.indexOf(b.repo) });
         s.catalogueComplete=true; s.catalogueAt=now; s.discover=false;
     } else if (r && t.kind==="activity") activity(s,r,t.items,now);
     else if (r && t.kind==="summary") {
         t.all=union(t.all,t.items);
-        if (phases[t.phase]==="in_progress") activity(s,r,t.items,now);
+        if (phases[t.phase]==="running") activity(s,r,t.items,now);
         t.phase++; t.items=[]; t.page=1;
         if (t.phase<phases.length) { t.due=now; t.order=++s.order; return true; }
         var keep=(r.runs || []).filter(function(run) { return run.awaitingFinal || s.expanded[r.repo+":"+run.id] });
