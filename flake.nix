@@ -1,0 +1,75 @@
+{
+  description = "GitHub Actions panel for the Omarchy shell";
+
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+  outputs =
+    { self, nixpkgs }:
+    let
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
+      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      version = (builtins.fromJSON (builtins.readFile ./manifest.json)).version;
+      runtimeFiles = [
+        "manifest.json"
+        "ActionsPanel.qml"
+        "ActionsModel.js"
+        "Polling.js"
+        "actions.py"
+        "menu.py"
+        "menu.example.json"
+        "keybindings.sh"
+      ];
+    in
+    {
+      packages = forAllSystems (pkgs: {
+        default = pkgs.runCommand "nixarchy-ghtui-${version}" { inherit version; } ''
+          mkdir -p "$out"
+          ${nixpkgs.lib.concatMapStringsSep "\n" (file: ''
+            cp ${./. + "/${file}"} "$out/${file}"
+          '') runtimeFiles}
+        '';
+      });
+
+      checks = forAllSystems (pkgs: {
+        plugin =
+          pkgs.runCommand "nixarchy-ghtui-checks-${version}"
+            {
+              nativeBuildInputs = [
+                pkgs.python3
+                pkgs.nodejs
+              ];
+            }
+            ''
+              plugin=${self.packages.${pkgs.stdenv.hostPlatform.system}.default}
+              python3 - "$plugin" <<'PY'
+              import json, sys
+              from pathlib import Path
+              root = Path(sys.argv[1])
+              assert sorted(p.name for p in root.iterdir()) == sorted(${builtins.toJSON runtimeFiles})
+              assert not any(p.is_symlink() for p in root.rglob('*'))
+              manifest = json.loads((root / 'manifest.json').read_text())
+              assert manifest['version'] == '${version}'
+              assert manifest['id'] == 'olafkfreund.github-actions'
+              assert all((root / entry).is_file() for entry in manifest['entryPoints'].values())
+              PY
+              cp "$plugin"/* .
+              cp -R ${./tests} tests
+              export HOME="$TMPDIR/home"
+              mkdir -p "$HOME"
+              python3 -m unittest discover -s tests -v
+              node tests/model.cjs
+              node tests/polling.cjs
+              python3 menu.py register
+              bash keybindings.sh --print > /dev/null
+              if python3 tests/qml-smoke.py "$TMPDIR/missing" 2> invalid-directory; then
+                exit 1
+              fi
+              grep -F 'plugin_dir must contain the complete GitHub Actions plugin' invalid-directory
+              touch "$out"
+            '';
+      });
+    };
+}
