@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 1
 spec: spec/2026-09-18-1-gitlab-pipelines.md
 ---
