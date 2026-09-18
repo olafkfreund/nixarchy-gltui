@@ -165,7 +165,7 @@ function complete(s,reply,now) {
     }
     var r=repoFor(s,t.repo);
     if (reply.errorType || reply.error) {
-        s.error=reply.error || "Invalid GitHub response";
+        s.error=reply.error || "Invalid GitLab response";
         if (reply.errorType==="auth") s.auth=true;
         if (reply.errorType==="permission") {
             if (r && t.kind!=="jobs" && t.kind!=="run") { r.blocked=true; r.error=s.error; }
