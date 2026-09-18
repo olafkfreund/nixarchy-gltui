@@ -42,45 +42,11 @@ def parse_menu(source):
                       parse_constant=invalid_constant)
     if not isinstance(data, dict) or any(not isinstance(value, dict) for value in data.values()):
         raise ValueError('Menu must be an object of entry objects')
-    # Locate only top-level member tokens; nested values remain verbatim.
-    members = {}
-    depth = 0
-    start = None
-    for index, token in enumerate(tokens):
-        if depth == 1 and start is None and token[0].startswith('"'):
-            start = index
-        if depth == 1 and token[0] in (',', '}') and start is not None:
-            members[json.loads(tokens[start][0])] = tokens[start:index]
-            start = None
-        if token[0] in ('{', '['):
-            depth += 1
-        elif token[0] in ('}', ']'):
-            depth -= 1
-    return data, members, tokens
+    return data, tokens
 
 
 def registered_menu(source, defaults):
-    data, members, tokens = parse_menu(source)
-    destination = 'apps.github-actions'
-    legacy = [key for key in ('system.github-actions', 'github-actions')
-              if key in data and isinstance(data[key].get('action'), str)
-              and re.search(r'(?:^|[ /])olafkfreund\.github-actions/menu\.py(?:[\s\"\x27]|$)',
-                            data[key]['action'])]
-    edits = []
-    for key in legacy:
-        member = members[key]
-        if destination not in data:
-            edits.append((member[0].start(), member[0].end(), json.dumps(destination)))
-            data[destination] = data[key]
-        else:
-            # Delete syntax, not comments/whitespace between tokens.
-            edits.extend((token.start(), token.end(), '') for token in member)
-            following = next(token for token in tokens if token.start() >= member[-1].end())
-            if following[0] == ',':
-                edits.append((following.start(), following.end(), ''))
-    for start, end, replacement in sorted(edits, reverse=True):
-        source = source[:start] + replacement + source[end:]
-    data, _, tokens = parse_menu(source)
+    data, tokens = parse_menu(source)
     missing = {key: value for key, value in defaults.items() if key not in data}
     if missing:
         # Put separators immediately after the last value, before any line comment.
@@ -108,7 +74,7 @@ def register_menu():
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.github-actions-menu-', delete=False) as output:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix='.gitlab-pipelines-menu-', delete=False) as output:
             temporary = Path(output.name)
             output.write(updated)
             if before:
@@ -148,10 +114,10 @@ def main():
         os.environ["OMARCHY_PATH"] = session_tree(instances)
         command = (["bash", str(Path(__file__).with_name("keybindings.sh"))]
                    if sys.argv[1:] == ["keys"] else
-                   ["omarchy-shell", "shell", "toggle" if sys.argv[1:] == ["toggle"] else "summon", "olafkfreund.github-actions", "{}"])
+                   ["omarchy-shell", "shell", "toggle" if sys.argv[1:] == ["toggle"] else "summon", "olafkfreund.gitlab-pipelines", "{}"])
         os.execvp(command[0], command)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
-        print(f"GitHub Actions: {error}", file=sys.stderr)
+        print(f"GitLab Pipelines: {error}", file=sys.stderr)
         return 1
 
 

@@ -32,7 +32,6 @@ class MenuTest(unittest.TestCase):
 
 class RegistrationTest(unittest.TestCase):
     defaults = json.loads(Path(menu.__file__).with_name('menu.example.json').read_text())
-    action = 'python3 ~/.config/omarchy/plugins/olafkfreund.github-actions/menu.py'
 
     def test_fresh_and_idempotent(self):
         with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, HOME=home):
@@ -43,43 +42,25 @@ class RegistrationTest(unittest.TestCase):
             menu.register_menu()
             self.assertEqual(path.stat(), before)
 
-    def test_migrations_and_precedence(self):
-        for keys in [('github-actions',), ('system.github-actions',),
-                     ('github-actions', 'system.github-actions'),
-                     ('github-actions', 'system.github-actions', 'apps.github-actions')]:
-            with self.subTest(keys=keys):
-                entries = {key: {'action': self.action, 'label': key, 'custom': [1, True]} for key in keys}
-                source = json.dumps(entries)
-                output = menu.registered_menu(source, self.defaults)
-                data = menu.parse_menu(output)[0]
-                self.assertEqual(data['apps.github-actions'], entries[keys[-1]])
-                self.assertNotIn('github-actions', data)
-                self.assertNotIn('system.github-actions', data)
-                self.assertEqual(menu.registered_menu(output, self.defaults), output)
-
     def test_comments_strings_and_custom_entries(self):
-        source = r'''{
+        source = r"""{
   // heading with "fake": {} and punctuation ,}
-  "github-actions": {"action": "unrelated", "label": "Keep me"},
-  "system.github-actions": {
-    /* keep this comment */ "action": "python3 ~/.config/omarchy/plugins/olafkfreund.github-actions/menu.py",
+  "apps.gitlab-pipelines": {
+    /* keep this comment */ "action": "custom launcher",
     "label": "Custom", "description": "https://host/quote\"/*not comment*/,}",
   },
-  "learn.github-actions-keybindings": {"action": "custom keys"}, // keep keys
   "other": {"label": "unchanged", "array": [1, 2,],},
 } // footer
-'''
+"""
         output = menu.registered_menu(source, self.defaults)
-        self.assertEqual(output, source.replace('"system.github-actions":', '"apps.github-actions":'))
-        with_apps = output.replace('"other":', '"system.github-actions":')
-        self.assertEqual(menu.registered_menu(with_apps, self.defaults), with_apps)
-        # Deleting a duplicate retains its comments and unrelated text.
-        duplicate = output.replace('"github-actions": {"action": "unrelated", "label": "Keep me"}',
-                                   '"github-actions": {/* retain me */ "action": ' + json.dumps(self.action) + '}')
-        deduped = menu.registered_menu(duplicate, self.defaults)
-        self.assertIn('/* retain me */', deduped)
-        self.assertIn('"other": {"label": "unchanged", "array": [1, 2,],},', deduped)
-        self.assertNotIn('github-actions', menu.parse_menu(deduped)[0])
+        # Existing customisations win; only the missing entry is appended.
+        self.assertTrue(output.startswith(source[:source.rindex('}')]))
+        self.assertIn('/* keep this comment */', output)
+        self.assertIn('// footer', output)
+        data = menu.parse_menu(output)[0]
+        self.assertEqual(data['apps.gitlab-pipelines']['action'], 'custom launcher')
+        self.assertEqual(data['learn.gitlab-pipelines-keybindings'], self.defaults['learn.gitlab-pipelines-keybindings'])
+        self.assertEqual(menu.registered_menu(output, self.defaults), output)
 
     def test_addition_after_line_comment(self):
         source = '{"other": {} // last entry\n}'
@@ -106,7 +87,7 @@ class RegistrationTest(unittest.TestCase):
                 with self.assertRaises(PermissionError):
                     menu.register_menu()
             self.assertEqual(path.read_bytes(), original)
-            self.assertEqual(list(path.parent.glob('.github-actions-menu-*')), [])
+            self.assertEqual(list(path.parent.glob('.gitlab-pipelines-menu-*')), [])
             real_render = menu.registered_menu
             def concurrent(source, defaults):
                 path.write_text('{"edited": {}}')
