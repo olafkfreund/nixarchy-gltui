@@ -152,7 +152,7 @@ same step as the code they cover, so every commit is green.
    assertion, the description and the smoke-test error message, and relock with
    `nix flake lock` only if the lock needs it.
    → Verify with `nix flake check`, `nix build .#default`,
-   `omarchy plugin validate ./result` and `python3 tests/qml-smoke.py ./result`.
+   `omarchy plugin validate "$(readlink -f result)"` (the validator rejects the `result` symlink itself; deviation recorded in step 7) and `python3 tests/qml-smoke.py ./result`.
 8. **README.** Replace "in development" with the full documentation, at the
    level of the GitHub README:
    - requirements
@@ -191,7 +191,7 @@ node tests/model.cjs                       # prints "Model: … passed"
 node tests/polling.cjs                     # prints all "Polling: … passed" lines
 python3 tests/qml-smoke.py                 # prints QML_CHECKS_PASSED (fresh and managed menus)
 nix flake check                            # succeeds offline
-nix build .#default && omarchy plugin validate ./result
+nix build .#default && omarchy plugin validate "$(readlink -f result)"
 python3 tests/qml-smoke.py ./result
 ```
 

@@ -1,5 +1,5 @@
 {
-  description = "GitHub Actions panel for the Omarchy shell";
+  description = "GitLab Pipelines panel for the Omarchy shell";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -25,7 +25,7 @@
     in
     {
       packages = forAllSystems (pkgs: {
-        default = pkgs.runCommand "nixarchy-ghtui-${version}" { inherit version; } ''
+        default = pkgs.runCommand "nixarchy-gltui-${version}" { inherit version; } ''
           mkdir -p "$out"
           ${nixpkgs.lib.concatMapStringsSep "\n" (file: ''
             cp ${./. + "/${file}"} "$out/${file}"
@@ -35,7 +35,7 @@
 
       checks = forAllSystems (pkgs: {
         plugin =
-          pkgs.runCommand "nixarchy-ghtui-checks-${version}"
+          pkgs.runCommand "nixarchy-gltui-checks-${version}"
             {
               nativeBuildInputs = [
                 pkgs.python3
@@ -52,7 +52,7 @@
               assert not any(p.is_symlink() for p in root.rglob('*'))
               manifest = json.loads((root / 'manifest.json').read_text())
               assert manifest['version'] == '${version}'
-              assert manifest['id'] == 'olafkfreund.github-actions'
+              assert manifest['id'] == 'olafkfreund.gitlab-pipelines'
               assert all((root / entry).is_file() for entry in manifest['entryPoints'].values())
               PY
               cp "$plugin"/* .
@@ -67,7 +67,7 @@
               if python3 tests/qml-smoke.py "$TMPDIR/missing" 2> invalid-directory; then
                 exit 1
               fi
-              grep -F 'plugin_dir must contain the complete GitHub Actions plugin' invalid-directory
+              grep -F 'plugin_dir must contain the complete GitLab Pipelines plugin' invalid-directory
               touch "$out"
             '';
       });
