@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 4
 intent: intent/2026-09-19-4-menu-managed-license.md
 ---
