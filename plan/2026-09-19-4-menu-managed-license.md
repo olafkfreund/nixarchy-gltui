@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 4
 spec: spec/2026-09-19-4-menu-managed-license.md
 ---
