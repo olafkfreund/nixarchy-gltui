@@ -59,6 +59,9 @@ def registered_menu(source, defaults):
 
 
 def register_menu():
+    # nixarchy declares the rows itself and ships this marker beside us.
+    if Path(__file__).with_name('menu.managed').exists():
+        return
     path = Path.home() / '.config/omarchy/extensions/omarchy-menu.jsonc'
     guidance = 'Declare menu.example.json in the host configuration for managed menu files.'
     if path.is_symlink() or path.resolve().is_relative_to('/nix/store'):

@@ -115,3 +115,22 @@ class RegistrationTest(unittest.TestCase):
                 menu.register_menu()
             self.assertTrue(path.is_symlink())
             self.assertEqual(target.read_bytes(), original)
+
+    def test_managed_marker_leaves_menu_untouched(self):
+        source = '// mine\n{"my.row": {"label": "Mine"}}\n'
+        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, HOME=home), \
+                tempfile.TemporaryDirectory() as plugin:
+            path = Path(home) / '.config/omarchy/extensions/omarchy-menu.jsonc'
+            path.parent.mkdir(parents=True)
+            path.write_text(source)
+            before = path.stat()
+            Path(plugin, 'menu.example.json').write_text(
+                Path(menu.__file__).with_name('menu.example.json').read_text())
+            Path(plugin, 'menu.managed').touch()
+            with patch.object(menu, '__file__', str(Path(plugin, 'menu.py'))):
+                menu.register_menu()
+                self.assertEqual(path.read_text(), source)
+                self.assertEqual(path.stat(), before)
+                path.unlink()
+                menu.register_menu()
+                self.assertFalse(path.exists())

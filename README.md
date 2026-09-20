@@ -110,6 +110,10 @@ Enabling the plugin registers two menu entries:
 
 Registration runs once when the enabled panel loads. It preserves comments and customisations in `~/.config/omarchy/extensions/omarchy-menu.jsonc` and never duplicates or rewrites unchanged entries.
 
+A `menu.managed` file beside `menu.py` turns registration off entirely: the panel then leaves
+the menu alone and writes nothing. nixarchy ships that marker, because it declares both rows
+itself.
+
 If that file is a symlink or read-only (for example, managed by Nix), declare the entries from `menu.example.json` in your host configuration instead. Automatic registration leaves managed or malformed files untouched and logs an error; the panel still works through its shortcut. After fixing a writable file, retry with:
 
 ```sh

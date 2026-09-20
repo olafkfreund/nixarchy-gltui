@@ -13,6 +13,7 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
       version = (builtins.fromJSON (builtins.readFile ./manifest.json)).version;
       runtimeFiles = [
+        "LICENSE"
         "manifest.json"
         "ActionsPanel.qml"
         "ActionsModel.js"
@@ -49,6 +50,7 @@
               from pathlib import Path
               root = Path(sys.argv[1])
               assert sorted(p.name for p in root.iterdir()) == sorted(${builtins.toJSON runtimeFiles})
+              assert (root / 'LICENSE').is_file(), 'the package must ship its licence'
               assert not any(p.is_symlink() for p in root.rglob('*'))
               manifest = json.loads((root / 'manifest.json').read_text())
               assert manifest['version'] == '${version}'
