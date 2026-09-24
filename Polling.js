@@ -159,8 +159,9 @@ function complete(s,reply,now) {
     if (!s.opened || !flight || flight.generation!==s.generation || reply.requestId!==flight.request.requestId) return false;
     var t=s.tasks[flight.key]; s.flight=null;
     if (!t) return false;
-    var bad=reply.data===null || typeof reply.data!=="object" || Array.isArray(reply.data)!==(t.kind!=="run");
-    if (!reply.errorType && !reply.error && bad) reply={error:"GitLab helper returned invalid data",errorType:"network"};
+    var bad=reply.data===null || typeof reply.data!=="object" || Array.isArray(reply.data)!==(t.kind!=="run")
+        || Array.isArray(reply.data) && !reply.data.every(function(x) { return x && typeof x==="object" });
+    if (!reply.errorType && !reply.error && bad) reply={requestId:reply.requestId,error:"GitLab helper returned invalid data",errorType:"setup"};
     if (reply.errorType==="rate" || reply.remaining===0 || reply.retryAt>now) {
         var deadline=Math.max(reply.retryAt || 0,reply.remaining===0 ? reply.resetAt || 0 : 0);
         if (deadline<=now) deadline=now+Math.min(900000,60000*Math.pow(2,s.rateFailures));
@@ -170,7 +171,8 @@ function complete(s,reply,now) {
     var r=repoFor(s,t.repo);
     if (reply.errorType || reply.error) {
         s.error=reply.error || "Invalid GitLab response";
-        if (reply.errorType==="auth") s.auth=true;
+        // ponytail: s.auth now means "stopped until manual refresh"; rename if a third stop reason appears
+        if (reply.errorType==="auth" || reply.errorType==="setup") s.auth=true;
         if (reply.errorType==="permission") {
             if (r && t.kind!=="jobs" && t.kind!=="run") { r.blocked=true; r.error=s.error; }
             else if (r && t.kind==="jobs") s.details[t.repo+":"+t.run]=Object.assign({},s.details[t.repo+":"+t.run] || {},{error:s.error,jobsAt:now,unavailable:true});
