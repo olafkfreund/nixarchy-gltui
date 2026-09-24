@@ -5,6 +5,7 @@ import re
 import signal
 import subprocess
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote
@@ -12,6 +13,8 @@ from urllib.parse import quote
 
 # Unfinished statuses polled by a full summary; "running" is also the activity check.
 PHASES = ("running", "pending", "created", "waiting_for_resource", "preparing")
+# ZWNJ and ZWJ are Cf but kept: emoji sequences and several scripts need them, and they cannot reorder text (#15).
+JOINERS = "\u200c\u200d"
 IN_PROGRESS = ("running", "canceling")
 QUEUED = ("created", "waiting_for_resource", "preparing", "pending")
 SEGMENT = r"[A-Za-z0-9_.][A-Za-z0-9_.-]*"
@@ -121,6 +124,14 @@ def entry(row):
 
 
 # Field names are shared with the panel model and scheduler; conclusion keeps GitLab's status.
+def plain(value):
+    """Display text from GitLab: line breaks and tabs become spaces, other Cc/Cf characters go (#15, ghtui #32)."""
+    if not isinstance(value, str):
+        return value
+    text = " ".join(value.replace("\t", " ").splitlines())
+    return "".join(c for c in text if c in JOINERS or unicodedata.category(c) not in ("Cc", "Cf"))
+
+
 def pipeline_total(headers, count):
     """X-Total, or -1 ("more, count unknown") when GitLab omits it above 10,000 but X-Next-Page is set."""
     value = headers.get("x-total")
@@ -135,8 +146,8 @@ def pipeline(row):
     entry(row)
     status = state(row["status"])
     return {"id": row["id"], "run_number": row.get("iid"),
-            "name": row.get("name") or str(row.get("source") or "").replace("_", " ") or "Pipeline",
-            "display_title": str(row.get("sha") or "")[:8], "head_branch": row.get("ref") or "",
+            "name": plain(row.get("name") or str(row.get("source") or "").replace("_", " ") or "Pipeline"),
+            "display_title": str(row.get("sha") or "")[:8], "head_branch": plain(row.get("ref") or ""),
             "html_url": row.get("web_url") or "", "run_started_at": row.get("started_at") or row.get("created_at"),
             "completed_at": row.get("finished_at"), "updated_at": row.get("updated_at"),
             "status": status, "conclusion": row["status"],
@@ -146,7 +157,7 @@ def pipeline(row):
 
 def job(row):
     entry(row)
-    return {"id": row["id"], "name": row.get("name") or "Job", "stage": str(row.get("stage") or ""),
+    return {"id": row["id"], "name": plain(row.get("name") or "Job"), "stage": plain(str(row.get("stage") or "")),
             "status": state(row["status"]), "conclusion": row["status"], "allow_failure": bool(row.get("allow_failure")),
             "started_at": row.get("started_at"), "completed_at": row.get("finished_at"), "html_url": row.get("web_url") or ""}
 
@@ -154,7 +165,7 @@ def job(row):
 def project(row):
     if not isinstance(row, dict):
         raise ValueError("Invalid project entry")
-    return {"repo": project_path(row.get("path_with_namespace")), "description": row.get("description") or "",
+    return {"repo": project_path(row.get("path_with_namespace")), "description": plain(row.get("description") or ""),
             "url": row.get("web_url") or "", "lastActivity": row.get("last_activity_at") or "",
             "archived": bool(row.get("archived")), "disabled": row.get("builds_access_level") == "disabled"}
 

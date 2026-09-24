@@ -5,6 +5,13 @@ function reply(stdout, code, requestId) {
         error: code === 127 ? "python3 not found" : "GitLab helper failed (exit " + code + "); see the shell log"});
 }
 
+// The trailing slash pins the host; no whitespace or Cc control may reach xdg-open's helpers (#15, ghtui #32).
+function browsable(url, host) {
+    if (typeof url !== "string" || typeof host !== "string") return false;
+    var pinned = host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp("^https://" + pinned + "/[^\\s\\x00-\\x1f\\x7f-\\x9f]+$").test(url);
+}
+
 function state(item) {
     return item.awaitingFinal ? "awaiting final status" : item.lookupError ? "unavailable" : item.conclusion || item.status || "unknown";
 }
