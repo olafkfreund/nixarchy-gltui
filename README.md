@@ -1,6 +1,6 @@
 # GitLab Pipelines for Omarchy
 
-A flat, keyboard-driven Quickshell popup for GitLab projects → pipelines → stages → jobs, hosted inside `omarchy-shell`. It discovers every project you are a member of, including nested groups, and lists projects with running pipelines first. It uses the current Omarchy menu colours, fonts, spacing, border and corner radius, with text at 1.5× theme font size. There are no buttons, and no background daemon, database or token storage.
+A flat, keyboard-driven Quickshell popup for GitLab projects → pipelines → stages → jobs, hosted inside `omarchy-shell`. It discovers every project you are a member of, including nested groups, and lists projects with running pipelines first. It uses the current Omarchy menu colours, fonts, spacing, border and corner radius, and follows the theme font size (`[font] base-size`). There are no buttons, and no background daemon, database or token storage.
 
 It is the GitLab sibling of [nixarchy-ghtui](https://github.com/olafkfreund/nixarchy-ghtui) (GitHub Actions), with the same design and behaviour. Both plugins can be installed side by side.
 
