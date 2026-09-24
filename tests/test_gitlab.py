@@ -1,4 +1,6 @@
 import unittest
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -216,6 +218,27 @@ class ProcessTest(unittest.TestCase):
         result = subprocess.run([sys.executable, "gitlab.py", "page", '{"kind":"url"}'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn("error", json.loads(result.stdout))
+
+
+class HardeningTest(unittest.TestCase):
+    def test_body_is_not_read_as_headers(self):
+        self.assertEqual(gitlab.http_reply("HTTP/2 200\n\nHTTP/1.1 500 x\n\n[]"), (200, {}, "HTTP/1.1 500 x\n\n[]"))
+        status, headers, body = gitlab.http_reply("HTTP/1.1 100 Continue\n\nHTTP/1.1 200 OK\nA: b\n\n[]")
+        self.assertEqual((status, headers, body), (200, {"a": "b"}, "[]"))
+
+    def test_redirect_is_reported(self):
+        with patch.object(gitlab, "request", return_value=("HTTP/2.0 301 Moved\nLocation: x\n\n", "", 0)):
+            result = gitlab.read_page({"kind": "catalogue", "requestId": 1})
+        self.assertEqual(result["errorType"], "network")
+        self.assertEqual(result["error"], "GitLab redirected the request; the project may have moved")
+
+    def test_deadline_reports_timeout(self):
+        out = io.StringIO()
+        with patch.object(sys, "argv", ["gitlab.py", "page", "{}"]), \
+                patch.object(gitlab, "read_page", side_effect=gitlab.DeadlineExceeded()), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(gitlab.main(), 1)
+        self.assertEqual(json.loads(out.getvalue()), {"error": "GitLab request timed out"})
 
 
 if __name__ == "__main__":

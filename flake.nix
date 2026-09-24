@@ -26,7 +26,15 @@
     in
     {
       packages = forAllSystems (pkgs: {
-        default = pkgs.runCommand "nixarchy-gltui-${version}" { inherit version; } ''
+        default = pkgs.runCommand "nixarchy-gltui-${version}" {
+          inherit version;
+          meta = {
+            description = "GitLab Pipelines panel for the Omarchy shell";
+            homepage = "https://github.com/olafkfreund/nixarchy-gltui";
+            license = nixpkgs.lib.licenses.mit;
+            platforms = nixpkgs.lib.platforms.linux;
+          };
+        } ''
           mkdir -p "$out"
           ${nixpkgs.lib.concatMapStringsSep "\n" (file: ''
             cp ${./. + "/${file}"} "$out/${file}"

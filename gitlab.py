@@ -80,7 +80,7 @@ def http_reply(stdout):
     text = stdout.replace("\r\n", "\n")
     headers = {}
     status = None
-    while text.startswith("HTTP/"):
+    while text.startswith("HTTP/") and (status is None or status < 200):
         head, separator, text = text.partition("\n\n")
         if not separator:
             raise ValueError("Malformed HTTP response")
@@ -175,10 +175,10 @@ def read_page(task):
         try:
             body = json.loads(raw_body) if raw_body.strip() else None
         except ValueError:
-            if status < 400:
+            if status < 300:
                 raise
             body = None
-        if status >= 400 or code:
+        if status >= 300 or code:
             message = str(body.get("message", body.get("error", ""))) if isinstance(body, dict) else ""
             if status == 429 or result["remaining"] == 0 or result["retryAt"] or "rate limit" in message.lower():
                 result.update(errorType="rate", error="GitLab rate limit")
@@ -186,6 +186,8 @@ def read_page(task):
                 result.update(errorType="auth", error="Authenticate with glab auth login")
             elif status in (403, 404):
                 result.update(errorType="permission", error="Project unavailable or read_api scope missing")
+            elif 300 <= status < 400:
+                result.update(errorType="network", error="GitLab redirected the request; the project may have moved")
             else:
                 result.update(errorType="network", error="GitLab request failed")
             return result

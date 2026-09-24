@@ -97,7 +97,8 @@ def session_tree(instances):
     trees = {
         Path(instance["config_path"]).parent.parent
         for instance in instances
-        if Path(instance["config_path"]).name == "shell.qml"
+        if isinstance(instance, dict) and isinstance(instance.get("config_path"), str)
+        and Path(instance["config_path"]).name == "shell.qml"
         and (Path(instance["config_path"]).parent / "plugins/menu/Menu.qml").is_file()
     }
     if len(trees) != 1:

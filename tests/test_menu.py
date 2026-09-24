@@ -28,6 +28,9 @@ class MenuTest(unittest.TestCase):
                 menu.session_tree([])
             with self.assertRaises(RuntimeError):
                 menu.session_tree([{"config_path": str(Path(directory) / "unrelated/shell.qml")}])
+            for malformed in ([{}], [{"config_path": None}], ["x"]):
+                with self.subTest(malformed=malformed), self.assertRaises(RuntimeError):
+                    menu.session_tree(malformed)
 
 
 class RegistrationTest(unittest.TestCase):
