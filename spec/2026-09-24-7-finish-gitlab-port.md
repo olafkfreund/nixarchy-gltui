@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 7
 intent: intent/2026-09-24-7-finish-gitlab-port.md
 ---
