@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const model = {};
 vm.createContext(model);
-vm.runInContext(fs.readFileSync('ActionsModel.js', 'utf8'), model);
+vm.runInContext(fs.readFileSync('PipelinesModel.js', 'utf8'), model);
 const repos = [{repo: 'group/sub/project', url: 'https://gitlab.com/group/sub/project', runs: [{id: 7, status: 'in_progress', conclusion: 'running', name: 'CI', head_branch: 'main', run_number: 3, html_url: 'https://gitlab.com/p/-/pipelines/7'}]}];
 const runKey = 'group/sub/project:7';
 const expanded = {'repo:group/sub/project': true, [runKey]: true, [runKey + ':stage:build']: true};
@@ -51,7 +51,7 @@ for (const status of ['skipped', 'manual', 'scheduled']) assert.equal(model.icon
 assert.equal(model.icon('pending'), '○');
 assert.equal(model.reply('{"repos":[]}', '', 0), '{"repos":[]}');
 assert.equal(JSON.parse(model.reply('', 'python3: cannot open helper', 2)).error, 'python3: cannot open helper');
-assert.equal(JSON.parse(model.reply('', '', 1)).error, 'Workflow helper returned no data (exit 1)');
+assert.equal(JSON.parse(model.reply('', '', 1)).error, 'GitLab helper returned no data (exit 1)');
 const ranked = model.rows([{repo:'z/idle', checked:'now', active:0}, {repo:'a/unchecked'}, {repo:'b/running', active:2, checked:'now'}], {}, {}, '', Date.now());
 assert.equal(ranked[0].title, 'b/running');
 assert.equal(ranked[0].info, '2 running');

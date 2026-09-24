@@ -9,20 +9,20 @@ import tomllib
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('plugin_dir', nargs='?', type=Path, default=Path(__file__).resolve().parents[1])
 source = parser.parse_args().plugin_dir.resolve()
-required = ('manifest.json', 'ActionsPanel.qml', 'ActionsModel.js', 'Polling.js',
-            'actions.py', 'menu.py', 'menu.example.json', 'keybindings.sh')
+required = ('manifest.json', 'PipelinesPanel.qml', 'PipelinesModel.js', 'Polling.js',
+            'gitlab.py', 'menu.py', 'menu.example.json', 'keybindings.sh')
 if not source.is_dir() or any(not (source / name).is_file() for name in required):
     parser.error('plugin_dir must contain the complete GitLab Pipelines plugin')
 shell = Path(os.environ['OMARCHY_PATH']) / 'shell'
 colors = tomllib.loads((Path.home() / '.local/state/omarchy/current/theme/colors.toml').read_text())
 for scenario in ('fresh', 'managed'):
-    with tempfile.TemporaryDirectory(prefix='actions-qml-') as directory:
+    with tempfile.TemporaryDirectory(prefix='pipelines-qml-') as directory:
         root = Path(directory)
         for name in ('Commons', 'Ui'):
             (root / name).symlink_to(shell / name)
-        for name in ('ActionsPanel.qml', 'ActionsModel.js', 'Polling.js', 'menu.py', 'menu.example.json'):
+        for name in ('PipelinesPanel.qml', 'PipelinesModel.js', 'Polling.js', 'menu.py', 'menu.example.json'):
             (root / name).symlink_to(source / name)
-        (root / 'actions.py').write_text('''import json, sys, time
+        (root / 'gitlab.py').write_text('''import json, sys, time
 request=json.loads(sys.argv[2]); kind=request['kind']
 time.sleep(0.1)
 assert request.get('host')=='gitlab.example.org', request
@@ -54,7 +54,7 @@ import Quickshell.Io
 import qs.Commons
 import "Polling.js" as Polling
 ShellRoot {
-    ActionsPanel { id: panel }
+    PipelinesPanel { id: panel }
     FileView {
         id: menuFile
         path: Quickshell.env("HOME") + "/.config/omarchy/extensions/omarchy-menu.jsonc"
@@ -118,14 +118,14 @@ ShellRoot {
                 closedAt=Date.now()
                 stage=2
             } else if(stage===2 && Date.now()-closedAt>1200) {
-                check(!panel.loading && !panel.polling.flight,"close settles worker")
+                check(!panel.workerBusy && !panel.polling.flight,"close settles worker")
                 check(panel.polling.requests===closedRequests,"closed panel starts no requests")
                 var history=panel.polling.starts.length
                 panel.open("{}")
                 check(panel.polling.starts.length>=history,"reopen preserves budget")
                 panel.close()
                 stage=3
-            } else if(stage===3 && !panel.loading) {
+            } else if(stage===3 && !panel.workerBusy) {
                 console.log("QML_CHECKS_PASSED")
                 Qt.quit()
             }

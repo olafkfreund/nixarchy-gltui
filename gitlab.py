@@ -120,7 +120,7 @@ def entry(row):
     return row
 
 
-# The panel's model and scheduler consume GitHub-shaped fields; conclusion keeps GitLab's status.
+# Field names are shared with the panel model and scheduler; conclusion keeps GitLab's status.
 def pipeline(row):
     entry(row)
     status = state(row["status"])

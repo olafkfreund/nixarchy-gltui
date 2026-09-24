@@ -5,7 +5,7 @@ import Quickshell.Wayland
 import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
-import "ActionsModel.js" as Model
+import "PipelinesModel.js" as Model
 import "Polling.js" as Polling
 
 Item {
@@ -14,7 +14,6 @@ Item {
     property var manifest: null
     property bool opened: false
     property var targetScreen: null
-    property var repositories: []
     property var repos: []
     property var details: ({})
     property var expanded: ({})
@@ -29,12 +28,12 @@ Item {
     property var requestInfo: null
     property bool workerBusy: false
     property double now: Date.now()
-    readonly property bool loading: workerBusy
     readonly property bool discoveryComplete: polling.catalogueComplete
     readonly property string cooldownText: now < polling.cooldown ? "GitLab paused until " + new Date(polling.cooldown).toLocaleTimeString() : ""
     readonly property int checkedCount: repos.filter(function(repo) { return !!repo.checked || repo.archived || repo.disabled }).length
     readonly property var current: entries[cursor] || null
-    readonly property string helper: decodeURIComponent(Qt.resolvedUrl("actions.py").toString().replace(/^file:\/\//, ""))
+    readonly property string helper: localPath("gitlab.py")
+    function localPath(name) { return decodeURIComponent(Qt.resolvedUrl(name).toString().replace(/^file:\/\//, "")) }
     onFilterTextChanged: {
         expanded = ({})
         rebuild(true)
@@ -59,7 +58,7 @@ Item {
     }
     function toggle() { opened ? close() : open("{}") }
     function status() {
-        return JSON.stringify({opened: opened, rows: entries.length, repositories: repositories.length,
+        return JSON.stringify({opened: opened, rows: entries.length, repositories: repos.length,
             checked: checkedCount, discoveryComplete: discoveryComplete, error: error, updated: updated,
             requests: polling.requests, inFlight: workerBusy, cooldown: polling.cooldown,
             lastRequest: polling.lastRequest, lastStarted: polling.lastStarted,
@@ -135,7 +134,6 @@ Item {
     }
     function adopt() {
         repos = polling.repos.slice()
-        repositories = repos.map(function(repo) { return repo.repo })
         details = Object.assign({}, polling.details)
         error = polling.error
         // Reassign the state reference to notify bindings after pure-JS mutations.
@@ -163,9 +161,9 @@ Item {
         try {
             reply = JSON.parse(text)
             if (!reply || reply.requestId !== request.requestId)
-                throw new Error("Workflow helper returned an invalid request identity")
+                throw new Error("GitLab helper returned an invalid request identity")
         } catch (e) {
-            reply = {requestId:request.requestId, error:"Workflow helper returned invalid data", errorType:"network"}
+            reply = {requestId:request.requestId, error:"GitLab helper returned invalid data", errorType:"network"}
         }
         if (Polling.complete(polling, reply, Date.now())) {
             if (!reply.error) updated = new Date().toISOString()
@@ -188,7 +186,7 @@ Item {
     }
     Process {
         id: registrationProc
-        command: ["python3", decodeURIComponent(Qt.resolvedUrl("menu.py").toString().replace(/^file:\/\//, "")), "register"]
+        command: ["python3", root.localPath("menu.py"), "register"]
         stderr: StdioCollector { id: registrationErrors }
         onExited: function(code) {
             if (code !== 0) console.warn("GitLab Pipelines menu registration failed: " + registrationErrors.text.trim())
@@ -269,7 +267,7 @@ Item {
                     spacing: Style.spacing.md
                     Text {
                         width: parent.width
-                        text: "GitLab Pipelines  ·  " + root.repositories.length + (root.repositories.length === 1 ? " project" : " projects")
+                        text: "GitLab Pipelines  ·  " + root.repos.length + (root.repos.length === 1 ? " project" : " projects")
                         color: Color.menu.text
                         font { family: Style.font.menuFamily; pixelSize: Style.font.title; bold: true }
                         textFormat: Text.PlainText
@@ -302,7 +300,7 @@ Item {
                             anchors.fill: parent
                             visible: searchField.text.length === 0
                             text: root.filtering ? "Search projects…" : root.cooldownText || root.error ||
-                                (root.discoveryComplete ? "Activity checked " + root.checkedCount + "/" + root.repositories.length + " · running first · / search projects" : "Discovering projects… " + root.repositories.length + " found")
+                                (root.discoveryComplete ? "Activity checked " + root.checkedCount + "/" + root.repos.length + " · running first · / search projects" : "Discovering projects… " + root.repos.length + " found")
                             color: root.error || root.cooldownText ? Color.urgent : Color.menu.text
                             opacity: 0.75
                             font: searchField.font
