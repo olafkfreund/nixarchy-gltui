@@ -112,6 +112,22 @@ assert.equal(polling.next(s,13000),null);
 assert.equal(polling.next(s,16000)?.kind,'activity');
 polling.mergeRuns(s,s.repos[0],[{id:7,status:'in_progress',run_attempt:2}]);
 assert.equal(s.details['a/b:7'],undefined);
+// A hostile Retry-After cannot stop polling for more than an hour.
+const capped=polling.create(); polling.open(capped,0);
+let capReq=polling.next(capped,1000);
+polling.complete(capped,{...response(capReq),errorType:'rate',error:'rate',retryAt:1000+365*86400000},1000);
+assert.equal(capped.cooldown,3601000);
+// Replies with the wrong data shape become a retried network error, never an exception.
+for (const [kind,data] of [['catalogue',null],['run',[]],['jobs',{}]]) {
+  const bad=polling.create(); polling.open(bad,0); bad.discover=false; bad.catalogueComplete=true;
+  polling.ensure(bad,kind,'a/b','1','interactive',0);
+  bad.selected='a/b'; bad.inspected='1'; bad.expanded={'a/b:1':true};
+  const badReq=polling.next(bad,0); assert.equal(badReq.kind,kind);
+  const task=bad.tasks[bad.flight.key];
+  assert.equal(polling.complete(bad,response(badReq,data),1000),true);
+  assert.equal(bad.error,'GitLab helper returned invalid data');
+  assert.ok(task.due>1000);
+}
 console.log('Polling: fairness, budgets, cooldown, debounce, lifecycle, completion and rerun checks passed');
 const partial=polling.create(); polling.open(partial,0); partial.discover=false; partial.catalogueComplete=true;
 partial.repos=[{repo:'a/b',summaryAt:0,runs:[{id:7,status:'in_progress'}]}, {repo:'other/repo',summaryAt:0}];

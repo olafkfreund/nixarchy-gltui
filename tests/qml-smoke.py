@@ -81,6 +81,9 @@ ShellRoot {
             if (Quickshell.env("MENU_SCENARIO") === "fresh")
                 check(menuFile.text().indexOf('"apps.gitlab-pipelines"') >= 0,"registered while closed")
             panel.polling=Polling.create()
+            panel.configure('{"plugins":[{"id":"olafkfreund.gitlab-pipelines","host":"bad host"}]}')
+            check(panel.error.indexOf("Configuration: invalid host")===0 && panel.host==="gitlab.com","invalid host rejected")
+            panel.error=""
             panel.configure('{"plugins":[{"id":"olafkfreund.gitlab-pipelines","host":"gitlab.example.org","projects":["one/sub/repo","two/repo","bad/../x"]}]}')
             check(panel.entries.length===2 && panel.host==="gitlab.example.org","configured projects and host")
             panel.polling.repos[0].runs=[{id:7,name:"CI",status:"in_progress",conclusion:"running",run_attempt:"active"}]

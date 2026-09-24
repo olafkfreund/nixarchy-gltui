@@ -159,10 +159,12 @@ function complete(s,reply,now) {
     if (!s.opened || !flight || flight.generation!==s.generation || reply.requestId!==flight.request.requestId) return false;
     var t=s.tasks[flight.key]; s.flight=null;
     if (!t) return false;
+    var bad=reply.data===null || typeof reply.data!=="object" || Array.isArray(reply.data)!==(t.kind!=="run");
+    if (!reply.errorType && !reply.error && bad) reply={error:"GitLab helper returned invalid data",errorType:"network"};
     if (reply.errorType==="rate" || reply.remaining===0 || reply.retryAt>now) {
         var deadline=Math.max(reply.retryAt || 0,reply.remaining===0 ? reply.resetAt || 0 : 0);
         if (deadline<=now) deadline=now+Math.min(900000,60000*Math.pow(2,s.rateFailures));
-        s.cooldown=Math.max(s.cooldown,deadline);
+        s.cooldown=Math.max(s.cooldown,Math.min(deadline,now+3600000)); // ponytail: 1h cap, a real longer limit just 429s again
         if (reply.errorType==="rate") s.rateFailures++;
     }
     var r=repoFor(s,t.repo);
