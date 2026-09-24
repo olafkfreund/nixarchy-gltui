@@ -138,20 +138,29 @@ function mergeRuns(s,r,incoming) {
 }
 function trimRuns(s,r,runs) {
     var completed=0;
-    r.runs=runs.sort(function(a,b) { return (a.status==="completed")-(b.status==="completed") || b.id-a.id }).filter(function(run) { return run.status!=="completed" || ++completed<=10 || s.expanded[r.repo+":"+run.id] });
+    r.runs=runs.sort(function(a,b) { return (a.status==="completed")-(b.status==="completed") || b.id-a.id }).filter(function(run) { return run.status!=="completed" || ++completed<=10 || kept(s,r,run) });
 }
-function activity(s,r,items,now) {
+function kept(s,r,run) {
+    return s.expanded[r.repo+":"+run.id] || r.repo===s.selected && String(run.id)===s.inspected;
+}
+// ponytail: total -1 means "more than one page, count unknown" (GitLab omits X-Total above 10,000).
+function hiddenCount(total,items) { return total<0 ? -1 : Math.max(0,total-items.length); }
+function activity(s,r,items,now,total) {
     var ids={}; items.forEach(function(run) { ids[run.id]=true });
-    var previous=r.runs || [];
+    var previous=r.runs || [], partial=total<0 || total>items.length, dropped={};
     mergeRuns(s,r,items);
     previous.forEach(function(run) {
         if (run.status === "in_progress" && !ids[run.id]) {
             var missing=r.runs.filter(function(x) { return x.id===run.id })[0];
-            if (missing.status!=="completed") { missing.awaitingFinal=true; delete missing.followupAt; }
+            // A partial page can't tell finished from not fetched: look up only runs the user is looking at.
+            if (partial && missing && !kept(s,r,missing)) dropped[run.id]=true;
+            else if (missing && missing.status!=="completed") { missing.awaitingFinal=true; delete missing.followupAt; }
         }
     });
+    r.runs=r.runs.filter(function(run) { return !dropped[run.id] });
     items.forEach(function(run) { var cached=runFor(s,r.repo,run.id); delete cached.awaitingFinal; delete cached.followupAt; });
-    r.active=items.filter(function(run) { return run.status==="in_progress" }).length;
+    r.active=typeof total==="number" && total>=0 ? total : items.filter(function(run) { return run.status==="in_progress" }).length;
+    if (typeof total==="number") r.hidden=Object.assign({},r.hidden,{running:hiddenCount(total,items)});
     r.activityAt=now; r.checked=new Date(now).toISOString(); r.error="";
 }
 function complete(s,reply,now) {
@@ -214,14 +223,16 @@ function complete(s,reply,now) {
         // Most recently active first; gitlab.com cannot sort membership by activity server-side.
         s.repos.sort(function(a,b) { return String(b.lastActivity || "").localeCompare(String(a.lastActivity || "")) || names.indexOf(a.repo)-names.indexOf(b.repo) });
         s.catalogueComplete=true; s.catalogueAt=now; s.discover=false;
-    } else if (r && t.kind==="activity") activity(s,r,t.items,now);
+    } else if (r && t.kind==="activity") activity(s,r,t.items,now,reply.total);
     else if (r && t.kind==="summary") {
         t.all=union(t.all,t.items);
-        if (phases[t.phase]==="running") activity(s,r,t.items,now);
+        if (phases[t.phase]==="running") activity(s,r,t.items,now,reply.total);
+        if (typeof reply.total==="number") (t.hidden=t.hidden || {})[phases[t.phase]]=hiddenCount(reply.total,t.items);
         t.phase++; t.items=[]; t.page=1;
         if (t.phase<phases.length) { t.due=now; t.order=++s.order; return true; }
-        var keep=(r.runs || []).filter(function(run) { return run.awaitingFinal || s.expanded[r.repo+":"+run.id] });
+        var keep=(r.runs || []).filter(function(run) { return run.awaitingFinal || kept(s,r,run) });
         trimRuns(s,r,union(t.all,keep));
+        r.hidden=t.hidden || {};
         r.summaryAt=now;
     } else if (r && t.kind==="jobs") {
         var run=runFor(s,t.repo,t.run);

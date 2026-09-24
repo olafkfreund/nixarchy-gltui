@@ -73,7 +73,18 @@ function rows(repos, expanded, details, filter, now) {
             info: repo.archived ? "archived" : repo.disabled ? "disabled" : repo.error ? "unavailable" : repo.checked || repo.runs ? active + " running" : "not checked",
             repo: repo.repo, url: repo.url ? repo.url + "/-/pipelines" : ""});
         if (!expanded[repoKey]) return;
+        // Pipelines past the first page of each unfinished status are counted, not fetched (#15).
+        var hidden = repo.hidden || {};
+        var parts = ["running", "pending", "created", "waiting_for_resource", "preparing"].filter(function(s) { return hidden[s] > 0 || hidden[s] === -1; })
+            .map(function(s) {
+                var name = s.replace(/_/g, " ");
+                return hidden[s] === -1 ? "+more " + name : "+" + (hidden[s] > 1000 ? "about " : "") + hidden[s] + " more " + name;
+            });
+        var more = parts.length && (!query || repoMatch) ? {key: repoKey + ":more", parent: repoKey, kind: "more", depth: 1,
+            title: parts.join(" · "), subtitle: "o opens GitLab", status: "", info: "", repo: repo.repo,
+            url: repo.url ? repo.url + "/-/pipelines" : ""} : null;
         runs.forEach(function(run) {
+            if (more && run.status === "completed") { result.push(more); more = null; }
             var runKey = repo.repo + ":" + run.id;
             var detail = details[runKey];
             var stamp = detail && detail.updated ? " · jobs fetched " + detail.updated.slice(11, 19) + " UTC" : "";
@@ -96,6 +107,7 @@ function rows(repos, expanded, details, filter, now) {
                 });
             });
         });
+        if (more) result.push(more);
     });
     return result;
 }
@@ -105,26 +117,28 @@ function selection(rows, key, previous) {
     return Math.max(0, Math.min(previous, rows.length - 1));
 }
 
+// ponytail: the fields the delegate reads that can change for a key; add any new one the delegate reads.
+var shownFields = ["title", "subtitle", "status", "info"];
+
 // Keep delegates alive when polling changes a status or inserts a running repo.
+// Removing gone rows first keeps one removal from cascading into a move per later row.
 function syncRows(model, rows) {
-    var structureChanged = false;
-    for (var i = 0; i < rows.length; i++) {
-        var found = -1;
-        for (var j = i; j < model.count; j++) {
-            if (model.get(j).rowKey === rows[i].key) { found = j; break; }
-        }
-        if (found < 0) {
-            model.insert(i, {rowKey: rows[i].key, rowData: rows[i]});
+    var structureChanged = false, wanted = {}, present = {}, i, j;
+    for (i = 0; i < rows.length; i++) wanted[rows[i].key] = true;
+    for (j = model.count - 1; j >= 0; j--)
+        if (!wanted[model.get(j).rowKey]) { model.remove(j, 1); structureChanged = true; }
+    for (j = 0; j < model.count; j++) present[model.get(j).rowKey] = true;
+    for (i = 0; i < rows.length; i++) {
+        var key = rows[i].key;
+        if (i >= model.count || model.get(i).rowKey !== key) {
             structureChanged = true;
-        } else {
-            if (found !== i) { model.move(found, i, 1); structureChanged = true; }
-            if (JSON.stringify(model.get(i).rowData) !== JSON.stringify(rows[i]))
-                model.setProperty(i, "rowData", rows[i]);
+            if (!present[key]) { model.insert(i, {rowKey: key, rowData: rows[i]}); continue; }
+            for (j = i + 1; model.get(j).rowKey !== key; j++);
+            model.move(j, i, 1);
         }
-    }
-    if (model.count > rows.length) {
-        model.remove(rows.length, model.count - rows.length);
-        structureChanged = true;
+        var old = model.get(i).rowData;
+        if (shownFields.some(function(field) { return old[field] !== rows[i][field]; }))
+            model.setProperty(i, "rowData", rows[i]);
     }
     return structureChanged;
 }
