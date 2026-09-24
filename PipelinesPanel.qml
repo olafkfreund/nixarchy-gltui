@@ -226,8 +226,8 @@ Item {
         BorderSurface {
             id: card
             anchors.centerIn: parent
-            width: Math.min(Math.max(Style.space(900), Math.round(window.width * 0.6)), window.width - Style.gapsOut * 2)
-            height: Math.min(Math.max(Style.space(680), Math.round(window.height * 0.7)), window.height - Style.gapsOut * 2)
+            width: Math.min(Style.space(900), window.width - Style.gapsOut * 2)
+            height: Math.min(Style.space(680), window.height - Style.gapsOut * 2)
             color: Color.menu.background
             radius: Style.cornerRadius
             borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
@@ -321,7 +321,7 @@ Item {
                             readonly property var modelData: rowData
                             required property int index
                             width: list.width
-                            height: modelData.subtitle ? Math.max(Style.space(64), Style.font.body + Style.font.caption + Style.spacing.rowPaddingX * 2) : Math.max(Style.space(40), Style.font.body + Style.spacing.rowPaddingX * 2)
+                            height: modelData.subtitle ? Math.max(Style.space(64), Style.font.body + Style.font.caption + Style.space(16)) : Math.max(Style.space(40), Style.font.body + Style.space(12))
                             color: index === root.cursor ? Color.menu.selectedBackground : "transparent"
                             radius: 0
                             Row {
