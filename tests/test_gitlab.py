@@ -212,7 +212,7 @@ class ProcessTest(unittest.TestCase):
             result = subprocess.run([sys.executable, "gitlab.py", "page", self.request],
                                     env={**os.environ, "PATH": directory}, capture_output=True, text=True, check=True)
             reply = json.loads(result.stdout)
-            self.assertEqual((reply["requestId"], reply["errorType"]), (1, "network"))
+            self.assertEqual((reply["requestId"], reply["errorType"], reply["error"]), (1, "setup", "Install glab (GitLab CLI)"))
 
     def test_invalid_request_is_json_error(self):
         result = subprocess.run([sys.executable, "gitlab.py", "page", '{"kind":"url"}'], capture_output=True, text=True)
@@ -238,7 +238,28 @@ class HardeningTest(unittest.TestCase):
                 patch.object(gitlab, "read_page", side_effect=gitlab.DeadlineExceeded()), \
                 contextlib.redirect_stdout(out):
             self.assertEqual(gitlab.main(), 1)
-        self.assertEqual(json.loads(out.getvalue()), {"error": "GitLab request timed out"})
+        self.assertEqual(json.loads(out.getvalue()), {"error": "GitLab request timed out", "errorType": "network"})
+
+    def test_main_errors_carry_type_and_request(self):
+        for request, side_effect, expected in [
+                ('{"requestId": 7}', gitlab.DeadlineExceeded(), {"error": "GitLab request timed out", "errorType": "network", "requestId": 7}),
+                ('{"requestId": 7}', ValueError("Invalid page number"), {"error": "Invalid page number", "errorType": "setup", "requestId": 7}),
+                ('not json', None, None)]:
+            out = io.StringIO()
+            with self.subTest(request=request), patch.object(sys, "argv", ["gitlab.py", "page", request]), \
+                    patch.object(gitlab, "read_page", side_effect=side_effect), contextlib.redirect_stdout(out):
+                self.assertEqual(gitlab.main(), 1)
+                reply = json.loads(out.getvalue())
+                if expected:
+                    self.assertEqual(reply, expected)
+                else:
+                    self.assertEqual(reply["errorType"], "setup")
+                    self.assertNotIn("requestId", reply)
+
+    def test_missing_glab_in_process_is_setup(self):
+        with patch.object(gitlab, "request", side_effect=FileNotFoundError()):
+            result = gitlab.read_page({"kind": "catalogue", "requestId": 1})
+        self.assertEqual((result["errorType"], result["error"]), ("setup", "Install glab (GitLab CLI)"))
 
 
 if __name__ == "__main__":

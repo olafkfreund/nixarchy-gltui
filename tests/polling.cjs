@@ -117,8 +117,8 @@ const capped=polling.create(); polling.open(capped,0);
 let capReq=polling.next(capped,1000);
 polling.complete(capped,{...response(capReq),errorType:'rate',error:'rate',retryAt:1000+365*86400000},1000);
 assert.equal(capped.cooldown,3601000);
-// Replies with the wrong data shape become a retried network error, never an exception.
-for (const [kind,data] of [['catalogue',null],['run',[]],['jobs',{}]]) {
+// Replies with the wrong data shape stop polling with a setup error until a manual refresh, never an exception.
+for (const [kind,data] of [['catalogue',null],['run',[]],['jobs',{}],['catalogue',[1]],['jobs',[null]]]) {
   const bad=polling.create(); polling.open(bad,0); bad.discover=false; bad.catalogueComplete=true;
   polling.ensure(bad,kind,'a/b','1','interactive',0);
   bad.selected='a/b'; bad.inspected='1'; bad.expanded={'a/b:1':true};
@@ -126,7 +126,9 @@ for (const [kind,data] of [['catalogue',null],['run',[]],['jobs',{}]]) {
   const task=bad.tasks[bad.flight.key];
   assert.equal(polling.complete(bad,response(badReq,data),1000),true);
   assert.equal(bad.error,'GitLab helper returned invalid data');
-  assert.ok(task.due>1000);
+  assert.equal(bad.auth,true);
+  assert.equal(polling.next(bad,task.due+1),null);
+  polling.manual(bad,task.due+1,false); assert.equal(bad.auth,false);
 }
 console.log('Polling: fairness, budgets, cooldown, debounce, lifecycle, completion and rerun checks passed');
 const partial=polling.create(); polling.open(partial,0); partial.discover=false; partial.catalogueComplete=true;

@@ -207,6 +207,9 @@ def read_page(task):
                 result["data"] = [pipeline(row) for row in body]
             if not (kind == "summary" and task.get("status", "recent") == "recent"):
                 result["nextPage"] = next_page(headers, task.get("page", 1))
+    except FileNotFoundError:
+        # ponytail: only Popen(["glab", ...]) raises this; PermissionError stays "network"
+        result.update(data=None, errorType="setup", error="Install glab (GitLab CLI)")
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
         result.update(data=None, errorType="network", error="GitLab request timed out or returned invalid data")
     return result
@@ -227,12 +230,17 @@ def main():
     signal.signal(signal.SIGALRM, timed_out)
     signal.signal(signal.SIGTERM, cancelled)
     signal.alarm(90)
+    task = None
     try:
-        data = read_page(json.loads(args.request))
+        task = json.loads(args.request)
+        data = read_page(task)
         print(json.dumps(data))
     except (ValueError, DeadlineExceeded) as exc:
         message = str(exc) if isinstance(exc, ValueError) else "GitLab request timed out"
-        print(json.dumps({"error": message}))
+        error = {"error": message, "errorType": "network" if isinstance(exc, DeadlineExceeded) else "setup"}
+        if isinstance(task, dict) and type(task.get("requestId")) is int and task["requestId"] > 0:
+            error["requestId"] = task["requestId"]
+        print(json.dumps(error))
         return 1
     finally:
         signal.alarm(0)

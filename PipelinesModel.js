@@ -1,6 +1,8 @@
-function reply(stdout, stderr, code) {
+// Fixed text only: stderr can hold paths and tracebacks, so it goes to the log, never the panel.
+function reply(stdout, code, requestId) {
     if (stdout.trim()) return stdout;
-    return JSON.stringify({error: stderr.trim().slice(0, 300) || "GitLab helper returned no data (exit " + code + ")"});
+    return JSON.stringify({requestId: requestId, errorType: "setup",
+        error: code === 127 ? "python3 not found" : "GitLab helper failed (exit " + code + "); see the shell log"});
 }
 
 function state(item) {

@@ -49,9 +49,12 @@ assert.equal(model.icon('canceling'), '◷');
 assert.equal(model.icon('canceled'), '⊘');
 for (const status of ['skipped', 'manual', 'scheduled']) assert.equal(model.icon(status), '−');
 assert.equal(model.icon('pending'), '○');
-assert.equal(model.reply('{"repos":[]}', '', 0), '{"repos":[]}');
-assert.equal(JSON.parse(model.reply('', 'python3: cannot open helper', 2)).error, 'python3: cannot open helper');
-assert.equal(JSON.parse(model.reply('', '', 1)).error, 'GitLab helper returned no data (exit 1)');
+assert.equal(model.reply('{"repos":[]}', 0, 5), '{"repos":[]}');
+// A failing helper yields fixed text; stderr never reaches the panel.
+assert.deepEqual(JSON.parse(model.reply('', 127, 5)), {requestId: 5, errorType: 'setup', error: 'python3 not found'});
+const failed = JSON.parse(model.reply('', 2, 5));
+assert.equal(failed.error, 'GitLab helper failed (exit 2); see the shell log');
+assert.equal(failed.errorType, 'setup');
 const ranked = model.rows([{repo:'z/idle', checked:'now', active:0}, {repo:'a/unchecked'}, {repo:'b/running', active:2, checked:'now'}], {}, {}, '', Date.now());
 assert.equal(ranked[0].title, 'b/running');
 assert.equal(ranked[0].info, '2 running');

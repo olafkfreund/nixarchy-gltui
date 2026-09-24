@@ -27,6 +27,7 @@ Item {
     property var polling: Polling.create()
     property var requestInfo: null
     property bool workerBusy: false
+    property bool helperStarted: false
     property double now: Date.now()
     readonly property bool discoveryComplete: polling.catalogueComplete
     readonly property string cooldownText: now < polling.cooldown ? "GitLab paused until " + new Date(polling.cooldown).toLocaleTimeString() : ""
@@ -153,8 +154,14 @@ Item {
         request.host = host
         requestInfo = request
         workerBusy = true
+        helperStarted = false
         requestProc.command = ["python3", helper, "page", JSON.stringify(request)]
         requestProc.running = true
+    }
+    function failedToStart() {
+        console.warn("GitLab Pipelines helper: python3 failed to start")
+        receivePage(Model.reply("", 127, requestInfo.requestId), requestInfo)
+        workerBusy = false
     }
     function receivePage(text, request) {
         var reply
@@ -163,7 +170,8 @@ Item {
             if (!reply || reply.requestId !== request.requestId)
                 throw new Error("GitLab helper returned an invalid request identity")
         } catch (e) {
-            reply = {requestId:request.requestId, error:"GitLab helper returned invalid data", errorType:"network"}
+            console.warn("GitLab Pipelines helper reply rejected: " + String(text).slice(0, 300))
+            reply = {requestId:request.requestId, error:"GitLab helper returned invalid data; see the shell log", errorType:"setup"}
         }
         if (Polling.complete(polling, reply, Date.now())) {
             if (!reply.error) updated = new Date().toISOString()
@@ -207,9 +215,13 @@ Item {
         stdout: StdioCollector { id: pageOutput }
         stderr: StdioCollector { id: pageErrors }
         onExited: function(code) {
-            root.receivePage(Model.reply(pageOutput.text, pageErrors.text, code), root.requestInfo)
+            if (pageErrors.text.trim()) console.warn("GitLab Pipelines helper (exit " + code + "): " + pageErrors.text.trim())
+            root.receivePage(Model.reply(pageOutput.text, code, root.requestInfo.requestId), root.requestInfo)
             root.workerBusy = false
         }
+        onStarted: root.helperStarted = true
+        // Quickshell 0.3.1: a failed start emits neither started nor exited, only running=false.
+        onRunningChanged: if (!running && root.workerBusy && !root.helperStarted) root.failedToStart()
     }
 
     PanelWindow {

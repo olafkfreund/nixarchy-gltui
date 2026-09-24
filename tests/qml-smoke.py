@@ -128,7 +128,18 @@ ShellRoot {
                 check(panel.polling.starts.length>=history,"reopen preserves budget")
                 panel.close()
                 stage=3
-            } else if(stage===3 && !panel.workerBusy) {
+            } else if(stage===3 && !panel.workerBusy && Date.now()-(panel.polling.starts[panel.polling.starts.length-1] || 0)>1100) {
+                // Polling.next spaces request starts by at least 1s.
+                panel.open("{}")
+                panel.refresh(false)
+                panel.pump()
+                check(panel.workerBusy && panel.polling.flight,"refresh starts a request")
+                // Quickshell reports a start failure only as running=false; drive the handler it calls.
+                panel.failedToStart()
+                check(!panel.workerBusy && panel.polling.error==="python3 not found" && panel.polling.auth,"failed start stops with setup error")
+                panel.close()
+                stage=5
+            } else if(stage===5 && !panel.workerBusy) {
                 console.log("QML_CHECKS_PASSED")
                 Qt.quit()
             }
