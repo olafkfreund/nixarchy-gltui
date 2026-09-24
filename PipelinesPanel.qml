@@ -5,7 +5,7 @@ import Quickshell.Wayland
 import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
-import "ActionsModel.js" as Model
+import "PipelinesModel.js" as Model
 import "Polling.js" as Polling
 
 Item {
@@ -32,7 +32,7 @@ Item {
     readonly property string cooldownText: now < polling.cooldown ? "GitLab paused until " + new Date(polling.cooldown).toLocaleTimeString() : ""
     readonly property int checkedCount: repos.filter(function(repo) { return !!repo.checked || repo.archived || repo.disabled }).length
     readonly property var current: entries[cursor] || null
-    readonly property string helper: localPath("actions.py")
+    readonly property string helper: localPath("gitlab.py")
     function localPath(name) { return decodeURIComponent(Qt.resolvedUrl(name).toString().replace(/^file:\/\//, "")) }
     onFilterTextChanged: {
         expanded = ({})

@@ -85,7 +85,8 @@ one, so each step also names the code it changes.
   `python3 tests/qml-smoke.py` → `QML_CHECKS_PASSED`.
 - `omarchy plugin validate "$(readlink -f result)"` → exit 0.
 - `grep -rni github --exclude-dir=.git --exclude-dir=intent --exclude-dir=spec --exclude-dir=plan --exclude=flake.lock .`
-  → only `flake.nix:4` and the README sibling link.
+  → only `flake.nix:4`, the README sibling link and the README's own install
+  URLs (`README.md:22`, `:31`).
 - `grep -rnE 'Workflow|ActionsPanel|ActionsModel|actions\.py|import actions|r\.history|repositories = |\.loading' --exclude-dir=.git --exclude-dir=intent --exclude-dir=spec --exclude-dir=plan .`
   → no output.
 - `git log --follow --oneline gitlab.py | wc -l` > 2.

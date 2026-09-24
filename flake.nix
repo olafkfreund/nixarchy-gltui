@@ -15,10 +15,10 @@
       runtimeFiles = [
         "LICENSE"
         "manifest.json"
-        "ActionsPanel.qml"
-        "ActionsModel.js"
+        "PipelinesPanel.qml"
+        "PipelinesModel.js"
         "Polling.js"
-        "actions.py"
+        "gitlab.py"
         "menu.py"
         "menu.example.json"
         "keybindings.sh"

@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const model = {};
 vm.createContext(model);
-vm.runInContext(fs.readFileSync('ActionsModel.js', 'utf8'), model);
+vm.runInContext(fs.readFileSync('PipelinesModel.js', 'utf8'), model);
 const repos = [{repo: 'group/sub/project', url: 'https://gitlab.com/group/sub/project', runs: [{id: 7, status: 'in_progress', conclusion: 'running', name: 'CI', head_branch: 'main', run_number: 3, html_url: 'https://gitlab.com/p/-/pipelines/7'}]}];
 const runKey = 'group/sub/project:7';
 const expanded = {'repo:group/sub/project': true, [runKey]: true, [runKey + ':stage:build']: true};

@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 from unittest.mock import patch
-import actions
+import gitlab
 
 
 def reply(body, status="200 OK", headers=""):
@@ -24,17 +24,17 @@ PIPELINE = {"id": 7, "iid": 3, "status": "running", "source": "merge_request_eve
 class ValidationTest(unittest.TestCase):
     def test_project_paths(self):
         for value in ["group/project", "g/sub/sub2/p.x", "a_b/c-d"]:
-            self.assertEqual(actions.project_path(value), value)
+            self.assertEqual(gitlab.project_path(value), value)
         for value in ["../x", "a/..", "a/.", "-R/x", "a/-b", "single", "a//b", "a/b?x", "a/b;touch x", "a/b/", None]:
             with self.subTest(value=value), self.assertRaises(ValueError):
-                actions.project_path(value)
+                gitlab.project_path(value)
 
     def test_hosts(self):
         for value in ["gitlab.com", "git.example.org:8443"]:
-            self.assertEqual(actions.host_name(value), value)
+            self.assertEqual(gitlab.host_name(value), value)
         for value in ["-x", "a/b", "evil.test/path", "a b", "", "host:", None]:
             with self.subTest(value=value), self.assertRaises(ValueError):
-                actions.host_name(value)
+                gitlab.host_name(value)
 
     def test_endpoints(self):
         base = "projects/g%2Fsub%2Fp/pipelines"
@@ -48,14 +48,14 @@ class ValidationTest(unittest.TestCase):
                   base + "/7/jobs?include_retried=false&per_page=100&page=3")]
         for task, expected in cases:
             with self.subTest(task=task):
-                self.assertEqual(actions.page_endpoint({"requestId": 1, **task}), expected)
+                self.assertEqual(gitlab.page_endpoint({"requestId": 1, **task}), expected)
         for task in [{"kind": "url"}, {"kind": "catalogue", "page": 0, "requestId": 1},
                      {"kind": "catalogue", "requestId": 1, "host": "evil.test/x"},
                      {"kind": "activity", "repo": "a/..", "requestId": 1},
                      {"kind": "jobs", "repo": "a/b", "run": "../x", "requestId": 1},
                      {"kind": "summary", "repo": "a/b", "status": "success", "requestId": 1}]:
             with self.subTest(task=task), self.assertRaises(ValueError):
-                actions.page_endpoint(task)
+                gitlab.page_endpoint(task)
 
 
 class NormaliseTest(unittest.TestCase):
@@ -65,23 +65,23 @@ class NormaliseTest(unittest.TestCase):
                               ("success", "completed"), ("failed", "completed"), ("canceled", "completed"),
                               ("skipped", "completed"), ("manual", "completed"), ("scheduled", "completed")]:
             with self.subTest(raw=raw):
-                self.assertEqual(actions.state(raw), expected)
+                self.assertEqual(gitlab.state(raw), expected)
 
     def test_pipeline_fields_and_attempt(self):
-        running = actions.pipeline(PIPELINE)
+        running = gitlab.pipeline(PIPELINE)
         self.assertEqual(running, {"id": 7, "run_number": 3, "name": "merge request event", "display_title": "01234567",
                                    "head_branch": "main", "html_url": PIPELINE["web_url"],
                                    "run_started_at": "2026-01-01T00:00:00Z", "completed_at": None,
                                    "updated_at": "2026-01-01T00:05:00Z", "status": "in_progress",
                                    "conclusion": "running", "run_attempt": "active"})
-        done = actions.pipeline({**PIPELINE, "status": "failed", "name": "Nightly", "started_at": "2026-01-01T00:01:00Z"})
+        done = gitlab.pipeline({**PIPELINE, "status": "failed", "name": "Nightly", "started_at": "2026-01-01T00:01:00Z"})
         self.assertEqual((done["status"], done["conclusion"], done["name"]), ("completed", "failed", "Nightly"))
         self.assertEqual(done["run_attempt"], "2026-01-01T00:05:00Z")
         self.assertEqual(done["run_started_at"], "2026-01-01T00:01:00Z")
-        self.assertEqual(actions.pipeline({"id": 1, "status": "manual"})["name"], "Pipeline")
+        self.assertEqual(gitlab.pipeline({"id": 1, "status": "manual"})["name"], "Pipeline")
         for bad in [{"id": "7", "status": "running"}, {"id": 0, "status": "running"}, {"id": 1}, []]:
             with self.subTest(bad=bad), self.assertRaises(ValueError):
-                actions.pipeline(bad)
+                gitlab.pipeline(bad)
 
 
 class PageTest(unittest.TestCase):
@@ -90,8 +90,8 @@ class PageTest(unittest.TestCase):
         output = ('HTTP/1.1 100 Continue\r\n\r\nHTTP/2.0 200 OK\r\n'
                   'Ratelimit-Remaining: 42\r\nRatelimit-Reset: 1700000000\r\n'
                   'Private-Token: must-not-escape\r\nX-Next-Page: 2\r\n\r\n' + json.dumps([PIPELINE]))
-        with patch.object(actions, "request", return_value=(output, "", 0)) as request:
-            result = actions.read_page(task)
+        with patch.object(gitlab, "request", return_value=(output, "", 0)) as request:
+            result = gitlab.read_page(task)
             self.assertEqual(request.call_count, 1)
             self.assertEqual(request.call_args.args[1], "git.example.org")
             self.assertEqual(result["nextPage"], 2)
@@ -103,39 +103,39 @@ class PageTest(unittest.TestCase):
             self.assertNotIn("secret-user", json.dumps(result))
 
     def test_next_page_header(self):
-        self.assertEqual(actions.next_page({"x-next-page": ""}, 1), 0)
-        self.assertEqual(actions.next_page({}, 4), 0)
-        self.assertEqual(actions.next_page({"x-next-page": "5"}, 4), 5)
+        self.assertEqual(gitlab.next_page({"x-next-page": ""}, 1), 0)
+        self.assertEqual(gitlab.next_page({}, 4), 0)
+        self.assertEqual(gitlab.next_page({"x-next-page": "5"}, 4), 5)
         for value in ["7", "x", "-1"]:
             with self.subTest(value=value), self.assertRaises(ValueError):
-                actions.next_page({"x-next-page": value}, 4)
-        with patch.object(actions, "request", return_value=reply([], headers="X-Next-Page: 9\r\n")):
-            self.assertEqual(actions.read_page({"kind": "catalogue", "requestId": 1})["errorType"], "network")
+                gitlab.next_page({"x-next-page": value}, 4)
+        with patch.object(gitlab, "request", return_value=reply([], headers="X-Next-Page: 9\r\n")):
+            self.assertEqual(gitlab.read_page({"kind": "catalogue", "requestId": 1})["errorType"], "network")
 
     def test_catalogue_and_jobs(self):
         projects = [{"path_with_namespace": "g/sub/p", "description": None, "web_url": "https://gitlab.com/g/sub/p",
                      "last_activity_at": "2026-01-02T00:00:00Z", "archived": False, "builds_access_level": "disabled",
                      "owner": {"name": "leak"}}]
-        with patch.object(actions, "request", return_value=reply(projects)):
-            data = actions.read_page({"kind": "catalogue", "requestId": 1})["data"]
+        with patch.object(gitlab, "request", return_value=reply(projects)):
+            data = gitlab.read_page({"kind": "catalogue", "requestId": 1})["data"]
         self.assertEqual(data, [{"repo": "g/sub/p", "description": "", "url": "https://gitlab.com/g/sub/p",
                                  "lastActivity": "2026-01-02T00:00:00Z", "archived": False, "disabled": True}])
         jobs = [{"id": 9, "name": "test", "stage": "test", "status": "failed", "allow_failure": True,
                  "runner": {"description": "leak"}},
                 {"id": 8, "name": "build", "stage": "build", "status": "success", "finished_at": "2026-01-01T00:02:00Z"}]
-        with patch.object(actions, "request", return_value=reply(jobs)):
-            data = actions.read_page({"kind": "jobs", "repo": "g/p", "run": "7", "requestId": 1})["data"]
+        with patch.object(gitlab, "request", return_value=reply(jobs)):
+            data = gitlab.read_page({"kind": "jobs", "repo": "g/p", "run": "7", "requestId": 1})["data"]
         self.assertEqual([row["id"] for row in data], [8, 9])
         self.assertEqual(data[0]["completed_at"], "2026-01-01T00:02:00Z")
         self.assertEqual((data[1]["conclusion"], data[1]["allow_failure"]), ("failed", True))
         self.assertNotIn("leak", json.dumps(data))
 
     def test_single_pipeline(self):
-        with patch.object(actions, "request", return_value=reply({**PIPELINE, "status": "success"})):
-            result = actions.read_page({"kind": "run", "repo": "g/p", "run": "7", "requestId": 1})
+        with patch.object(gitlab, "request", return_value=reply({**PIPELINE, "status": "success"})):
+            result = gitlab.read_page({"kind": "run", "repo": "g/p", "run": "7", "requestId": 1})
             self.assertEqual(result["data"]["conclusion"], "success")
-        with patch.object(actions, "request", return_value=reply({**PIPELINE, "id": 8})):
-            self.assertEqual(actions.read_page({"kind": "run", "repo": "g/p", "run": "7", "requestId": 1})["errorType"], "network")
+        with patch.object(gitlab, "request", return_value=reply({**PIPELINE, "id": 8})):
+            self.assertEqual(gitlab.read_page({"kind": "run", "repo": "g/p", "run": "7", "requestId": 1})["errorType"], "network")
 
     def test_api_errors_keep_metadata(self):
         for status, message, extra, expected in [
@@ -146,9 +146,9 @@ class PageTest(unittest.TestCase):
             (403, "403 Forbidden", "", "permission"),
             (404, "404 Project Not Found", "", "permission"),
             (502, "Unavailable", "", "network")]:
-            with self.subTest(status=status, message=message), patch.object(actions, "request", return_value=(
+            with self.subTest(status=status, message=message), patch.object(gitlab, "request", return_value=(
                     f"HTTP/2.0 {status} Error\n{extra}\n" + json.dumps({"message": message}), "glab failed", 1)):
-                result = actions.read_page({"kind": "catalogue", "requestId": 1})
+                result = gitlab.read_page({"kind": "catalogue", "requestId": 1})
                 self.assertEqual(result["errorType"], expected)
                 self.assertEqual(result["httpStatus"], status)
                 if "Retry-After" in extra:
@@ -159,21 +159,21 @@ class PageTest(unittest.TestCase):
     def test_broken_responses(self):
         for stdout in ["", "garbage", "HTTP/2.0 200 OK\n\ninvalid", "HTTP/2.0 200 OK\n\n{}",
                        "HTTP/2.0 200 OK\n\n[{\"path_with_namespace\": \"../x\"}]"]:
-            with self.subTest(stdout=stdout), patch.object(actions, "request", return_value=(stdout, "", 0)):
-                self.assertEqual(actions.read_page({"kind": "catalogue", "requestId": 1})["errorType"], "network")
+            with self.subTest(stdout=stdout), patch.object(gitlab, "request", return_value=(stdout, "", 0)):
+                self.assertEqual(gitlab.read_page({"kind": "catalogue", "requestId": 1})["errorType"], "network")
 
     def test_missing_auth_and_non_json_rate_error(self):
         task = {"kind": "catalogue", "requestId": 1}
-        with patch.object(actions, "request", return_value=("", "Run glab auth login to authenticate", 1)):
-            self.assertEqual(actions.read_page(task)["errorType"], "auth")
-        with patch.object(actions, "request", return_value=("HTTP/2.0 429 Error\nRetry-After: 60\n\n<html>Slow down</html>", "failed", 1)):
-            result = actions.read_page(task)
+        with patch.object(gitlab, "request", return_value=("", "Run glab auth login to authenticate", 1)):
+            self.assertEqual(gitlab.read_page(task)["errorType"], "auth")
+        with patch.object(gitlab, "request", return_value=("HTTP/2.0 429 Error\nRetry-After: 60\n\n<html>Slow down</html>", "failed", 1)):
+            result = gitlab.read_page(task)
             self.assertEqual(result["errorType"], "rate")
             self.assertGreater(result["retryAt"], time.time() * 1000)
 
     def test_recent_history_does_not_follow_pagination(self):
-        with patch.object(actions, "request", return_value=reply([], headers="X-Next-Page: 99\r\n")):
-            result = actions.read_page({"kind": "summary", "repo": "g/p", "status": "recent", "requestId": 1})
+        with patch.object(gitlab, "request", return_value=reply([], headers="X-Next-Page: 99\r\n")):
+            result = gitlab.read_page({"kind": "summary", "repo": "g/p", "status": "recent", "requestId": 1})
             self.assertEqual(result["nextPage"], 0)
             self.assertEqual(result["error"], "")
 
@@ -187,7 +187,7 @@ class ProcessTest(unittest.TestCase):
             pidfile = Path(directory) / "pid"
             fake.write_text(f"#!{sys.executable}\nimport os,time\nopen({str(pidfile)!r},'w').write(str(os.getpid()))\ntime.sleep(30)\n")
             fake.chmod(0o700)
-            process = subprocess.Popen([sys.executable, "actions.py", "page", self.request],
+            process = subprocess.Popen([sys.executable, "gitlab.py", "page", self.request],
                                        env={**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"]}, stdout=subprocess.PIPE)
             try:
                 for _ in range(100):
@@ -207,13 +207,13 @@ class ProcessTest(unittest.TestCase):
 
     def test_missing_glab_is_json_error(self):
         with tempfile.TemporaryDirectory() as directory:
-            result = subprocess.run([sys.executable, "actions.py", "page", self.request],
+            result = subprocess.run([sys.executable, "gitlab.py", "page", self.request],
                                     env={**os.environ, "PATH": directory}, capture_output=True, text=True, check=True)
             reply = json.loads(result.stdout)
             self.assertEqual((reply["requestId"], reply["errorType"]), (1, "network"))
 
     def test_invalid_request_is_json_error(self):
-        result = subprocess.run([sys.executable, "actions.py", "page", '{"kind":"url"}'], capture_output=True, text=True)
+        result = subprocess.run([sys.executable, "gitlab.py", "page", '{"kind":"url"}'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn("error", json.loads(result.stdout))
 
