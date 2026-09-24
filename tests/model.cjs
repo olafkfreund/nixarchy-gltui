@@ -115,4 +115,9 @@ assert.deepEqual(bigBacking.map(row => row.rowKey), next.map(row => row.key));
 assert.ok(bigBacking.every((row, i) => row.rowData.status === next[i].status));
 assert.ok(gets < 20 * n, `syncRows used ${gets} get() calls for ${n} rows`);
 assert.ok(structural <= 51, `one removal and 50 inserts cost ${structural} model edits, not a move per row`);
+// o opens only plain https URLs on the configured host (#15).
+assert.equal(model.browsable('https://gitlab.com/g/p/-/pipelines/1', 'gitlab.com'), true);
+assert.equal(model.browsable('https://git.example.org:8443/g/p', 'git.example.org:8443'), true);
+for (const url of ['https://evil.com/x', 'https://gitlab.com.evil/x', 'https://gitlabXcom/x', 'https://gitlab.com/a\u0007b', 'https://gitlab.com/a b', 'http://gitlab.com/x', 5, undefined])
+  assert.equal(model.browsable(url, 'gitlab.com'), false, String(url));
 console.log('Model: stage hierarchy, aggregation, filtering, progress, selection and duration passed');

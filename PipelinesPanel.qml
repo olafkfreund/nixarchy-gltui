@@ -184,7 +184,7 @@ Item {
         return Color.menu.text
     }
     function openBrowser() {
-        if (current && (current.url || "").indexOf("https://" + host + "/") === 0)
+        if (current && Model.browsable(current.url, host))
             Quickshell.execDetached(["xdg-open", current.url])
     }
 

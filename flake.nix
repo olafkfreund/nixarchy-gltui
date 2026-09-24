@@ -28,6 +28,12 @@
       packages = forAllSystems (pkgs: {
         default = pkgs.runCommand "nixarchy-gltui-${version}" {
           inherit version;
+          # Found on PATH at run time, not substituted, so Git installs keep working (#15).
+          passthru.runtimeDeps = [
+            pkgs.glab
+            pkgs.python3
+            pkgs.xdg-utils
+          ];
           meta = {
             description = "GitLab Pipelines panel for the Omarchy shell";
             homepage = "https://github.com/olafkfreund/nixarchy-gltui";

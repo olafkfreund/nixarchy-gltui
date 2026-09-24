@@ -242,6 +242,22 @@ class LargeProjectTest(unittest.TestCase):
         self.assertEqual(jobs["nextPage"], 2)
 
 
+class PlainTextTest(unittest.TestCase):
+    def test_plain_strips_controls_keeps_joiners(self):
+        self.assertEqual(gitlab.plain("a\u202eb\u0007c"), "abc")
+        self.assertEqual(gitlab.plain("x\u200dy\u200cz"), "x\u200dy\u200cz")
+        self.assertEqual(gitlab.plain("a\nb\tc"), "a b c")
+        self.assertIsNone(gitlab.plain(None))
+
+    def test_gitlab_text_is_plain(self):
+        pipeline = gitlab.pipeline({**PIPELINE, "ref": "main\u202egnp.exe", "name": "CI\u0007"})
+        self.assertEqual((pipeline["head_branch"], pipeline["name"]), ("maingnp.exe", "CI"))
+        job = gitlab.job({"id": 1, "name": "unit\u202e", "stage": "te\nst", "status": "success"})
+        self.assertEqual((job["name"], job["stage"]), ("unit", "te st"))
+        project = gitlab.project({"path_with_namespace": "g/p", "description": "safe\u2066text"})
+        self.assertEqual(project["description"], "safetext")
+
+
 class HardeningTest(unittest.TestCase):
     def test_body_is_not_read_as_headers(self):
         self.assertEqual(gitlab.http_reply("HTTP/2 200\n\nHTTP/1.1 500 x\n\n[]"), (200, {}, "HTTP/1.1 500 x\n\n[]"))
