@@ -130,6 +130,31 @@ for (const [kind,data] of [['catalogue',null],['run',[]],['jobs',{}],['catalogue
   assert.equal(polling.next(bad,task.due+1),null);
   polling.manual(bad,task.due+1,false); assert.equal(bad.auth,false);
 }
+// Large projects: one page per unfinished status, and the rest is counted, not fetched (#15).
+{
+  const big=polling.create(); polling.open(big,0); big.discover=false; big.catalogueComplete=true;
+  const run=(id)=>({id,status:'in_progress',run_attempt:1,name:'CI'});
+  big.repos=[{repo:'a/b',runs:[run(1),run(2),run(3)]}];
+  big.expanded={'a/b:2':true};
+  polling.ensure(big,'activity','a/b','','active',0);
+  const req=polling.next(big,0); assert.equal(req.kind,'activity');
+  const page=Array.from({length:100},(_,i)=>run(1000+i));
+  assert.equal(polling.complete(big,{...response(req,page),total:250},1000),true);
+  const r=big.repos[0];
+  assert.equal(r.active,250);
+  assert.equal(r.hidden.running,150);
+  const ids=r.runs.map(x=>x.id);
+  assert.ok(!ids.includes(1) && !ids.includes(3),'unviewed runs missing from a partial page are dropped');
+  assert.ok(ids.includes(2),'an expanded run is kept');
+  // GitLab omits X-Total above 10,000: the helper reports -1, "more, count unknown".
+  const huge=polling.create(); polling.open(huge,0); huge.discover=false; huge.catalogueComplete=true;
+  huge.repos=[{repo:'a/b',runs:[]}];
+  polling.ensure(huge,'activity','a/b','','active',0);
+  const hugeReq=polling.next(huge,0);
+  polling.complete(huge,{...response(hugeReq,page),total:-1},1000);
+  assert.equal(huge.repos[0].hidden.running,-1);
+  assert.equal(huge.repos[0].active,100);
+}
 console.log('Polling: fairness, budgets, cooldown, debounce, lifecycle, completion and rerun checks passed');
 const partial=polling.create(); polling.open(partial,0); partial.discover=false; partial.catalogueComplete=true;
 partial.repos=[{repo:'a/b',summaryAt:0,runs:[{id:7,status:'in_progress'}]}, {repo:'other/repo',summaryAt:0}];

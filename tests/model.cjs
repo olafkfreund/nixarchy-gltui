@@ -83,4 +83,36 @@ assert.equal(backing[1], originalA, 'Reordering moves the row instead of recreat
 model.syncRows(list, [first[0]]);
 assert.equal(list.count, 1);
 assert.equal(backing[0].rowKey, 'a');
+// Large projects: a "more" row for pipelines counted but not fetched (#15).
+const bigRepo = {repo:'g/p', url:'https://gitlab.com/g/p', checked:true,
+  hidden:{running:150, pending:1500, created:0, waiting_for_resource:-1},
+  runs:[{id:1, status:'in_progress', name:'CI', run_number:1}, {id:2, status:'completed', conclusion:'success', name:'CI', run_number:2}]};
+const bigRows = model.rows([bigRepo], {'repo:g/p': true}, {}, '', Date.now());
+const more = bigRows.find(row => row.kind === 'more');
+assert.equal(more.title, '+150 more running · +about 1500 more pending · +more waiting for resource');
+assert.equal(more.subtitle, 'o opens GitLab');
+assert.equal(more.url, 'https://gitlab.com/g/p/-/pipelines');
+assert.equal(JSON.stringify(bigRows.map(row => row.kind)), JSON.stringify(['repo', 'run', 'more', 'run']), 'more row sits before the first completed pipeline');
+assert.ok(!model.rows([{...bigRepo, hidden:{}}], {'repo:g/p': true}, {}, '', Date.now()).some(row => row.kind === 'more'));
+// syncRows stays linear for what polling does: a removal at the top, new rows, every status changed.
+const n = 3000, bigBacking = [];
+let gets = 0, structural = 0;
+const bigList = {
+  get count() { return bigBacking.length; },
+  get(i) { gets++; return bigBacking[i]; },
+  insert(i, value) { bigBacking.splice(i, 0, value); structural++; },
+  move(from, to) { bigBacking.splice(to, 0, ...bigBacking.splice(from, 1)); structural++; },
+  remove(i, count) { bigBacking.splice(i, count); structural++; },
+  setProperty(i, role, value) { bigBacking[i][role] = value; }
+};
+const start = Array.from({length: n}, (_, i) => ({key: 'k' + i, title: 'T' + i, status: 'queued'}));
+model.syncRows(bigList, start);
+const next = start.slice(1).map(row => ({...row, status: 'in_progress'}))
+  .concat(Array.from({length: 50}, (_, i) => ({key: 'new' + i, title: 'N' + i, status: 'queued'})));
+gets = 0; structural = 0;
+model.syncRows(bigList, next);
+assert.deepEqual(bigBacking.map(row => row.rowKey), next.map(row => row.key));
+assert.ok(bigBacking.every((row, i) => row.rowData.status === next[i].status));
+assert.ok(gets < 20 * n, `syncRows used ${gets} get() calls for ${n} rows`);
+assert.ok(structural <= 51, `one removal and 50 inserts cost ${structural} model edits, not a move per row`);
 console.log('Model: stage hierarchy, aggregation, filtering, progress, selection and duration passed');

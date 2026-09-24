@@ -96,7 +96,7 @@ class PageTest(unittest.TestCase):
             result = gitlab.read_page(task)
             self.assertEqual(request.call_count, 1)
             self.assertEqual(request.call_args.args[1], "git.example.org")
-            self.assertEqual(result["nextPage"], 2)
+            self.assertEqual((result["nextPage"], result["total"]), (0, -1))
             self.assertEqual(result["remaining"], 42)
             self.assertEqual(result["resetAt"], 1700000000000)
             self.assertEqual(result["requestId"], 3)
@@ -218,6 +218,28 @@ class ProcessTest(unittest.TestCase):
         result = subprocess.run([sys.executable, "gitlab.py", "page", '{"kind":"url"}'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn("error", json.loads(result.stdout))
+
+
+class LargeProjectTest(unittest.TestCase):
+    def page(self, task, headers, body=None):
+        with patch.object(gitlab, "request", return_value=reply(body if body is not None else [PIPELINE], headers=headers)):
+            return gitlab.read_page({"repo": "g/p", "requestId": 1, "page": 1, **task})
+
+    def test_unfinished_summary_reads_one_page_with_total(self):
+        result = self.page({"kind": "summary", "status": "pending"}, "X-Total: 250\r\nX-Next-Page: 2\r\n")
+        self.assertEqual((result["total"], result["nextPage"]), (250, 0))
+
+    def test_total_unknown_above_ten_thousand(self):
+        self.assertEqual(self.page({"kind": "activity"}, "X-Next-Page: 2\r\n")["total"], -1)
+        self.assertEqual(self.page({"kind": "activity"}, "")["total"], 1)
+
+    def test_malformed_total_is_network_error(self):
+        self.assertEqual(self.page({"kind": "summary", "status": "running"}, "X-Total: x\r\n")["errorType"], "network")
+
+    def test_recent_and_jobs_unchanged(self):
+        self.assertNotIn("total", self.page({"kind": "summary", "status": "recent"}, "X-Total: 99\r\n"))
+        jobs = self.page({"kind": "jobs", "run": "7"}, "X-Next-Page: 2\r\n", [{"id": 1, "name": "j", "stage": "s", "status": "success"}])
+        self.assertEqual(jobs["nextPage"], 2)
 
 
 class HardeningTest(unittest.TestCase):

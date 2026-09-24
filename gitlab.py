@@ -121,6 +121,16 @@ def entry(row):
 
 
 # Field names are shared with the panel model and scheduler; conclusion keeps GitLab's status.
+def pipeline_total(headers, count):
+    """X-Total, or -1 ("more, count unknown") when GitLab omits it above 10,000 but X-Next-Page is set."""
+    value = headers.get("x-total")
+    if value is None:
+        return -1 if headers.get("x-next-page", "") else count
+    if not re.fullmatch(r"[0-9]+", value):
+        raise ValueError("Invalid pipeline total")
+    return int(value)
+
+
 def pipeline(row):
     entry(row)
     status = state(row["status"])
@@ -205,8 +215,11 @@ def read_page(task):
                 result["data"] = sorted((job(row) for row in body), key=lambda row: row["id"])
             else:
                 result["data"] = [pipeline(row) for row in body]
-            if not (kind == "summary" and task.get("status", "recent") == "recent"):
+            if kind in ("catalogue", "jobs"):
                 result["nextPage"] = next_page(headers, task.get("page", 1))
+            elif kind == "activity" or task.get("status") in PHASES:
+                # One page per unfinished status (#15, ghtui #30); X-Total says how many were left out.
+                result["total"] = pipeline_total(headers, len(body))
     except FileNotFoundError:
         # ponytail: only Popen(["glab", ...]) raises this; PermissionError stays "network"
         result.update(data=None, errorType="setup", error="Install glab (GitLab CLI)")
