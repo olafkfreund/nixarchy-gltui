@@ -68,3 +68,18 @@ Hyprland monitor scale.
 - Manual: open the panel with `base-size` 12 and 18, and on a 1080p and a
   4K/1.5-scale monitor. Text matches the host menu, rows do not clip, and the
   panel grows on the large screen and stays inside the screen gaps on the small one.
+
+## Revised by #12 (2026-09-24)
+
+Owner decision after deployment: match nixarchy-ghtui. Its identical
+screen-fraction design was checked live on 2560×1440, found "way too big"
+(card ~1330 px wide) and reverted (ghtui PR #26). So:
+
+- The card is back to a fixed `Style.space(900)` × `Style.space(680)`,
+  shrinking only to `window - Style.gapsOut * 2` (design item 2 / plan step 2
+  no longer apply).
+- Row heights use ghtui's padding, `Style.space(16)` with a subtitle and
+  `Style.space(12)` without, instead of `Style.spacing.rowPaddingX * 2`
+  (design item 3 / plan step 3 revised).
+- Unchanged: text follows `Style.font.*` with no multiplier, the divider is
+  `Style.spacing.hairline`, and the title width comes from the icon's width.
