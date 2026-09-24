@@ -118,14 +118,14 @@ ShellRoot {
                 closedAt=Date.now()
                 stage=2
             } else if(stage===2 && Date.now()-closedAt>1200) {
-                check(!panel.loading && !panel.polling.flight,"close settles worker")
+                check(!panel.workerBusy && !panel.polling.flight,"close settles worker")
                 check(panel.polling.requests===closedRequests,"closed panel starts no requests")
                 var history=panel.polling.starts.length
                 panel.open("{}")
                 check(panel.polling.starts.length>=history,"reopen preserves budget")
                 panel.close()
                 stage=3
-            } else if(stage===3 && !panel.loading) {
+            } else if(stage===3 && !panel.workerBusy) {
                 console.log("QML_CHECKS_PASSED")
                 Qt.quit()
             }

@@ -1,6 +1,6 @@
 function reply(stdout, stderr, code) {
     if (stdout.trim()) return stdout;
-    return JSON.stringify({error: stderr.trim().slice(0, 300) || "Workflow helper returned no data (exit " + code + ")"});
+    return JSON.stringify({error: stderr.trim().slice(0, 300) || "GitLab helper returned no data (exit " + code + ")"});
 }
 
 function state(item) {

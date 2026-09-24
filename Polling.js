@@ -134,9 +134,11 @@ function mergeRuns(s,r,incoming) {
             ensure(s,"jobs",r.repo,run.id,"interactive",s.clock || 0);
     });
     invalidateJobs(s,r,incoming);
-    r.runs=union(r.runs || [], incoming).sort(function(a,b) { return (a.status==="completed")-(b.status==="completed") || b.id-a.id });
+    trimRuns(s,r,union(r.runs || [], incoming));
+}
+function trimRuns(s,r,runs) {
     var completed=0;
-    r.runs=r.runs.filter(function(run) { return run.status!=="completed" || ++completed<=10 || s.expanded[r.repo+":"+run.id] });
+    r.runs=runs.sort(function(a,b) { return (a.status==="completed")-(b.status==="completed") || b.id-a.id }).filter(function(run) { return run.status!=="completed" || ++completed<=10 || s.expanded[r.repo+":"+run.id] });
 }
 function activity(s,r,items,now) {
     var ids={}; items.forEach(function(run) { ids[run.id]=true });
@@ -215,10 +217,8 @@ function complete(s,reply,now) {
         t.phase++; t.items=[]; t.page=1;
         if (t.phase<phases.length) { t.due=now; t.order=++s.order; return true; }
         var keep=(r.runs || []).filter(function(run) { return run.awaitingFinal || s.expanded[r.repo+":"+run.id] });
-        r.runs=union(t.all,keep).sort(function(a,b) { return (a.status==="completed")-(b.status==="completed") || b.id-a.id });
-        var completed=0;
-        r.runs=r.runs.filter(function(run) { return run.status!=="completed" || ++completed<=10 || s.expanded[r.repo+":"+run.id] });
-        r.summaryAt=now; r.history=true;
+        trimRuns(s,r,union(t.all,keep));
+        r.summaryAt=now;
     } else if (r && t.kind==="jobs") {
         var run=runFor(s,t.repo,t.run);
         s.details[t.repo+":"+t.run]={jobs:t.items,updated:new Date(now).toISOString(),jobsAt:now,

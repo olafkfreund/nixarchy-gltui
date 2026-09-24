@@ -51,7 +51,7 @@ for (const status of ['skipped', 'manual', 'scheduled']) assert.equal(model.icon
 assert.equal(model.icon('pending'), '○');
 assert.equal(model.reply('{"repos":[]}', '', 0), '{"repos":[]}');
 assert.equal(JSON.parse(model.reply('', 'python3: cannot open helper', 2)).error, 'python3: cannot open helper');
-assert.equal(JSON.parse(model.reply('', '', 1)).error, 'Workflow helper returned no data (exit 1)');
+assert.equal(JSON.parse(model.reply('', '', 1)).error, 'GitLab helper returned no data (exit 1)');
 const ranked = model.rows([{repo:'z/idle', checked:'now', active:0}, {repo:'a/unchecked'}, {repo:'b/running', active:2, checked:'now'}], {}, {}, '', Date.now());
 assert.equal(ranked[0].title, 'b/running');
 assert.equal(ranked[0].info, '2 running');
