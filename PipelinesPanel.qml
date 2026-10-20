@@ -4,6 +4,7 @@ import Quickshell.Io
 import Quickshell.Wayland
 import Quickshell.Hyprland
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "PipelinesModel.js" as Model
 import "Polling.js" as Polling
@@ -179,9 +180,9 @@ Item {
         }
     }
     function statusColor(status) {
-        if (status === "failed" || status === "error") return Color.urgent
-        if (status === "running" || status === "success") return Color.accent
-        return Color.menu.text
+        if (status === "failed" || status === "error") return Commons.Color.urgent
+        if (status === "running" || status === "success") return Commons.Color.accent
+        return Commons.Color.menu.text
     }
     function openBrowser() {
         if (current && Model.browsable(current.url, host))
@@ -240,9 +241,9 @@ Item {
             anchors.centerIn: parent
             width: Math.min(Style.space(900), window.width - Style.gapsOut * 2)
             height: Math.min(Style.space(680), window.height - Style.gapsOut * 2)
-            color: Color.menu.background
+            color: Commons.Color.menu.background
             radius: Style.cornerRadius
-            borderSpec: Border.surfaceSpec("menu", "border", Color.menu.border, Math.max(1, Style.space(2)))
+            borderSpec: Border.surfaceSpec("menu", "border", Commons.Color.menu.border, Math.max(1, Style.space(2)))
             padding: Style.spacing.panelPadding
 
             Item {
@@ -280,7 +281,7 @@ Item {
                     Text {
                         width: parent.width
                         text: "GitLab Pipelines  ·  " + root.repos.length + (root.repos.length === 1 ? " project" : " projects")
-                        color: Color.menu.text
+                        color: Commons.Color.menu.text
                         font { family: Style.font.menuFamily; pixelSize: Style.font.title; bold: true }
                         textFormat: Text.PlainText
                     }
@@ -288,12 +289,12 @@ Item {
                         id: searchField
                         width: parent.width
                         height: Math.ceil(font.pixelSize * 1.4)
-                        color: Color.menu.text
+                        color: Commons.Color.menu.text
                         font { family: Style.font.menuFamily; pixelSize: Style.font.caption }
                         clip: true
                         selectByMouse: true
-                        selectionColor: Color.menu.selectedBackground
-                        selectedTextColor: Color.menu.selectedText
+                        selectionColor: Commons.Color.menu.selectedBackground
+                        selectedTextColor: Commons.Color.menu.selectedText
                         Keys.onPressed: function(event) {
                             if (event.key === Qt.Key_Up || event.key === Qt.Key_Down) {
                                 root.move(event.key === Qt.Key_Up ? -1 : 1)
@@ -313,14 +314,14 @@ Item {
                             visible: searchField.text.length === 0
                             text: root.filtering ? "Search projects…" : root.cooldownText || root.error ||
                                 (root.discoveryComplete ? "Activity checked " + root.checkedCount + "/" + root.repos.length + " · running first · / search projects" : "Discovering projects… " + root.repos.length + " found")
-                            color: root.error || root.cooldownText ? Color.urgent : Color.menu.text
+                            color: root.error || root.cooldownText ? Commons.Color.urgent : Commons.Color.menu.text
                             opacity: 0.75
                             font: searchField.font
                             elide: Text.ElideRight
                             textFormat: Text.PlainText
                         }
                     }
-                    Rectangle { width: parent.width; height: Style.spacing.hairline; color: Color.menu.border; opacity: 0.4 }
+                    Rectangle { width: parent.width; height: Style.spacing.hairline; color: Commons.Color.menu.border; opacity: 0.4 }
                     ListView {
                         id: list
                         width: parent.width
@@ -334,7 +335,7 @@ Item {
                             required property int index
                             width: list.width
                             height: modelData.subtitle ? Math.max(Style.space(64), Style.font.body + Style.font.caption + Style.space(16)) : Math.max(Style.space(40), Style.font.body + Style.space(12))
-                            color: index === root.cursor ? Color.menu.selectedBackground : "transparent"
+                            color: index === root.cursor ? Commons.Color.menu.selectedBackground : "transparent"
                             radius: 0
                             Row {
                                 anchors.fill: parent
@@ -355,7 +356,7 @@ Item {
                                     Text {
                                         width: parent.width
                                         text: (["repo", "run", "stage"].indexOf(modelData.kind) >= 0 ? (root.expanded[modelData.key] ? "▾ " : "▸ ") : "") + modelData.title
-                                        color: index === root.cursor ? Color.menu.selectedText : Color.menu.text
+                                        color: index === root.cursor ? Commons.Color.menu.selectedText : Commons.Color.menu.text
                                         font { family: Style.font.menuFamily; pixelSize: Style.font.body; bold: modelData.kind === "repo" }
                                         elide: Text.ElideRight
                                         textFormat: Text.PlainText
@@ -364,7 +365,7 @@ Item {
                                         visible: !!modelData.subtitle
                                         width: parent.width
                                         text: modelData.subtitle || ""
-                                        color: index === root.cursor ? Color.menu.selectedText : Color.menu.text
+                                        color: index === root.cursor ? Commons.Color.menu.selectedText : Commons.Color.menu.text
                                         opacity: 0.65
                                         font { family: Style.font.menuFamily; pixelSize: Style.font.caption }
                                         elide: Text.ElideRight
@@ -387,7 +388,7 @@ Item {
                             anchors.centerIn: parent
                             visible: root.entries.length === 0
                             text: "No matching projects or pipelines"
-                            color: Color.menu.text
+                            color: Commons.Color.menu.text
                             font { family: Style.font.menuFamily; pixelSize: Style.font.body }
                         }
                     }
@@ -395,7 +396,7 @@ Item {
                         id: footer
                         width: parent.width
                         text: root.cooldownText || "↑↓ move  ←→ expand  / search  r refresh  R projects  o GitLab  Esc close"
-                        color: Color.menu.text
+                        color: Commons.Color.menu.text
                         opacity: 0.65
                         font { family: Style.font.menuFamily; pixelSize: Style.font.caption }
                         elide: Text.ElideRight
