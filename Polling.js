@@ -83,8 +83,9 @@ function seed(s, now) {
             if (s.tasks[activityKey]) s.tasks[activityKey].group = group;
         }
         (r.runs || []).forEach(function(run) {
+            if (run.status==="queued" && run.followupAt===undefined && !run.lookupError && r.repo!==s.selected) run.followupAt=now;
             if (run.awaitingFinal || run.followupAt !== undefined && run.status !== "completed" && run.status !== "in_progress")
-                if (now >= age(run.followupAt,15000)) ensure(s,"run",r.repo,run.id,selected ? "interactive" : "active",age(run.followupAt,15000));
+                if (now >= age(run.followupAt,15000)) ensure(s,"run",r.repo,run.id,selected ? "interactive" : run.status==="queued" ? "background" : "active",age(run.followupAt,15000));
         });
         if (selected && s.inspected && s.expanded[r.repo + ":" + s.inspected]) {
             var run = runFor(s,r.repo,s.inspected), detail = s.details[r.repo + ":" + s.inspected];

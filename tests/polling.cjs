@@ -317,3 +317,60 @@ test('catalogue permission error stops discovery until manual catalogue refresh'
   assert.equal(x.catalogueError,'');
   request=polling.next(x,31000); assert.equal(request.kind,'catalogue');
 });
+
+test('background queued run is looked up after 15 seconds', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',active:0,activityAt:0,runs:[{id:7,status:'queued'}]}];
+  assert.equal(polling.next(x,0),null);
+  assert.equal(polling.next(x,14000),null);
+  const request=polling.next(x,15000);
+  assert.equal(request.kind,'run'); assert.equal(request.run,'7');
+  assert.equal(x.tasks[x.flight.key].group,'background');
+});
+
+for(const [status,errorType] of [['in_progress',''],['completed',''],['queued','permission']])
+  test(`queued run follow-up stops after ${errorType || status}`, () => {
+    const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+    x.repos=[{repo:'a/b',active:0,activityAt:0,runs:[{id:7,status:'queued'}]}];
+    assert.equal(polling.next(x,0),null);
+    const request=polling.next(x,15000); assert.equal(request.kind,'run');
+    polling.complete(x,errorType ? {...response(request,{}),error:'forbidden',errorType} : response(request,{id:7,status}),16000);
+    const later=polling.next(x,31000);
+    assert.notEqual(later && later.kind,'run');
+    assert.equal(x.repos[0].runs[0].lookupError,errorType ? 'forbidden' : undefined);
+  });
+
+test('queued background lookups coexist with running projects and inspected jobs under the request cap', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  const queued=Array.from({length:3},(_,i)=>({repo:`queued/r${i}`,active:0,activityAt:0,
+    runs:Array.from({length:10},(_,j)=>({id:i*10+j+1,status:'queued'}))}));
+  const running=Array.from({length:5},(_,i)=>({repo:`running/r${i}`,active:1,activityAt:i*1000,
+    runs:[{id:100+i,status:'in_progress'}]}));
+  running[0].summaryAt=0;
+  running[0].runs.push({id:200,status:'completed',run_attempt:1});
+  x.repos=running.concat(queued);
+  polling.select(x,'running/r0','200',{'running/r0:200':true},0,true);
+  const history=[], checked={};
+  for(let now=0;now<600000;now+=250) {
+    const request=polling.next(x,now);
+    if(request) {
+      history.push({at:now,kind:request.kind,repo:request.repo,run:request.run});
+      if(request.kind==='run') checked[request.repo+':'+request.run]=true;
+      let data=[];
+      if(request.kind==='activity' || request.kind==='summary' && request.status==='running')
+        data=[{id:100+Number(request.repo.slice(-1)),status:'in_progress'}];
+      else if(request.kind==='run') data={id:Number(request.run),status:'queued'};
+      else if(request.kind==='jobs') data=[{id:1,status:'completed'}];
+      polling.complete(x,response(request,data),now);
+      if(request.kind==='jobs') polling.select(x,'','',{},now,true);
+    }
+  }
+  for(let i=60;i<history.length;i++) assert.ok(history[i].at-history[i-60].at>=60000);
+  for(const repo of running) {
+    const times=history.filter(h=>h.repo===repo.repo && (h.kind==='activity' || h.kind==='summary' && h.at>=15000)).map(h=>h.at);
+    assert.ok(times.length>0,repo.repo+' was never checked');
+    for(let i=1;i<times.length;i++) assert.ok(times[i]-times[i-1]<=16000,repo.repo+' went unchecked for '+(times[i]-times[i-1])+' ms');
+  }
+  assert.equal(Object.keys(checked).length,30,'every queued run is looked up');
+  assert.ok(history.some(h=>h.kind==='jobs'),'inspected jobs are fetched');
+});
