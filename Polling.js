@@ -166,6 +166,7 @@ function activity(s,r,items,now,total) {
     });
     r.runs=r.runs.filter(function(run) { return !dropped[run.id] });
     items.forEach(function(run) { var cached=runFor(s,r.repo,run.id); delete cached.awaitingFinal; delete cached.followupAt; });
+    r.activeFromTotal=typeof total==="number" && total>=0;
     r.active=typeof total==="number" && total>=0 ? total : items.filter(function(run) { return run.status==="in_progress" }).length;
     if (typeof total==="number") r.hidden=Object.assign({},r.hidden,{running:hiddenCount(total,items)});
     r.activityAt=now; r.checked=new Date(now).toISOString(); r.error="";
@@ -211,7 +212,7 @@ function complete(s,reply,now) {
         if (r) {
             var resolved=Object.assign({},data,{awaitingFinal:false,followupAt:now});
             mergeRuns(s,r,[resolved]);
-            r.active=(r.runs || []).filter(function(run) { return run.status==="in_progress" && !run.awaitingFinal }).length;
+            if (!r.activeFromTotal) r.active=(r.runs || []).filter(function(run) { return run.status==="in_progress" && !run.awaitingFinal }).length;
             if (resolved.status==="completed" && t.repo===s.selected && t.run===s.inspected && s.expanded[t.repo+":"+t.run])
                 ensure(s,"jobs",t.repo,t.run,"interactive",now);
         }

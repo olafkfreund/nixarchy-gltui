@@ -374,3 +374,20 @@ test('queued background lookups coexist with running projects and inspected jobs
   assert.equal(Object.keys(checked).length,30,'every queued run is looked up');
   assert.ok(history.some(h=>h.kind==='jobs'),'inspected jobs are fetched');
 });
+
+// Step 8: a total from the activity reply is not overwritten by a run lookup.
+test('run lookup keeps the active count taken from the activity total', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:[{id:7,status:'in_progress'}],activityAt:0}];
+  polling.select(x,'',  '', {'a/b:7':true},0,true);
+  polling.activity(x,x.repos[0],[],1000,250);
+  assert.equal(x.repos[0].active,250);
+  assert.equal(x.repos[0].runs[0].awaitingFinal,true);
+  const request=polling.next(x,2000); assert.equal(request.kind,'run');
+  polling.complete(x,response(request,{id:7,status:'in_progress'}),2100);
+  assert.equal(x.repos[0].runs[0].awaitingFinal,false);
+  assert.equal(x.repos[0].active,250);
+  polling.activity(x,x.repos[0],[{id:7,status:'in_progress'}],3000);
+  assert.equal(x.repos[0].active,1);
+  assert.equal(x.repos[0].activeFromTotal,false);
+});
