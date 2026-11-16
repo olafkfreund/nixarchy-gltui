@@ -299,3 +299,21 @@ test('rate limit on a restarted task still sets cooldown', () => {
   assert.equal(x.cooldown,120000);
   assert.equal(x.tasks['summary:a/b:'].due,200);
 });
+
+test('catalogue permission error stops discovery until manual catalogue refresh', () => {
+  const x=polling.create(); polling.open(x,0);
+  let request=polling.next(x,0); assert.equal(request.kind,'catalogue');
+  polling.complete(x,{...response(request),error:'forbidden',errorType:'permission'},100);
+  assert.equal(x.catalogueError,'forbidden');
+  x.repos=[{repo:'a/b'}]; // never checked, so its activity request is due at once
+  let served=0;
+  for(let now=200;now<=10000;now+=1000) { request=polling.next(x,now); if(request) { served++; assert.notEqual(request.kind,'catalogue'); polling.complete(x,response(request,[]),now+10); } }
+  assert.ok(served>0,'known projects keep polling');
+  assert.equal(x.error,'','a successful request clears the transient error');
+  assert.equal(x.catalogueError,'forbidden','the catalogue refusal survives successful requests');
+  polling.close(x); polling.open(x,20000);
+  for(let now=20000;now<=30000;now+=1000) { request=polling.next(x,now); if(request) { assert.notEqual(request.kind,'catalogue'); polling.complete(x,response(request,[]),now+10); } }
+  polling.manual(x,31000,true);
+  assert.equal(x.catalogueError,'');
+  request=polling.next(x,31000); assert.equal(request.kind,'catalogue');
+});

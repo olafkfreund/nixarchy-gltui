@@ -4,7 +4,7 @@ function create() {
     return {opened:false, generation:0, serial:0, order:0, slot:0, starts:[], cooldown:0,
         rateFailures:0, auth:false, tasks:{}, flight:null, repos:[], details:{}, selected:"", inspected:"",
         stableAt:0, expanded:{}, catalogueAt:0, catalogueComplete:false, discover:true,
-        error:"", requests:0, lastRequest:"", lastStarted:0};
+        error:"", catalogueError:"", requests:0, lastRequest:"", lastStarted:0};
 }
 function key(kind, repo, run) { return kind + ":" + (repo || "") + ":" + (run || ""); }
 function age(at, interval) { return at === undefined ? -Infinity : at + interval; }
@@ -28,7 +28,7 @@ function restart(s,t,now) {
 }
 function open(s, now) {
     s.opened = true; s.generation++; s.auth = false;
-    if (!s.catalogueComplete || now - s.catalogueAt >= 300000) s.discover = true;
+    if ((!s.catalogueComplete || now - s.catalogueAt >= 300000) && !s.catalogueError) s.discover = true;
     s.stableAt = now;
 }
 function close(s) {
@@ -41,7 +41,7 @@ function select(s, repo, run, expanded, now, immediate) {
 }
 function manual(s, now, catalogue) {
     s.auth = false;
-    if (catalogue) { s.discover = true; return; }
+    if (catalogue) { s.catalogueError = ""; s.discover = true; return; }
     var r = repoFor(s, s.selected);
     if (r) {
         r.blocked = false; r.error = ""; s.stableAt = now;
@@ -190,6 +190,7 @@ function complete(s,reply,now) {
         // ponytail: s.auth now means "stopped until manual refresh"; rename if a third stop reason appears
         if (reply.errorType==="auth" || reply.errorType==="setup") s.auth=true;
         if (reply.errorType==="permission") {
+            if (t.kind==="catalogue") { s.discover=false; s.catalogueError=s.error; }
             if (r && t.kind!=="jobs" && t.kind!=="run") { r.blocked=true; r.error=s.error; }
             else if (r && t.kind==="jobs") s.details[t.repo+":"+t.run]=Object.assign({},s.details[t.repo+":"+t.run] || {},{error:s.error,jobsAt:now,unavailable:true});
             else if (r) { var failed=runFor(s,t.repo,t.run); if(failed){ failed.awaitingFinal=false; delete failed.followupAt; failed.lookupError=s.error; } }
