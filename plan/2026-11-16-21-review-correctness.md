@@ -46,6 +46,22 @@ quoted code, not only on the number.
   would act, and `next()` skips `seed()` while `now < s.wakeAt`. There is no
   periodic safety scan. Every exported writer sets `s.wakeAt = 0`.
 
+## Corrections to the spec found while planning
+
+- **Item 8.** The spec says every trim goes through `trimRuns()`. That is
+  wrong in two places:
+  - the final summary passes an already reduced list into it
+    (`Polling.js:233`);
+  - `activity()` drops runs directly (`:160`).
+
+  Step 9 therefore prunes by comparing the run ids before and after, and
+  covers both paths.
+- **Item 6 verification.** The spec's `polling.cjs` row ("a jobs list with one
+  gets no `finalAttempt`") cannot fail before the fix. `polling.cjs` sees jobs
+  that `gitlab.py` has already normalized, and a fixture with
+  `status:"queued"` already passes `:240`. The final-cache effect follows from
+  step 1's mapping. Step 1's end-to-end helper test covers it instead.
+
 ## Repo traps (all steps)
 
 - `Polling.js` and `PipelinesModel.js` are plain ES5-style JS. QML imports
@@ -64,8 +80,11 @@ quoted code, not only on the number.
 ## Steps
 
 1. **`gitlab.py:19`**, item 6a. Add `"waiting_for_callback"` to `QUEUED`.
-   Leave `PHASES` (`:15`) alone. Test: in `tests/test_gitlab.py`, `job()` of
-   a row with that status gives `status == "queued"`.
+   Leave `PHASES` (`:15`) alone. Tests in `tests/test_gitlab.py`:
+   - `job()` of a row with that status gives `status == "queued"`;
+   - a `jobs` page reply through the existing fake-`glab` path containing such
+     a job yields a job whose `status` is not `completed`. This is what keeps
+     it out of the final cache.
    → verify by `python3 -m unittest discover -s tests -v`
    Traps: none.
 
@@ -181,8 +200,13 @@ quoted code, not only on the number.
    Traps: none.
 
 9. **`Polling.js`**, item 8.
-   - `trimRuns()` (`:139-142`): delete `s.details[r.repo+":"+run.id]` for each
-     run the filter drops.
+   - `trimRuns()` (`:139-142`): before assigning `r.runs`, collect the ids of
+     the old `r.runs`. After assigning, delete `s.details[r.repo+":"+id]` for
+     each old id missing from the new `r.runs`. Diffing old against new covers
+     runs the filter drops *and* runs the caller left out of `runs`. The final
+     summary's `union(t.all,keep)` at `:233` is the case that matters.
+   - `activity()` (`:160`): delete `s.details[r.repo+":"+id]` for each id in
+     `dropped`.
    - Catalogue completion (`:222`): before filtering `s.repos`, delete the
      `s.details` keys whose `<repo>` part (text before the last `:`) is a
      removed repo.
@@ -190,6 +214,8 @@ quoted code, not only on the number.
    Tests:
    - a run dropped by an intermediate summary page loses its details;
    - so does a run dropped by a run lookup;
+   - so does a completed run absent from a final summary;
+   - so does a run that `activity()` drops on a partial page;
    - so do the runs of a project removed from the catalogue;
    - an expanded run beyond the recent ten keeps its details.
    → verify by `node tests/polling.cjs`
@@ -213,17 +239,22 @@ quoted code, not only on the number.
       tests (`stableAt`, `age(r.summaryAt,60000)`,
       `age(r.activityAt,interval)`, `age(run.followupAt,15000)`,
       `age(detail.jobsAt,5000)`), when the threshold is still in the future,
-      it does `wake=Math.min(wake,threshold)`. At the end it sets
+      it does `wake=Math.min(wake,threshold)`. After the loop it also folds in
+      every remaining task's `due` when `due > now`. At the end it sets
       `s.wakeAt=wake`.
     - `next()` calls `seed` only when `now>=s.wakeAt`.
     - Set `s.wakeAt=0` in `open`, `close`, `select`, `manual`, `complete`,
       `ensure`, `activity`, `mergeRuns`, `trimRuns` and `restart`
       (`resetHost` is done in step 10).
-    - Add a test-only counter `s.seeds++` at the top of `seed`.
+    - Add a counter: `seeds:0` in `create()` (comment: test-only) and
+      `s.seeds++` at the top of `seed`. `resetHost` gets it through
+      `create()`.
 
     Tests:
     - idle state with nothing due: 50 calls to `next()` at increasing times
       before the next threshold run `seed` once (`s.seeds`);
+    - with a pending task whose `due` is in the future and no other threshold
+      sooner, `wakeAt` equals that `due`, and the task starts at that time;
     - `select()` makes it run again;
     - the existing cadence tests pass.
 
@@ -243,7 +274,8 @@ quoted code, not only on the number.
       `receivePage(Model.reply(text, code, requestInfo.requestId), requestInfo)`
       in `try { … } finally { workerBusy = false }`. `onExited` (`:218-222`)
       keeps its `console.warn` and then calls it. `failedToStart()`
-      (`:162-166`) uses the same `try`/`finally`.
+      (`:162-166`) keeps its `console.warn` and then calls
+      `finishRequest("", 127)`. Both exit paths go through the helper.
     - `configure()` (`:119-131`): if `configured !== host`, set
       `polling = Polling.resetHost(polling)`, `expanded = ({})`,
       `details = ({})`, `updated = ""`, `error = ""` and `cursor = 0`, all
@@ -253,18 +285,42 @@ quoted code, not only on the number.
     - `adopt()` (`:144`): replace the guard with
       `if ((current && current.repo || "") !== polling.selected || (current && current.run || "") !== polling.inspected) selectionChanged(false)`.
 
-    Smoke checks in `tests/qml-smoke.py`, in the first-stage timer:
-    - give a run detail with `jobs: null`, so that `Model.rows` throws. Set
-      `workerBusy = true`, then call `finishRequest(...)` inside JS
-      `try`/`catch`, assert an error was caught, and assert `!workerBusy`.
-      Then restore valid details.
-    - configure host A with projects and expand one. Configure host B with
-      different projects: `entries` lists only B's projects, `expanded` is
-      empty, and `polling.generation` increased.
-    - set a filter matching a selected pipeline's status, then `adopt()` after
-      changing that pipeline's status so its row drops while the project
-      stays: `polling.inspected` equals `current.run || ""`. A second
-      `adopt()` leaves `polling.stableAt` unchanged.
+    Smoke checks in `tests/qml-smoke.py`:
+    - **Fake helper** (`:26-30`): accept `host` in
+      `('gitlab.example.org', 'gitlab.other.org')` instead of asserting one.
+      For `gitlab.other.org`, return a catalogue with only `three/repo` and
+      empty pipeline lists.
+    - **Worker release.** Add new asynchronous stages after the existing
+      ones, while the panel is open:
+      - wait for an idle worker;
+      - set an expanded run's detail to `{jobs: {}}`. That is a truthy
+        non-array, so `stages()` throws (`PipelinesModel.js:104` only guards
+        a falsy value);
+      - `pump()` so a real request starts, then wait for its exit;
+      - `onExited` → `finishRequest` → `receivePage` → `adopt` → `rows`
+        throws. Wrap the stage in a JS `try`/`catch` and catch it by calling
+        `finishRequest(pageOutput.text, 0)` yourself only if the real exit
+        cannot be caught, and record which in a comment;
+      - assert `!workerBusy`;
+      - restore valid details, then `pump()`: assert `workerBusy` and
+        `polling.flight`, so the next request started.
+    - **Host change during a flight.** Another stage:
+      - with a request in flight (`workerBusy`), call `configure(...)` with
+        `"host":"gitlab.other.org"` and projects `["three/repo"]`;
+      - assert at once: `entries` lists only `three/repo`, `expanded` is
+        empty, and `polling.generation` increased;
+      - wait for the old process to exit, then assert `!workerBusy` and that
+        no `one/sub/repo` data reappeared;
+      - configure back to `gitlab.example.org` for the remaining stages.
+    - **Selection sync.** In the first-stage timer:
+      - set a filter matching a selected pipeline's status;
+      - change that pipeline's status in `polling.repos` so its row drops
+        while the project stays, then `adopt()`;
+      - assert `polling.inspected === (current && current.run || "")`;
+      - then set `polling.expanded` to a sentinel object (`var mark = {}`)
+        and call `adopt()` again: assert `polling.expanded === mark`. That
+        shows `select()` was not called, because `select()` replaces
+        `s.expanded`.
     → verify by `python3 tests/qml-smoke.py` (graphical session) and
     `nix flake check`
     Traps:
