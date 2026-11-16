@@ -8,10 +8,11 @@ author: olafkfreund
 
 ## Problem
 
-A read-only review on `main` at `c8b79e6` (v1.0.0) by Codex and a Fable
-planning agent found nine ways the panel crashes, shows wrong data, or wastes
-requests. Items 1 and 9 were re-checked by hand. Codex reproduced items 2–5
-and 7 in memory. Items 6 and 8 were found by reading the code.
+Two read-only reviews on `main` at `c8b79e6` (v1.0.0), each by Codex and a
+Fable planning agent, found thirteen ways the panel crashes, shows wrong data,
+or wastes requests. Items 1 and 9 were re-checked by hand. Codex reproduced
+items 2–5, 7, 10 and 11 in memory. Items 3, 6–8 and 10–13 were confirmed by
+reading the code at `8445d25`; none of the code they touch changed in #20.
 
 1. **A valid stage name crashes the panel.** `stages()` groups jobs in a plain
    `{}` (`PipelinesModel.js:43`). Stage names `constructor`, `toString` or
@@ -52,6 +53,27 @@ and 7 in memory. Items 6 and 8 were found by reading the code.
    `Path.exists()`, which returns false for a dangling link. The approved spec
    `spec/2026-09-19-4-menu-managed-license.md:23` says a broken marker still
    counts.
+10. **A job list can be saved as final while it mixes two attempts.** Job
+    pages are fetched one per second, and a summary can run between them. When
+    the last page arrives, the whole list is stamped with the pipeline's
+    *current* `run_attempt` (`Polling.js:238-240`). If a retry started
+    mid-fetch, earlier pages belong to the old attempt, yet the list counts as
+    final and is never fetched again. Offset paging while jobs are retried can
+    also skip jobs (`gitlab.py:73`).
+11. **Pressing `r` does not cut short a retry wait.** `manual()` calls
+    `ensure()`, which for an existing task only changes its group
+    (`Polling.js:22`). After repeated network errors the task's own backoff
+    (up to five minutes) still applies, so a refresh can do nothing visible.
+12. **Polling can follow a row that is no longer highlighted.** When a rebuild
+    moves the cursor (filtering, trimming), `adopt()` only reselects if the
+    previously selected project has vanished (`PipelinesPanel.qml:144`). The
+    scheduler then keeps polling the old project or pipeline at interactive
+    priority while another row is highlighted.
+13. **The scheduler re-sorts every project ten times a second while idle.**
+    Once a second has passed since the last request, each 100 ms pump calls
+    `seed()`, which copies and sorts the whole catalogue even when nothing is
+    due (`Polling.js:63`). With thousands of memberships this is steady
+    UI-thread work for no request.
 
 ## Proposed outcome
 
@@ -72,6 +94,12 @@ and 7 in memory. Items 6 and 8 were found by reading the code.
 - Job lists are dropped when their pipeline or project leaves the retained
   model, unless that pipeline is expanded or inspected.
 - A dangling `menu.managed` link turns menu registration off.
+- A job list is only treated as final when every page belongs to the same
+  attempt; an attempt change during paging restarts the fetch.
+- `r` refetches the selected project now, apart from a server rate-limit
+  cooldown, which still applies.
+- The scheduler always polls the project and pipeline under the cursor.
+- An idle open panel does no per-project work until a task is due.
 - Each item has a regression test in the existing suites (`tests/model.cjs`,
   `tests/polling.cjs`, `tests/test_gitlab.py`, `tests/test_menu.py`).
 
@@ -81,7 +109,8 @@ and 7 in memory. Items 6 and 8 were found by reading the code.
   no p510 builds.
 - Files: `PipelinesModel.js`, `Polling.js`, `PipelinesPanel.qml`, `gitlab.py`,
   `menu.py`, and the tests listed above.
-- The GitHub sibling `nixarchy-ghtui` probably has items 1, 3, 5 and 7 too. It
+- The GitHub sibling `nixarchy-ghtui` probably has items 1, 3, 5, 7 and
+  10–13 too. It
   is out of scope here, but should be checked afterwards.
 
 ## Constraints
@@ -108,5 +137,11 @@ and 7 in memory. Items 6 and 8 were found by reading the code.
    `status=pending` in the background scan, which costs one more request per
    project. The proposal is (a), because it adds no requests while nothing is
    queued.
-3. **Scope:** should all nine items ship in one PR, or should items 1–3 (crash,
-   wrong host, retry loop) ship first as a 1.0.1 patch?
+3. **Scope:** should all thirteen items ship in one PR, or should items 1–3
+   (crash, wrong host, retry loop) ship first as a 1.0.1 patch? The proposal
+   is one PR released as 1.0.1: every item is small and has its own test.
+4. **Item 6:** should `waiting_for_callback` also be added to the pipeline
+   status filters the scheduler polls (`Polling.js:2`)? The proposal is no,
+   only to the job and stage handling, until it is confirmed that the
+   pipelines endpoint accepts it as a `status` value. An unknown value would
+   fail every summary.
