@@ -1,10 +1,11 @@
 // One page at a time; all time is injected so scheduling can be tested without Qt.
 var phases = ["recent", "running", "pending", "created", "waiting_for_resource", "preparing"];
 function create() {
+    // Every exported writer invalidates wakeAt; seeds is test-only.
     return {opened:false, generation:0, serial:0, order:0, slot:0, starts:[], cooldown:0,
         rateFailures:0, auth:false, tasks:{}, flight:null, repos:[], details:{}, selected:"", inspected:"",
         stableAt:0, expanded:{}, catalogueAt:0, catalogueComplete:false, discover:true,
-        error:"", catalogueError:"", requests:0, lastRequest:"", lastStarted:0};
+        error:"", catalogueError:"", requests:0, lastRequest:"", lastStarted:0, wakeAt:0, seeds:0};
 }
 function resetHost(s) {
     return Object.assign(create(),{opened:s.opened,starts:s.starts,serial:s.serial,generation:s.generation+1});
@@ -17,6 +18,7 @@ function runFor(s, repo, id) {
     return r && (r.runs || []).filter(function(run) { return String(run.id) === String(id) })[0];
 }
 function ensure(s, kind, repo, run, group, due) {
+    s.wakeAt=0;
     var id = key(kind, repo, run), t = s.tasks[id];
     if (!t) {
         t = {key:id, kind:kind, repo:repo || "", run:String(run || ""), group:group,
@@ -26,23 +28,28 @@ function ensure(s, kind, repo, run, group, due) {
     return t;
 }
 function restart(s,t,now) {
+    s.wakeAt=0;
     if (s.flight && s.flight.key===t.key) { t.restart=true; return; }
     t.page=1; t.phase=0; t.items=[]; t.all=[]; t.failures=0; t.due=now;
 }
 function open(s, now) {
+    s.wakeAt=0;
     s.opened = true; s.generation++; s.auth = false;
     if ((!s.catalogueComplete || now - s.catalogueAt >= 300000) && !s.catalogueError) s.discover = true;
     s.stableAt = now;
 }
 function close(s) {
+    s.wakeAt=0;
     s.opened = false; s.generation++; s.tasks = {}; s.flight = null;
 }
 function select(s, repo, run, expanded, now, immediate) {
+    s.wakeAt=0;
     if (s.selected !== repo) s.stableAt = now + (immediate ? 0 : 250);
     else if (immediate) s.stableAt = now;
     s.selected = repo || ""; s.inspected = String(run || ""); s.expanded = expanded || {};
 }
 function manual(s, now, catalogue) {
+    s.wakeAt=0;
     s.auth = false;
     if (catalogue) { s.catalogueError = ""; s.discover = true; return; }
     var r = repoFor(s, s.selected);
@@ -56,6 +63,8 @@ function manual(s, now, catalogue) {
     }
 }
 function seed(s, now) {
+    s.seeds++;
+    var wake=Infinity;
     Object.keys(s.tasks).forEach(function(id) {
         var t = s.tasks[id];
         if (s.flight && s.flight.key === id) return;
@@ -66,11 +75,13 @@ function seed(s, now) {
             delete s.tasks[id];
     });
     if (s.discover) ensure(s, "catalogue", "", "", "background", now);
+    if (s.stableAt>now) wake=Math.min(wake,s.stableAt);
     var backgroundQueued=Object.keys(s.tasks).some(function(id) { var t=s.tasks[id]; return t.kind==="activity" && t.group==="background" });
     s.repos.slice().sort(function(a,b) { return (a.activityAt === undefined ? -Infinity : a.activityAt) - (b.activityAt === undefined ? -Infinity : b.activityAt) }).forEach(function(r) {
         if (r.archived || r.disabled || r.blocked) return;
         var selected = r.repo === s.selected && now >= s.stableAt;
         if (selected && now >= age(r.summaryAt, 60000)) ensure(s, "summary", r.repo, "", "interactive", age(r.summaryAt,60000));
+        else if (selected) wake=Math.min(wake,age(r.summaryAt,60000));
         var summary = s.tasks[key("summary",r.repo)];
         var activityKey = key("activity",r.repo);
         if (summary && !(s.flight && s.flight.key === activityKey)) delete s.tasks[activityKey];
@@ -83,12 +94,14 @@ function seed(s, now) {
             }
             else if (s.tasks[activityKey] && !(s.flight && s.flight.key === activityKey) && !s.tasks[activityKey].failures)
                 delete s.tasks[activityKey];
+            if (age(r.activityAt,interval)>now) wake=Math.min(wake,age(r.activityAt,interval));
             if (s.tasks[activityKey]) s.tasks[activityKey].group = group;
         }
         (r.runs || []).forEach(function(run) {
             if (run.status==="queued" && run.followupAt===undefined && !run.lookupError && r.repo!==s.selected) run.followupAt=now;
             if (run.awaitingFinal || run.followupAt !== undefined && run.status !== "completed" && run.status !== "in_progress")
                 if (now >= age(run.followupAt,15000)) ensure(s,"run",r.repo,run.id,selected ? "interactive" : run.status==="queued" ? "background" : "active",age(run.followupAt,15000));
+                else wake=Math.min(wake,age(run.followupAt,15000));
         });
         if (selected && s.inspected && s.expanded[r.repo + ":" + s.inspected]) {
             var run = runFor(s,r.repo,s.inspected), detail = s.details[r.repo + ":" + s.inspected];
@@ -96,15 +109,18 @@ function seed(s, now) {
             if (detail && detail.unavailable) return;
             var final = run && run.status === "completed" && detail && detail.finalAttempt === attempt;
             if (!final && now >= age(detail && detail.jobsAt,5000)) ensure(s,"jobs",r.repo,s.inspected,"interactive",age(detail && detail.jobsAt,5000));
+            else if (!final) wake=Math.min(wake,age(detail && detail.jobsAt,5000));
         }
     });
+    Object.keys(s.tasks).forEach(function(id) { var due=s.tasks[id].due; if (due>now) wake=Math.min(wake,due); });
+    s.wakeAt=wake;
 }
 function next(s, now) {
     if (!s.opened || s.flight || s.auth || now < s.cooldown) return null;
     s.starts = s.starts.filter(function(at) { return now - at < 60000 });
     if (s.starts.length >= 60 || s.starts.length && now - s.starts[s.starts.length-1] < 1000) return null;
     s.clock=now;
-    seed(s,now);
+    if (now>=s.wakeAt) seed(s,now);
     var due = Object.keys(s.tasks).map(function(id) { return s.tasks[id] }).filter(function(t) { return t.due <= now });
     due.sort(function(a,b) { return a.due === b.due ? a.order-b.order : a.due-b.due });
     var group = ["interactive","interactive","interactive","active","background"][s.slot % 5];
@@ -136,6 +152,7 @@ function invalidateJobs(s,r,incoming) {
     });
 }
 function mergeRuns(s,r,incoming) {
+    s.wakeAt=0;
     incoming.forEach(function(run) {
         var old=runFor(s,r.repo,run.id);
         var jobs=s.tasks[key("jobs",r.repo,run.id)];
@@ -147,6 +164,7 @@ function mergeRuns(s,r,incoming) {
     trimRuns(s,r,union(r.runs || [], incoming));
 }
 function trimRuns(s,r,runs) {
+    s.wakeAt=0;
     var completed=0, old=(r.runs || []).map(function(run) { return run.id });
     r.runs=runs.sort(function(a,b) { return (a.status==="completed")-(b.status==="completed") || b.id-a.id }).filter(function(run) { return run.status!=="completed" || ++completed<=10 || kept(s,r,run) });
     old.forEach(function(id) { if (!r.runs.some(function(run) { return run.id===id })) delete s.details[r.repo+":"+id]; });
@@ -157,6 +175,7 @@ function kept(s,r,run) {
 // ponytail: total -1 means "more than one page, count unknown" (GitLab omits X-Total above 10,000).
 function hiddenCount(total,items) { return total<0 ? -1 : Math.max(0,total-items.length); }
 function activity(s,r,items,now,total) {
+    s.wakeAt=0;
     var ids={}; items.forEach(function(run) { ids[run.id]=true });
     var previous=r.runs || [], partial=total<0 || total>items.length, dropped={};
     mergeRuns(s,r,items);
@@ -181,6 +200,7 @@ function complete(s,reply,now) {
     if (!s.opened || !flight || flight.generation!==s.generation || reply.requestId!==flight.request.requestId) return false;
     var t=s.tasks[flight.key]; s.flight=null;
     if (!t) return false;
+    s.wakeAt=0;
     var bad=reply.data===null || typeof reply.data!=="object" || Array.isArray(reply.data)!==(t.kind!=="run")
         || Array.isArray(reply.data) && !reply.data.every(function(x) { return x && typeof x==="object" });
     if (!reply.errorType && !reply.error && bad) reply={requestId:reply.requestId,error:"GitLab helper returned invalid data",errorType:"setup"};

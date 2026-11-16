@@ -473,3 +473,25 @@ test('resetHost starts a new generation and ignores the old reply', () => {
   assert.equal(polling.complete(y,response(old,[{repo:'old/host'}]),2100),false);
   assert.equal(y.repos.length,0);
 });
+
+test('idle polling seeds once until selection changes', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',active:0,activityAt:0}];
+  for(let now=0;now<50000;now+=1000) assert.equal(polling.next(x,now),null);
+  assert.equal(x.seeds,1);
+  polling.select(x,'a/b','',{},50000,true);
+  const request=polling.next(x,50000);
+  assert.equal(request.kind,'summary');
+  assert.equal(x.seeds,2);
+});
+
+test('a future task wakes polling when it becomes due', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  polling.ensure(x,'catalogue','','','background',5000);
+  assert.equal(polling.next(x,0),null);
+  assert.equal(x.wakeAt,5000);
+  assert.equal(polling.next(x,4000),null);
+  const request=polling.next(x,5000);
+  assert.equal(request.kind,'catalogue');
+  assert.equal(x.seeds,2);
+});
