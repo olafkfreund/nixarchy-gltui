@@ -22,6 +22,10 @@ function ensure(s, kind, repo, run, group, due) {
     } else t.group = group;
     return t;
 }
+function restart(s,t,now) {
+    if (s.flight && s.flight.key===t.key) { t.restart=true; return; }
+    t.page=1; t.phase=0; t.items=[]; t.all=[]; t.failures=0; t.due=now;
+}
 function open(s, now) {
     s.opened = true; s.generation++; s.auth = false;
     if (!s.catalogueComplete || now - s.catalogueAt >= 300000) s.discover = true;
@@ -41,10 +45,10 @@ function manual(s, now, catalogue) {
     var r = repoFor(s, s.selected);
     if (r) {
         r.blocked = false; r.error = ""; s.stableAt = now;
-        ensure(s, "summary", r.repo, "", "interactive", now);
+        restart(s,ensure(s, "summary", r.repo, "", "interactive", now),now);
         if (s.inspected && s.expanded[r.repo + ":" + s.inspected]) {
             if (s.details[r.repo+":"+s.inspected]) s.details[r.repo+":"+s.inspected].unavailable=false;
-            ensure(s, "jobs", r.repo, s.inspected, "interactive", now);
+            restart(s,ensure(s, "jobs", r.repo, s.inspected, "interactive", now),now);
         }
     }
 }
@@ -177,6 +181,7 @@ function complete(s,reply,now) {
         s.cooldown=Math.max(s.cooldown,Math.min(deadline,now+3600000)); // ponytail: 1h cap, a real longer limit just 429s again
         if (reply.errorType==="rate") s.rateFailures++;
     }
+    if (t.restart) { restart(s,t,now); delete t.restart; return true; }
     var r=repoFor(s,t.repo);
     if (reply.errorType || reply.error) {
         s.error=reply.error || "Invalid GitLab response";

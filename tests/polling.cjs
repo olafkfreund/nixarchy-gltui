@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const {test} = require('node:test');
 // Baseline 0.2.2 / 91f6bde: activity waits 2s after each 1s response;
 // selected summaries issue six sequential pages, then wait 30s. No inspected job.
 function baseline(duration = 1800000) {
@@ -226,3 +227,47 @@ assert.ok(rerun.details['a/b:7'],'finishing does not discard jobs');
 polling.mergeRuns(rerun,rerun.repos[0],[{id:7,status:'completed',run_attempt:'t2'}]);
 assert.equal(rerun.details['a/b:7'],undefined,'finished pipeline with new updated_at is a rerun');
 console.log('Polling: GitLab catalogue order and rerun detection passed');
+
+test('manual refresh clears a selected summary retry delay', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',activityAt:0}]; polling.select(x,'a/b','',{},0,true);
+  let now=0, task;
+  for(let i=0;i<7;i++) {
+    const request=polling.next(x,now); assert.equal(request.kind,'summary');
+    now+=1000;
+    polling.complete(x,{...response(request),error:'offline',errorType:'network'},now);
+    task=x.tasks['summary:a/b:'];
+    if(i<6) now=task.due;
+  }
+  assert.ok(task.due-now>=300000);
+  polling.manual(x,now,false);
+  assert.equal(task.due,now);
+  assert.equal(task.failures,0);
+});
+
+test('manual refresh discards an in-flight summary and restarts at recent page one', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',activityAt:0,runs:[]}]; polling.select(x,'a/b','',{},0,true);
+  let request=polling.next(x,0); assert.equal(request.status,'recent');
+  polling.complete(x,response(request,[]),100);
+  request=polling.next(x,1000); assert.equal(request.status,'running');
+  polling.complete(x,response(request,[]),1100);
+  request=polling.next(x,2000); assert.equal(request.status,'pending');
+  polling.manual(x,2100,false);
+  assert.equal(polling.complete(x,response(request,[{id:99,status:'in_progress'}]),2200),true);
+  assert.equal(x.repos[0].runs.length,0);
+  request=polling.next(x,3000);
+  assert.equal(request.kind,'summary');
+  assert.equal(request.status,'recent');
+  assert.equal(request.page,1);
+});
+
+test('rate limit on a restarted task still sets cooldown', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',activityAt:0}]; polling.select(x,'a/b','',{},0,true);
+  const request=polling.next(x,0); assert.equal(request.kind,'summary');
+  polling.manual(x,100,false);
+  polling.complete(x,{...response(request),error:'rate',errorType:'rate',remaining:0,resetAt:120000},200);
+  assert.equal(x.cooldown,120000);
+  assert.equal(x.tasks['summary:a/b:'].due,200);
+});
