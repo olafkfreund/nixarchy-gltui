@@ -228,6 +228,34 @@ polling.mergeRuns(rerun,rerun.repos[0],[{id:7,status:'completed',run_attempt:'t2
 assert.equal(rerun.details['a/b:7'],undefined,'finished pipeline with new updated_at is a rerun');
 console.log('Polling: GitLab catalogue order and rerun detection passed');
 
+test('attempt change between jobs pages restarts the snapshot', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:[{id:7,status:'completed',run_attempt:'t1'}],activityAt:0,summaryAt:0}];
+  polling.select(x,'a/b','7',{'a/b:7':true},0,true);
+  let request=polling.next(x,0); assert.equal(request.kind,'jobs');
+  polling.complete(x,response(request,[{id:1,status:'completed'}],2),100);
+  polling.mergeRuns(x,x.repos[0],[{id:7,status:'completed',run_attempt:'t2'}]);
+  assert.equal(x.details['a/b:7'],undefined);
+  request=polling.next(x,1000); assert.equal(request.page,1);
+  polling.complete(x,response(request,[{id:2,status:'completed'}]),1100);
+  assert.deepEqual(Array.from(x.details['a/b:7'].jobs, job=>job.id),[2]);
+  assert.equal(x.details['a/b:7'].finalAttempt,'t2');
+});
+
+test('active to finished to active discards an in-flight jobs page', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:[{id:7,status:'in_progress',run_attempt:'active'}],activityAt:0,summaryAt:0}];
+  polling.select(x,'a/b','7',{'a/b:7':true},0,true);
+  let request=polling.next(x,0); assert.equal(request.kind,'jobs');
+  polling.complete(x,response(request,[{id:1,status:'in_progress'}],2),100);
+  request=polling.next(x,1000); assert.equal(request.page,2);
+  polling.mergeRuns(x,x.repos[0],[{id:7,status:'completed',run_attempt:'t1'}]);
+  polling.mergeRuns(x,x.repos[0],[{id:7,status:'in_progress',run_attempt:'active'}]);
+  polling.complete(x,response(request,[{id:2,status:'in_progress'}]),1100);
+  assert.equal(x.details['a/b:7'],undefined);
+  request=polling.next(x,2000); assert.equal(request.kind,'jobs'); assert.equal(request.page,1);
+});
+
 test('manual refresh clears a selected summary retry delay', () => {
   const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
   x.repos=[{repo:'a/b',activityAt:0}]; polling.select(x,'a/b','',{},0,true);
