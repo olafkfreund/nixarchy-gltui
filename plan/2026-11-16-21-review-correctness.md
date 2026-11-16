@@ -290,20 +290,21 @@ quoted code, not only on the number.
       `('gitlab.example.org', 'gitlab.other.org')` instead of asserting one.
       For `gitlab.other.org`, return a catalogue with only `three/repo` and
       empty pipeline lists.
-    - **Worker release.** Add new asynchronous stages after the existing
-      ones, while the panel is open:
-      - wait for an idle worker;
+    - **Worker release.** Add a new stage while the panel is open and the
+      worker is idle. Don't let a *real* request exit into a throwing
+      rebuild: an exception inside `onExited` is printed by QML, and the log
+      scan (`:158`) would fail the run.
+      - call `Polling.next(polling, Date.now())` directly. That creates a
+        flight without starting a process. Set `requestInfo` to the result and
+        `workerBusy = true`;
       - set an expanded run's detail to `{jobs: {}}`. That is a truthy
-        non-array, so `stages()` throws (`PipelinesModel.js:104` only guards
-        a falsy value);
-      - `pump()` so a real request starts, then wait for its exit;
-      - `onExited` → `finishRequest` → `receivePage` → `adopt` → `rows`
-        throws. Wrap the stage in a JS `try`/`catch` and catch it by calling
-        `finishRequest(pageOutput.text, 0)` yourself only if the real exit
-        cannot be caught, and record which in a comment;
-      - assert `!workerBusy`;
-      - restore valid details, then `pump()`: assert `workerBusy` and
-        `polling.flight`, so the next request started.
+        non-array, so `stages()` throws (`PipelinesModel.js:104` only guards a
+        falsy value);
+      - call `finishRequest(JSON.stringify({requestId: requestInfo.requestId, data: <valid data for that kind>, …}), 0)`
+        inside a JS `try`/`catch`. `complete()` accepts it, then `adopt()` →
+        `rows()` throws. Assert an error was caught, and that `!workerBusy`;
+      - restore valid details, `pump()`, and assert `workerBusy` and
+        `polling.flight`, so the next real request started.
     - **Host change during a flight.** Another stage:
       - with a request in flight (`workerBusy`), call `configure(...)` with
         `"host":"gitlab.other.org"` and projects `["three/repo"]`;
