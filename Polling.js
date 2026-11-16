@@ -144,8 +144,9 @@ function mergeRuns(s,r,incoming) {
     trimRuns(s,r,union(r.runs || [], incoming));
 }
 function trimRuns(s,r,runs) {
-    var completed=0;
+    var completed=0, old=(r.runs || []).map(function(run) { return run.id });
     r.runs=runs.sort(function(a,b) { return (a.status==="completed")-(b.status==="completed") || b.id-a.id }).filter(function(run) { return run.status!=="completed" || ++completed<=10 || kept(s,r,run) });
+    old.forEach(function(id) { if (!r.runs.some(function(run) { return run.id===id })) delete s.details[r.repo+":"+id]; });
 }
 function kept(s,r,run) {
     return s.expanded[r.repo+":"+run.id] || r.repo===s.selected && String(run.id)===s.inspected;
@@ -165,6 +166,7 @@ function activity(s,r,items,now,total) {
         }
     });
     r.runs=r.runs.filter(function(run) { return !dropped[run.id] });
+    Object.keys(dropped).forEach(function(id) { delete s.details[r.repo+":"+id]; });
     items.forEach(function(run) { var cached=runFor(s,r.repo,run.id); delete cached.awaitingFinal; delete cached.followupAt; });
     r.activeFromTotal=typeof total==="number" && total>=0;
     r.active=typeof total==="number" && total>=0 ? total : items.filter(function(run) { return run.status==="in_progress" }).length;
@@ -229,6 +231,8 @@ function complete(s,reply,now) {
     if (reply.nextPage) { t.page=reply.nextPage; t.due=now; t.order=++s.order; return true; }
     if (t.kind==="catalogue") {
         var names=t.items.map(function(repo) { return repo.repo });
+        var gone=s.repos.filter(function(repo) { return names.indexOf(repo.repo)<0 }).map(function(repo) { return repo.repo });
+        Object.keys(s.details).forEach(function(id) { if (gone.indexOf(id.slice(0,id.lastIndexOf(":")))>=0) delete s.details[id]; });
         s.repos=s.repos.filter(function(repo) { return names.indexOf(repo.repo)>=0 });
         // Most recently active first; gitlab.com cannot sort membership by activity server-side.
         s.repos.sort(function(a,b) { return String(b.lastActivity || "").localeCompare(String(a.lastActivity || "")) || names.indexOf(a.repo)-names.indexOf(b.repo) });

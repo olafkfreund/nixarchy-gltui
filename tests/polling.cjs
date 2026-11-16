@@ -391,3 +391,68 @@ test('run lookup keeps the active count taken from the activity total', () => {
   assert.equal(x.repos[0].active,1);
   assert.equal(x.repos[0].activeFromTotal,false);
 });
+
+// Step 9: details of runs that leave r.runs are pruned.
+const completedRuns=(from,to)=>{const l=[]; for(let i=from;i<=to;i++) l.push({id:i,status:'completed',run_attempt:1}); return l;};
+function pruneFixture() {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:completedRuns(1,10),activityAt:0}];
+  x.details['a/b:1']={jobs:[]};
+  return x;
+}
+test('a run dropped by a summary page loses its details', () => {
+  const x=pruneFixture();
+  assert.ok(x.details['a/b:1']);
+  polling.mergeRuns(x,x.repos[0],[{id:11,status:'completed',run_attempt:1}]);
+  assert.equal(x.repos[0].runs.some(r=>r.id===1),false);
+  assert.equal(x.details['a/b:1'],undefined);
+});
+test('a run dropped by a run lookup loses its details', () => {
+  const x=pruneFixture();
+  x.repos[0].runs=completedRuns(2,11).concat([{id:1,status:'in_progress',awaitingFinal:true}]);
+  const request=polling.next(x,1000); assert.equal(request.kind,'run'); assert.equal(request.run,'1');
+  polling.complete(x,response(request,{id:1,status:'completed',run_attempt:1}),1100);
+  assert.equal(x.repos[0].runs.some(r=>r.id===1),false);
+  assert.equal(x.details['a/b:1'],undefined);
+});
+test('a completed run absent from the final summary loses its details', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:[{id:5,status:'completed',run_attempt:1}],activityAt:0}];
+  x.details['a/b:5']={jobs:[]};
+  polling.select(x,'a/b','',{},0,true);
+  let n=0;
+  for(let now=0;x.tasks['summary:a/b:'] || n===0;now+=1000) {
+    const request=polling.next(x,now); if(!request) continue;
+    assert.equal(request.kind,'summary'); n++;
+    polling.complete(x,response(request,[]),now+10);
+  }
+  assert.equal(n,6);
+  assert.equal(x.repos[0].runs.length,0);
+  assert.equal(x.details['a/b:5'],undefined);
+});
+test('a run dropped by activity on a partial page loses its details', () => {
+  const x=polling.create(); polling.open(x,0);
+  x.repos=[{repo:'a/b',runs:[{id:7,status:'in_progress'}]}];
+  x.details['a/b:7']={jobs:[]};
+  polling.activity(x,x.repos[0],[{id:8,status:'in_progress'}],1000,250);
+  assert.equal(x.repos[0].runs.some(r=>r.id===7),false);
+  assert.equal(x.details['a/b:7'],undefined);
+});
+test('runs of a project removed from the catalogue lose their details', () => {
+  const x=polling.create(); polling.open(x,0); x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:[]},{repo:'x/y',runs:[{id:7}]}];
+  x.details['x/y:7']={jobs:[]}; x.details['a/b:7']={jobs:[]};
+  polling.manual(x,0,true);
+  const request=polling.next(x,0); assert.equal(request.kind,'catalogue');
+  polling.complete(x,response(request,[{repo:'a/b'}]),100);
+  assert.equal(x.repos.length,1);
+  assert.equal(x.details['x/y:7'],undefined);
+  assert.ok(x.details['a/b:7']);
+});
+test('an expanded run beyond the recent ten keeps its details', () => {
+  const x=pruneFixture();
+  x.expanded={'a/b:1':true};
+  polling.mergeRuns(x,x.repos[0],[{id:11,status:'completed',run_attempt:1}]);
+  assert.equal(x.repos[0].runs.some(r=>r.id===1),true);
+  assert.ok(x.details['a/b:1']);
+});
