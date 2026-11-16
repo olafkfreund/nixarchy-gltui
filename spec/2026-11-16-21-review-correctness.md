@@ -19,93 +19,125 @@ refreshes the selected project. Item 3 below uses Shift+R.
 
 Line numbers are for `8445d25`. The numbers follow the intent's items.
 
+**Shared mechanism: a restart flag on a task.** Items 10 and 11 both need to
+restart a task that may be in flight. New `restart(s, t, now)` in `Polling.js`:
+
+- not in flight: set `page = 1`, `phase = 0`, `items = all = []`, `failures = 0`
+  and `due = now`;
+- in flight (`s.flight.key === t.key`): set `t.restart = true`.
+
+In `complete()`, after the rate-limit block (`:174-179`, so a server cooldown
+in that reply still applies) and before the error branch, a task with
+`t.restart` is reset as above and has the flag cleared. Its reply data is
+discarded, and `complete` returns `true`. The reply that was already in flight
+is never read against the reset phase.
+
 1. **Stage names** (`PipelinesModel.js:43`). `byName = Object.create(null)`.
-   Only bracket access is used on it, so nothing else changes. The other plain
-   maps are keyed by numeric ids or by prefixed row keys (`repo:…`,
-   `<repo>:<id>:…`), which cannot collide with `Object.prototype`.
-   **Worker release** (`PipelinesPanel.qml:162-166`, `:218-222`). Move the body of
-   `onExited` into `function finishRequest(text, code)`, which calls
+   Only bracket access is used on it. The other plain maps are keyed by numeric
+   ids or by prefixed row keys (`repo:…`, `<repo>:<id>:…`), which cannot
+   collide with `Object.prototype`.
+   **Worker release** (`PipelinesPanel.qml:162-166`, `:218-222`). Move the body
+   of `onExited` into `function finishRequest(text, code)`, which calls
    `receivePage` inside `try { … } finally { workerBusy = false }`.
-   `failedToStart()` calls `receivePage` the same way. Any exception while
-   building rows is then still logged by QML, and the next pump can run.
+   `onExited` and `failedToStart()` both go through it, so it is the real exit
+   path. An exception while building rows still propagates (and QML logs it),
+   but the next pump can run.
 2. **Host change** (`PipelinesPanel.qml:126`, `Polling.js`). New
    `Polling.resetHost(s)` returns `create()` with `opened`, `starts` and
    `serial` copied over and `generation` set to `s.generation + 1`. The request
-   budget is ours, not the server's, so it carries over. The cooldown and
-   `rateFailures` belong to the old server and are dropped. `configure()` calls
-   it only when `configured !== host`, before assigning `host`. In the same
-   branch it also clears `expanded`, `details`, `updated` and `error`, and sets
-   `cursor = 0`. An in-flight old-host reply fails the generation check in
-   `complete()` (`Polling.js:168`) and is dropped. Its process exit still
-   releases the worker through item 1. Because `repos` is now empty, the
-   existing "configured projects" branch at `:128-129` applies to the new host.
+   budget is ours, so it carries over. The old server's cooldown and
+   `rateFailures` are dropped. `configure()` calls it only when
+   `configured !== host`, before assigning `host`. In the same branch it also
+   clears `expanded`, `details`, `updated` and `error`, and sets `cursor = 0`.
+   An old-host reply fails the generation check in `complete()`
+   (`Polling.js:168`). Its process exit still releases the worker through
+   item 1. `repos` is now empty, so the configured-projects branch
+   (`:128-129`) applies to the new host.
 3. **Refused catalogue** (`Polling.js:185-189`). In the permission branch, when
-   `t.kind === "catalogue"`, set `s.discover = false` and keep `s.error`.
-   Projects already known keep polling. Discovery resumes on Shift+R
-   (`manual(…, true)` sets `discover`), or on reopen, because the catalogue is
-   still incomplete (`open()`, `:27`).
+   `t.kind === "catalogue"`, set `s.discover = false` and
+   `s.catalogueError = s.error`. `s.error` is cleared by any later successful
+   request (`:198`), so the refusal needs its own field. `catalogueError` is
+   cleared only by `manual(…, true)` (Shift+R), which also sets `discover`, and
+   by `resetHost`. `open()` (`:27`) does not set `discover` while
+   `catalogueError` is set, so reopening does not retry it, as the intent
+   requires. The panel shows `polling.error || polling.catalogueError`
+   (`PipelinesPanel.qml:140`). Projects already known keep polling.
 4. **Queued pipelines** (`Polling.js` `seed`, `:81-83`). Before the follow-up
    check, a cached run that is `queued`, has no `followupAt`, has no
    `lookupError`, and belongs to a project that is not selected gets
-   `followupAt = now`. The existing condition then looks it up 15 s later,
-   and every 15 s after that while it stays queued, in the `active` group.
-   Lookups stop when it becomes `in_progress` (the activity check takes over) or
-   `completed`, or after a permission error (`lookupError`). The selected
-   project needs none of this, because its summary already polls the queued
-   statuses every 60 s.
-5. **Running total** (`Polling.js:162`, `:205`). `activity()` records
-   `r.activeFromTotal = typeof total === "number" && total >= 0`. The `run`
-   branch recomputes `r.active` from cached rows only when `!r.activeFromTotal`.
-   GitLab's total already excludes a pipeline that left the running list, so
-   no correction is needed. The fallback when GitLab sends no total
-   (`tests/polling.cjs:149-156`) is unchanged.
-6. **`waiting_for_callback`**. Add it to `QUEUED` in `gitlab.py:19`, so jobs
-   and pipelines map to `queued`. Add it to the pending list in `stageStatus()`
-   (`PipelinesModel.js:36`). `PHASES` and `Polling.js:2` are unchanged
-   (open question 4).
+   `followupAt = now`. The existing condition then looks it up 15 s later and
+   every 15 s while it stays queued. These lookups use the **`background`**
+   group, not `active`. `next()` lends unused slots to other groups
+   (`:102-105`), so queued lookups take only slots that interactive and active
+   work leave free. They cannot delay running-project checks. Lookups stop when
+   the run becomes `in_progress` (the activity check takes over), when it
+   becomes `completed`, or after a permission error (`lookupError`). The
+   selected project needs none of this: its summary polls the queued statuses
+   every 60 s.
+5. **Running total** (`Polling.js:162`, `:205`). `activity()` sets
+   `r.activeFromTotal = typeof total === "number" && total >= 0` on every
+   reply, so a later reply without a total turns it off again. The `run` branch
+   recomputes `r.active` from cached rows only when `!r.activeFromTotal`.
+   GitLab's total already excludes a pipeline that left the running list. The
+   fallback when GitLab sends no total (`tests/polling.cjs:149-156`) is
+   unchanged.
+6. **`waiting_for_callback`**. Add it to `QUEUED` (`gitlab.py:19`), so jobs and
+   pipelines map to `queued`. Add it to the pending list in `stageStatus()`
+   (`PipelinesModel.js:36`). `PHASES` and `Polling.js:2` are unchanged (open
+   question 4).
 7. **Allowed failures** (`PipelinesModel.js:38`). The success check becomes
    "any `success`, or any `failed` job with `allow_failure`". The order is
    unchanged, so running, blocking failure, pending and canceled still win.
    Job rows keep their own `failed` status.
-8. **Job list pruning** (`Polling.js`). New `prune(s)` deletes each
-   `s.details` key whose `<repo>:<id>` no longer names a retained run
-   (`runFor` returns nothing). `complete()` calls it after the trims: a
-   summary's final phase, a finished catalogue, and `activity()`. An expanded
-   or inspected run is never trimmed (`kept()`, `:143-145`), so its jobs stay.
+8. **Job list pruning** (`Polling.js`). Prune where runs leave the model:
+   - `trimRuns()` (`:139-142`) deletes `s.details[<repo>:<id>]` for each run it
+     drops. Every trim goes through it: `mergeRuns()` on summary pages and run
+     lookups, the final summary phase, and `activity()`.
+   - The catalogue completion (`:222`) deletes the details of every project it
+     removes. Details keys are `<repo>:<id>`, and repo paths contain no `:`.
+
+   An expanded or inspected run is never trimmed (`kept()`, `:143-145`).
 9. **Dangling marker** (`menu.py:63`). Use
    `os.path.lexists(Path(__file__).with_name('menu.managed'))`, which is true
    for a broken link.
-10. **Job snapshot attempt** (`Polling.js:233-240`). On each jobs page reply,
-    read the run's current `run_attempt`. On page 1, store it as `t.attempt`.
-    On a later page, if it differs from `t.attempt`, reset the task
-    (`page = 1`, `items = []`, `attempt` cleared, `due = now`) and publish
-    nothing. On the last page, set `finalAttempt` to `t.attempt` only if the run
-    is `completed` with `run_attempt === t.attempt` and every job is completed.
-    Otherwise it is `0`, as today. Only one request is ever in flight, so the
-    only window for a change is between page replies, which this check covers.
-    Offset paging that skips a job is not fixed: GitLab offers no stable
-    snapshot for this endpoint. It is listed under Risks.
-11. **Manual refresh** (`Polling.js:38-48`). New `restart(s, t, now)` sets
-    `due = now` and `failures = 0`. When `t` is not in flight, it also sets
-    `page = 1`, `phase = 0` and `items = all = []`. `manual()` calls it on the
-    summary and jobs tasks that `ensure()` returns. A task in flight keeps its
-    page state, so its reply still matches its phase. `next()` still enforces
-    the server cooldown and the request budget.
-12. **Selection sync** (`PipelinesPanel.qml:144`). The guard becomes "the
-    highlighted row's `repo`/`run` differ from `polling.selected`/`inspected`",
-    and calls `selectionChanged(false)` in that case. Project rows have no
-    `run`, so they compare as `""`. `select()` keeps its 250 ms debounce for a
-    project change.
-13. **Idle scheduling** (`Polling.js` `seed`, `next`). `seed()` records
-    `s.wakeAt`: the earliest future time any branch would act. That covers
-    `stableAt`, `summaryAt + 60000`, `activityAt + interval`,
-    `followupAt + 15000`, `jobsAt + 5000`, and every existing task's `due`.
-    `next()` skips `seed()` while `now < s.wakeAt`. Every function that changes
-    scheduler input sets `s.wakeAt = 0`: `open`, `select`, `manual`,
-    `complete`, `resetHost`, and the panel's `configure` when it sets
-    `polling.repos`. As a safety net against a missed path, `wakeAt` is capped
-    at `now + 60000`. An idle panel therefore sorts the catalogue at most once
-    a minute instead of ten times a second.
+10. **Job snapshot attempt** (`Polling.js` `mergeRuns`, `:130-138`). Detect the
+    change where pipeline state is merged, not at page boundaries. In
+    `mergeRuns()`, for each incoming run whose `run_attempt` differs from the
+    cached run's, call `restart()` on that run's jobs task if one exists. This
+    catches every change the scheduler observes, including
+    `active → <timestamp> → active` between two job pages. A reset task drops
+    the pages fetched so far (`:211`), and the shared restart flag protects a
+    page in flight. `finalAttempt` (`:240`) is unchanged: it can only be set
+    by a fetch that ran with no observed change.
+    Offset paging that skips a job is not fixed, because GitLab offers no
+    stable snapshot for this endpoint. It is listed under Risks.
+11. **Manual refresh** (`Polling.js:38-48`). `manual()` calls `restart()` on
+    the summary task (and the jobs task, when it is created) that `ensure()`
+    returns. A pending task becomes due now, with its backoff cleared. A
+    summary in flight finishes its current request, discards that reply, and
+    starts again from `recent`, page 1, as the intent requires. `next()` still
+    enforces the server cooldown and the request budget.
+12. **Selection sync** (`PipelinesPanel.qml:144`). The guard becomes: if
+    `(current && current.repo || "") !== polling.selected` or
+    `(current && current.run || "") !== polling.inspected`, call
+    `selectionChanged(false)`. `select()` does not call `adopt()`, so this
+    cannot loop, and a second `adopt()` with nothing changed does not call it
+    again. Project rows have no `run`, so they compare as `""`. `select()`
+    keeps its 250 ms debounce for a project change.
+13. **Idle scheduling** (`Polling.js` `seed`, `next`). `seed()` computes
+    `s.wakeAt`: the earliest future time at which any of its branches would
+    act. That covers `stableAt`, `summaryAt + 60000`,
+    `activityAt + interval`, `followupAt + 15000`, `jobsAt + 5000`, and every
+    task's `due`. `next()` skips `seed()` while `now < s.wakeAt`. There is no
+    periodic safety scan, so an idle panel does no per-project work, as the
+    intent requires.
+    **Invalidation contract:** every exported `Polling.js` function that writes
+    scheduler input sets `s.wakeAt = 0`. Those functions are `open`, `close`,
+    `select`, `manual`, `complete`, `ensure`, `activity`, `mergeRuns`,
+    `trimRuns`, `restart` and `resetHost`. Direct writes from outside (the
+    panel's `configure` setting `polling.repos`, and test fixtures) must set
+    `wakeAt = 0` themselves. The plan lists each existing fixture that needs
+    it.
 
 ## Alternatives rejected
 
@@ -116,28 +148,32 @@ Line numbers are for `8445d25`. The numbers follow the intent's items.
 - **Item 3: retrying a refused catalogue with backoff.** A 403 or 404 on
   `/projects?membership=true` is a token or scope problem, and retrying cannot
   fix it.
-- **Item 4: option (b), polling `status=pending` in background scans.** It
-  costs a request per project per scan, and cannot see a pipeline that leaves
-  the pending list without ever being seen running.
+- **Item 4: option (b), or `active`-group lookups.** Option (b) costs a request
+  per project per scan. `active` lookups would compete with running-project
+  checks: 15 continuously queued pipelines would ask for the whole 60-per-minute
+  budget.
+- **Item 10: comparing attempts at job-page replies.** It misses a change that
+  returns to the same token (`active → <timestamp> → active`).
 - **Item 10: keyset pagination for jobs.** GitLab's jobs endpoint does not
   support it.
-- **Item 13: throttling `seed()` to once a second.** That still does steady
-  idle work, which the intent rules out.
+- **Item 13: throttling `seed()`, or a 60 s safety scan.** Both still do idle
+  work, which the intent rules out.
 
 ## Risks
 
-- **Item 4 request cost.** A non-selected project with many cached queued
-  pipelines (up to 100 per status from an earlier summary) gets one lookup each
-  per 15 s. These run in the `active` group, which the 3:1:1 slot rotation
-  limits to about one request in five, so interactive work is not starved.
-  They can still delay other active projects. The plan's test asserts the
-  interactive share.
-- **Item 13 stall.** A missed invalidation would delay scheduling by up to the
-  60 s cap. The existing request-cadence tests in `tests/polling.cjs` (15 s
-  active, 10 s selected, 5 s jobs) catch a stall longer than the cadence.
-- **Item 10 restart loop.** A run whose `run_attempt` changed on every page
-  would never finish. The attempt only changes on retry or completion, so this
-  needs a pipeline retried more than once a second.
+- **Item 4 latency under load.** With many queued pipelines and busy running
+  projects, queued lookups wait for free slots, so reconciliation can take
+  longer than 15 s. The intent allows this ("subject to the request budget").
+  The simulation test bounds it.
+- **Item 13 stall.** A write path that skips invalidation delays scheduling
+  until the next invalidating call. The existing cadence tests in
+  `tests/polling.cjs` (15 s active, 10 s selected, 5 s jobs) and the new idle
+  test catch a stall. Any future exported writer must set `wakeAt = 0`; a
+  comment at `create()` says so.
+- **Item 10 restart loop.** The attempt only changes on retry or completion,
+  so a loop needs a pipeline retried between every two job pages.
+- **Item 11 extra request.** Pressing `r` during a summary wastes the reply in
+  flight. That is one request, by an explicit key press.
 - **Item 2 on the first load.** Startup configure moves from the default
   `gitlab.com` to the configured host. The state is empty at that point, so
   the reset has no visible effect.
@@ -146,26 +182,27 @@ Line numbers are for `8445d25`. The numbers follow the intent's items.
 
 ## Verification
 
-All checks run in `nix flake check`, which runs `tests/test_*.py`,
-`tests/model.cjs` and `tests/polling.cjs`. `tests/qml-smoke.py` runs locally
-in a graphical session, as before.
+`nix flake check` runs `tests/test_*.py`, `tests/model.cjs` and
+`tests/polling.cjs`. `tests/qml-smoke.py` runs locally in a graphical session,
+as before. Every test below fails on `8445d25`.
 
 | Item | Test | Proves |
 | --- | --- | --- |
 | 1 | `model.cjs`: jobs in stages `constructor`, `toString`, `__proto__` group into three stages | Grouping |
-| 1 | `qml-smoke.py`: put a run whose detail makes `Model.rows` throw, call `finishRequest`, then check `workerBusy` is false and a later pump starts a request | Worker release |
-| 2 | `polling.cjs`: `resetHost` with a flight: the old reply is rejected, `repos`/`details` are empty, `starts` is kept, `cooldown` is 0 | Isolation |
-| 2 | `qml-smoke.py`: configure host A, add repos, configure host B: only B's configured projects are listed, and `expanded` is empty | Panel reset |
-| 3 | `polling.cjs`: catalogue 403: no catalogue request in the next 10 s, `error` set, other activity continues; `manual(…, true)` resumes | No loop |
-| 4 | `polling.cjs`: a cached queued run on a non-selected project gets a `run` request within 15 s; it stops once the run is completed; it stops after `lookupError` | Reconciliation |
-| 5 | `polling.cjs`: activity `total: 250`, then a run lookup: `active` stays 250. Existing `total: -1` test unchanged | Total kept |
-| 6 | `test_gitlab.py`: a `waiting_for_callback` job maps to `queued`. `model.cjs`: a stage with one is `pending` | Mapping |
+| 1 | `qml-smoke.py`: give a run detail that makes `Model.rows` throw, call `finishRequest` inside a JS `try`/`catch` and assert the error, restore valid data, check `workerBusy` is false and the next pump starts a request. Caught in JS, so no `TypeError` reaches the log scan (`:158`) | Worker release |
+| 2 | `polling.cjs`: `resetHost` during a flight, then start a new-host flight, then deliver the old reply: it is rejected. `repos`/`details` are empty, `starts` is kept, `cooldown` is 0 | Isolation |
+| 2 | `qml-smoke.py`: configure host A, add repos, configure host B during a real worker flight: only B's configured projects are listed, `expanded` is empty, and the worker is released | Panel reset |
+| 3 | `polling.cjs`: catalogue 403, then a successful activity reply: `catalogueError` is kept and there is no catalogue request for 10 s; close and reopen: still none; `manual(…, true)` resumes | No loop, error kept |
+| 4 | `polling.cjs`: uncongested: a queued run on a non-selected project gets a `run` request within 15 s; it stops after `in_progress`, after `completed`, and after `lookupError` | Reconciliation |
+| 4 | `polling.cjs`: congested: 30 queued runs, 5 running projects and an inspected jobs fetch over 10 minutes: under 60 requests per minute, the running projects keep their 15 s cadence, and every queued run is looked up at least once | Cost bound |
+| 5 | `polling.cjs`: activity `total: 250`, then a run lookup: `active` stays 250. A later activity without a total falls back to the cached count | Total kept |
+| 6 | `test_gitlab.py`: a `waiting_for_callback` job maps to `queued`. `model.cjs`: a stage with one is `pending`. `polling.cjs`: a jobs list with one gets no `finalAttempt` | Mapping |
 | 7 | `model.cjs`: a stage with only an allowed failure is `success`, and the job row is `failed` | Status |
-| 8 | `polling.cjs`: a run trimmed from the recent ten, and a project dropped from the catalogue, both lose their `details`; an expanded run keeps it | Pruning |
-| 9 | `test_menu.py`: a dangling `menu.managed` symlink leaves the menu file untouched | Marker |
-| 10 | `polling.cjs`: change `run_attempt` between page 1 and page 2: the task restarts, and no `finalAttempt` is set for the newer attempt | Snapshot |
-| 11 | `polling.cjs`: after a network error pushes `due` out by 5 min, `manual()` makes the summary due now with `failures` 0; a task in flight keeps its `phase` | Refresh |
-| 12 | `qml-smoke.py`: the selected run is trimmed while its project stays: `polling.inspected` follows the highlighted row | Sync |
-| 13 | `polling.cjs`: idle state, 50 calls to `next()` with nothing due: `seed` runs at most once (counted via `wakeAt`); `select()` triggers it again | Idle cost |
+| 8 | `polling.cjs`: a run dropped by an intermediate summary page, by a run lookup, and with a project removed from the catalogue each loses its `details`; an expanded run keeps it | Pruning |
+| 9 | `test_menu.py` (temporary plugin fixture, `:122`): a dangling `menu.managed` symlink leaves the menu file untouched | Marker |
+| 10 | `polling.cjs`: `run_attempt` changes A→B between job pages, and separately `active → <timestamp> → active`: both restart the jobs task from page 1, and no mixed list is published | Snapshot |
+| 11 | `polling.cjs`: repeated errors push the summary out by 5 min, then `manual()` makes it due now with `failures` 0. `manual()` during a summary flight: that reply is discarded, and the next summary request is `recent`, page 1 | Refresh |
+| 12 | `qml-smoke.py`: filter on the selected pipeline's status, then deliver a status change that drops that row while its project stays: `polling.inspected` follows the newly highlighted row; a second `adopt()` does not call `select()` again | Sync |
+| 13 | `polling.cjs`: count real `seed()` calls (a test counter on `s`): with nothing due, 50 calls to `next()` run `seed` once; `select()` makes it run again | Idle cost |
 
 Release: bump `version` in `manifest.json` to 1.0.1 (the flake reads it).
