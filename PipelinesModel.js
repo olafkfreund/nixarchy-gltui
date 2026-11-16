@@ -33,14 +33,14 @@ function some(jobs, statuses) {
 function stageStatus(jobs) {
     if (some(jobs, ["running", "canceling"])) return "running";
     if (jobs.some(function(job) { return job.conclusion === "failed" && !job.allow_failure; })) return "failed";
-    if (some(jobs, ["created", "pending", "preparing", "waiting_for_resource"])) return "pending";
+    if (some(jobs, ["created", "pending", "preparing", "waiting_for_resource", "waiting_for_callback"])) return "pending";
     if (some(jobs, ["canceled"])) return "canceled";
-    if (some(jobs, ["success"])) return "success";
+    if (some(jobs, ["success"]) || jobs.some(function(job) { return job.conclusion === "failed" && job.allow_failure; })) return "success";
     return jobs.length && jobs.every(function(job) { return job.conclusion === "manual"; }) ? "manual" : "skipped";
 }
 
 function stages(jobs) {
-    var order = [], byName = {};
+    var order = [], byName = Object.create(null);
     jobs.forEach(function(job) {
         if (!byName[job.stage]) { byName[job.stage] = []; order.push(job.stage); }
         byName[job.stage].push(job);
