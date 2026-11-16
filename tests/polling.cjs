@@ -456,3 +456,20 @@ test('an expanded run beyond the recent ten keeps its details', () => {
   assert.equal(x.repos[0].runs.some(r=>r.id===1),true);
   assert.ok(x.details['a/b:1']);
 });
+
+// Step 10: a host change replaces the state and drops the old flight.
+test('resetHost starts a new generation and ignores the old reply', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b'}]; x.details['a/b:7']={jobs:[]};
+  const old=polling.next(x,0); assert.equal(old.kind,'activity');
+  x.cooldown=5;
+  const y=polling.resetHost(x);
+  assert.notEqual(y,x);
+  assert.equal(y.repos.length,0); assert.equal(Object.keys(y.details).length,0); assert.equal(y.cooldown,0);
+  assert.equal(y.starts.length,1); assert.equal(y.opened,true);
+  assert.equal(y.generation,x.generation+1);
+  assert.equal(polling.complete(y,response(old,[]),100),false);
+  const fresh=polling.next(y,2000); assert.equal(fresh.kind,'catalogue');
+  assert.equal(polling.complete(y,response(old,[{repo:'old/host'}]),2100),false);
+  assert.equal(y.repos.length,0);
+});

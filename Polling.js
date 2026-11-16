@@ -6,6 +6,9 @@ function create() {
         stableAt:0, expanded:{}, catalogueAt:0, catalogueComplete:false, discover:true,
         error:"", catalogueError:"", requests:0, lastRequest:"", lastStarted:0};
 }
+function resetHost(s) {
+    return Object.assign(create(),{opened:s.opened,starts:s.starts,serial:s.serial,generation:s.generation+1});
+}
 function key(kind, repo, run) { return kind + ":" + (repo || "") + ":" + (run || ""); }
 function age(at, interval) { return at === undefined ? -Infinity : at + interval; }
 function repoFor(s, name) { return s.repos.filter(function(r) { return r.repo === name })[0]; }
