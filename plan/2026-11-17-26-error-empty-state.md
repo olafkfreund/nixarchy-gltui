@@ -171,7 +171,8 @@ The first match wins:
         `"Discovering projects…"`.
      4. **No projects:** `catalogueComplete=true` and `adopt()`. The text
         is `"No projects found on this account"`.
-     5. **No matches:** restore the 40 repos, set `filterText="zzz"`. The
+     5. **No matches:** restore the 40 repos and call `adopt()`, then set
+        `filterText="zzz"`. The
         text is `No projects or pipelines match “zzz”`. Then clear the
         filter.
      6. **Login stop, search box focused but empty:**
@@ -188,16 +189,26 @@ The first match wins:
         - clear the error and auth, Esc out of search, set `polling.cooldown=Date.now()+3600000`, then `adopt()`;
         - wait one tick so `now` updates; the strip text equals
           `panel.cooldownText`, with no `·`.
-     9. **Cursor in view:**
-        - with the pause still set, clear the filter, move the cursor to
-          row 39 (`End`), wait a frame;
-        - set a long error (200 characters) and `adopt()`, then wait a
-          frame;
-        - the strip is two lines tall (`errorItem.lineCount===2`), and
-          the cursor row is inside the viewport:
-          `r.y >= l.contentY && r.y + r.height <= l.contentY + l.height`
-          for `r = l.itemAtIndex(39)`.
-        - Then clear the error and the cooldown.
+     9. **Cursor in view.** Each bullet is its own function, so a wait
+        does not re-run the setup:
+        - **9a:** clear the error, the auth stop, the cooldown and the
+          filter, `adopt()`, then move the cursor to row 39 with `End`.
+        - **9b, the strip appears:** wait until `!errorItem.visible`. Set a
+          short error and `adopt()`.
+        - **9c:** wait until `errorItem.visible`, then check that row 39 is
+          inside the viewport.
+        - **9d, the strip grows:** set the cooldown with no error and
+          `adopt()`.
+        - **9e:** wait until the strip shows only the pause. Then set a long
+          error (200 characters) and `adopt()`.
+        - **9f:** wait until `errorItem.lineCount===2`, then check that row
+          39 is inside the viewport.
+        - **9g:** clear the error and the cooldown.
+
+        "Inside the viewport" uses the existing ±1 px tolerance
+        (`tests/qml-smoke.py:180`):
+        `r.y >= l.contentY - 1 && r.y + r.height <= l.contentY + l.height + 1`,
+        with `r = l.itemAtIndex(39)`.
      10. **Restore:**
          - `panel.workerBusy=false`;
          - `panel.close()`;
@@ -215,7 +226,8 @@ The first match wins:
      reset before the zoom fixture opens, or the zoom stages hang.
    - `keyClick` needs the panel focused, as in the zoom stages.
 
-4. **Docs and version.**
+4. **Docs and version** (release work, as in #21 and #22; it goes beyond
+   the spec's code scope, which covers the panel and smoke test only).
    - `README.md`: in the section describing the panel, one sentence saying
      that errors show in a line under the search box, with the key that
      fixes them.
