@@ -29,7 +29,7 @@ host=request.get('host'); assert host in ('gitlab.example.org','gitlab.other.org
 run={'id':7,'name':'CI','status':'in_progress','conclusion':'running','run_attempt':'active','head_branch':'main','run_number':1}
 if host=='gitlab.other.org': data={} if kind=='run' else [{'repo':'three/repo'}] if kind=='catalogue' else []
 elif kind=='catalogue': data=[{'repo':'one/sub/repo','url':'https://gitlab.example.org/one/sub/repo'},{'repo':'two/repo'}]
-elif kind=='jobs': data=[{'id':8,'name':'compile','stage':'build','status':'in_progress','conclusion':'running'},{'id':9,'name':'unit','stage':'test','status':'queued','conclusion':'created'}]
+elif kind=='jobs': data=[{'id':8,'name':'compile','stage':'build','status':'in_progress','conclusion':'running'},{'id':9,'name':'unit','stage':'test','status':'queued','conclusion':'created'},{'id':10,'name':'lint','stage':'test','status':'completed','conclusion':'failed','allow_failure':True,'started_at':'2026-01-01T00:00:00Z','completed_at':'2026-01-01T00:01:02Z'}]
 elif kind=='run': data=run
 else: data=[run] if request['repo']=='one/sub/repo' and request.get('status','running') in ('recent','running') else []
 print(json.dumps({'requestId':request['requestId'],'data':data,'nextPage':0,'error':'','errorType':'','remaining':4000}))
@@ -76,6 +76,7 @@ ShellRoot {
     function check(value, label) { if (!value) throw new Error("CHECK FAILED: " + label) }
     // when: false keeps TestCase from running tests and quitting; it is only used for keyClick.
     TestCase { id: tc; when: false }
+    property int lintIndex: -1
     property int zi: 0
     property int zRequests: 0
     property var zv: ({})
@@ -214,6 +215,24 @@ ShellRoot {
     property int ei: 0
     property double holdSince: 0
     function zRepos() { return Array.from({length:40},function(_, i) { return {repo:"z/p"+(i<10 ? "0" : "")+i,checked:"x",runs:[]} }) }
+    function findByName(item, name) {
+        if (item.objectName===name) return item
+        for (var i=0;i<item.children.length;i++) { var f=findByName(item.children[i], name); if (f) return f }
+        return null
+    }
+    // A delegate's icon and info follow statusColor/statusOpacity, selected or not; icon is checked when given.
+    function selCheck(item, status, icon) {
+        var parts=[findByName(item,"statusIcon"), findByName(item,"statusInfo")]
+        check(parts[0] && parts[1],"delegate has statusIcon and statusInfo: " + status)
+        if (icon) eq(parts[0].text,icon,"icon of " + status)
+        parts.forEach(function(t) {
+            check(Qt.colorEqual(t.color,panel.statusColor(status)),"colour of " + status)
+            eq(t.opacity,panel.statusOpacity(status),"opacity of " + status)
+            check(t.opacity>=0.5,"opacity at least 0.5: " + status)
+        })
+    }
+    property int gi: 0
+    property bool gPlaced: false
     function eq(actual, expected, label) { check(actual===expected, label + ": got " + JSON.stringify(actual)) }
     // True once cond has held for 300 ms, so the strip's Qt.callLater and the list's layout have run.
     function held(cond) {
@@ -367,6 +386,46 @@ ShellRoot {
             panel.adopt()
         },
         function() {
+            var C=Commons.Color, table=[
+                ["running",C.menu.text,1],["canceling",C.menu.text,1],["success",C.accent,1],
+                ["failed",C.urgent,1],["error",C.urgent,1],["unavailable",C.urgent,1],["allowed to fail",C.urgent,0.6],
+                ["manual",C.accent,1],["scheduled",C.menu.text,1],["created",C.menu.text,1],["pending",C.menu.text,1],
+                ["waiting_for_resource",C.menu.text,1],["preparing",C.menu.text,1],["waiting_for_callback",C.menu.text,1],
+                ["queued",C.menu.text,1],["awaiting final status",C.menu.text,1],["skipped",C.menu.text,0.5],
+                ["canceled",C.menu.text,1],["neutral",C.menu.text,1],["frobnicated",C.menu.text,1]]
+            table.forEach(function(r) {
+                check(Qt.colorEqual(panel.statusColor(r[0]),r[1]),"statusColor " + r[0])
+                eq(panel.statusOpacity(r[0]),r[2],"statusOpacity " + r[0])
+            })
+        },
+        // Selected rows of every group: one repo row per neutral/error, one run per other group.
+        function() {
+            var runs=["running","success","failed","manual","scheduled","created","skipped","canceled","frobnicated"].map(function(c, i) {
+                return {id:100+i,name:"r"+i,status:"completed",conclusion:c,run_number:i}
+            })
+            panel.polling.repos=[{repo:"g/neutral",checked:"x",runs:[]},{repo:"g/error",error:"boom"},{repo:"g/runs",checked:"x",runs:runs}]
+            panel.expanded=({"repo:g/runs":true})
+            panel.filterText=""
+            panel.adopt()
+            panel.rebuild()
+            check(panel.entries.length===12,"group fixture has 12 rows: " + panel.entries.length)
+            gi=0; gPlaced=false
+        },
+        function() {
+            if (!gPlaced) {
+                panel.cursor=gi
+                panel.selectionChanged(true)
+                panel.listItem.positionViewAtIndex(gi, ListView.Contain)
+                gPlaced=true
+                return false
+            }
+            var item=panel.listItem.itemAtIndex(gi)
+            if (!item) return false
+            selCheck(item,panel.entries[gi].status,"")
+            gi++; gPlaced=false
+            if (gi<panel.entries.length) return false
+        },
+        function() {
             panel.workerBusy=false
             panel.close()
             panel.polling=Polling.create()
@@ -449,9 +508,28 @@ ShellRoot {
             if(stage===1 && panel.polling.requests>=6 && panel.details["one/sub/repo:7"] && panel.polling.catalogueComplete) {
                 check(panel.error==="","async API has no error")
                 check(panel.current.key===selected && panel.filterText==="repo","poll preserves searched selection")
-                check(panel.details["one/sub/repo:7"].jobs.length===2,"jobs arrive")
+                check(panel.details["one/sub/repo:7"].jobs.length===3,"jobs arrive")
                 check(panel.entries.filter(function(row) { return row.kind==="stage" }).length===2,"jobs grouped into stages")
                 check(panel.polling.catalogueComplete,"catalogue completed")
+                panel.expanded["one/sub/repo:7:stage:test"]=true
+                panel.rebuild()
+                lintIndex=panel.entries.findIndex(function(row) { return row.kind==="job" && row.title==="lint" })
+                check(lintIndex>=0,"lint row exists")
+                eq(panel.entries[lintIndex].status,"allowed to fail","lint row status")
+                eq(panel.entries[lintIndex].info,"1m 2s","lint row info")
+                panel.cursor=lintIndex
+                panel.selectionChanged(true)
+                panel.listItem.positionViewAtIndex(lintIndex, ListView.Contain)
+                stage=12
+            } else if(stage===12) {
+                // A poll reply between ticks can rebuild and shift rows, so find lint again.
+                var at=panel.entries.findIndex(function(row) { return row.kind==="job" && row.title==="lint" })
+                if (at!==lintIndex) { lintIndex=at; panel.listItem.positionViewAtIndex(at, ListView.Contain); return }
+                var lintItem=panel.listItem.itemAtIndex(lintIndex)
+                if (!lintItem) return
+                selCheck(lintItem,"allowed to fail","!")
+                delete panel.expanded["one/sub/repo:7:stage:test"]
+                panel.rebuild()
                 panel.close()
                 closedRequests=panel.polling.requests
                 closedAt=Date.now()

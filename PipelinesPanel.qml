@@ -223,9 +223,15 @@ Item {
         }
     }
     function statusColor(status) {
-        if (status === "failed" || status === "error") return Commons.Color.urgent
-        if (status === "running" || status === "success") return Commons.Color.accent
-        return Commons.Color.menu.text
+        switch (Model.group(status)) {
+        case "success": case "manual": return Commons.Color.accent
+        case "failed": case "allowed": return Commons.Color.urgent
+        default: return Commons.Color.menu.text
+        }
+    }
+    function statusOpacity(status) {
+        var g = Model.group(status)
+        return g === "allowed" ? 0.6 : g === "skipped" ? 0.5 : 1
     }
     function errorHint(error, catalogueError, stopped, filtering) {
         var escape = filtering ? "Esc and " : ""
@@ -433,6 +439,8 @@ Item {
                                 spacing: root.zs(Style.spacing.sm)
                                 Text {
                                     id: statusIcon
+                                    objectName: "statusIcon"
+                                    opacity: root.statusOpacity(modelData.status)
                                     width: root.zs(Style.space(18))
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: Model.icon(modelData.status)
@@ -463,6 +471,8 @@ Item {
                                 }
                                 Text {
                                     id: info
+                                    objectName: "statusInfo"
+                                    opacity: root.statusOpacity(modelData.status)
                                     width: Math.min(implicitWidth, list.width * 0.35)
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: modelData.kind === "repo" ? modelData.info : modelData.status + (modelData.info ? " · " + modelData.info : "")
