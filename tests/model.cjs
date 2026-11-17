@@ -40,9 +40,15 @@ assert.equal(agg('success', 'failed?'), 'success', 'allowed failures do not fail
 assert.equal(agg('success', 'pending'), 'pending');
 assert.equal(agg('success', 'waiting_for_callback'), 'pending');
 assert.equal(agg('failed?'), 'success', 'a stage with only allowed failures is success');
-const allowed = model.rows(repos, expanded, {[runKey]: {jobs: [{id: 1, name: 'flaky', stage: 'build', status: 'completed', conclusion: 'failed', allow_failure: true}]}}, '', Date.now());
+const failureNow = Date.parse('2026-01-01T00:02:00Z');
+const allowedJob = {id: 1, name: 'flaky', stage: 'build', status: 'completed', conclusion: 'failed', allow_failure: true,
+  started_at: '2026-01-01T00:00:00Z', completed_at: '2026-01-01T00:01:02Z'};
+const allowed = model.rows(repos, expanded, {[runKey]: {jobs: [allowedJob]}}, '', failureNow);
 assert.equal(allowed[2].status, 'success');
-assert.equal(allowed[3].status, 'failed', 'the job row stays failed');
+assert.equal(allowed[3].status, 'allowed to fail');
+assert.equal(allowed[3].info, model.duration(allowedJob, failureNow));
+const blocked = model.rows(repos, expanded, {[runKey]: {jobs: [{...allowedJob, allow_failure: false}]}}, '', failureNow);
+assert.equal(blocked[3].status, 'failed', 'a blocking failed job stays failed');
 const odd = model.stages(['constructor', 'toString', '__proto__'].map((stage, id) => ({id, stage, conclusion: 'success', status: 'completed'})));
 assert.equal(odd.map(x => x.name).join(), 'constructor,toString,__proto__');
 assert.equal(odd.map(x => x.jobs.length).join(), '1,1,1');
@@ -50,13 +56,26 @@ assert.equal(agg('canceled', 'success'), 'canceled');
 assert.equal(agg('manual', 'manual'), 'manual');
 assert.equal(agg('manual', 'skipped'), 'skipped');
 assert.equal(model.duration({started_at:'2026-01-01T00:00:00Z'}, Date.parse('2026-01-01T00:01:15Z')), '1m 15s');
-assert.equal(model.icon('success'), '✓');
-assert.equal(model.icon('failed'), '✕');
-assert.equal(model.icon('running'), '◷');
-assert.equal(model.icon('canceling'), '◷');
-assert.equal(model.icon('canceled'), '⊘');
-for (const status of ['skipped', 'manual', 'scheduled']) assert.equal(model.icon(status), '−');
-assert.equal(model.icon('pending'), '○');
+const groups = [
+  ['running', '●', ['running', 'canceling']],
+  ['success', '✓', ['success']],
+  ['failed', '✕', ['failed', 'error', 'unavailable']],
+  ['allowed', '!', ['allowed to fail']],
+  ['manual', '▶', ['manual']],
+  ['scheduled', '◷', ['scheduled']],
+  ['queued', '◌', ['created', 'pending', 'waiting_for_resource', 'preparing', 'waiting_for_callback', 'queued', 'awaiting final status']],
+  ['skipped', '−', ['skipped']],
+  ['canceled', '⊘', ['canceled']],
+  ['neutral', '·', ['neutral']],
+  ['unknown', '○', ['frobnicated']]
+];
+for (const [group, icon, statuses] of groups) for (const status of statuses) {
+  assert.equal(model.group(status), group, status);
+  assert.equal(model.icon(status), icon, status);
+}
+assert.equal(model.group('constructor'), 'unknown');
+assert.equal(model.icon('constructor'), '○');
+assert.equal(new Set(groups.map(([, icon]) => icon)).size, 11);
 assert.equal(model.reply('{"repos":[]}', 0, 5), '{"repos":[]}');
 // A failing helper yields fixed text; stderr never reaches the panel.
 assert.deepEqual(JSON.parse(model.reply('', 127, 5)), {requestId: 5, errorType: 'setup', error: 'python3 not found'});

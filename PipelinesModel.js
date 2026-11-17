@@ -16,13 +16,26 @@ function state(item) {
     return item.awaitingFinal ? "awaiting final status" : item.lookupError ? "unavailable" : item.conclusion || item.status || "unknown";
 }
 
+function group(status) {
+    switch (status) {
+    case "running": case "canceling": return "running";
+    case "success": return "success";
+    case "failed": case "error": case "unavailable": return "failed";
+    case "allowed to fail": return "allowed";
+    case "manual": return "manual";
+    case "scheduled": return "scheduled";
+    case "created": case "pending": case "waiting_for_resource": case "preparing":
+    case "waiting_for_callback": case "queued": case "awaiting final status": return "queued";
+    case "skipped": return "skipped";
+    case "canceled": return "canceled";
+    case "neutral": return "neutral";
+    default: return "unknown";
+    }
+}
+
 function icon(status) {
-    if (status === "success") return "✓";
-    if (status === "failed") return "✕";
-    if (status === "running" || status === "canceling") return "◷";
-    if (status === "canceled") return "⊘";
-    if (["skipped", "manual", "scheduled", "neutral"].indexOf(status) >= 0) return "−";
-    return "○";
+    return {running: "●", success: "✓", failed: "✕", allowed: "!", manual: "▶",
+        scheduled: "◷", queued: "◌", skipped: "−", canceled: "⊘", neutral: "·", unknown: "○"}[group(status)];
 }
 
 function some(jobs, statuses) {
@@ -110,7 +123,8 @@ function rows(repos, expanded, details, filter, now) {
                 if (!expanded[stageKey]) return;
                 stage.jobs.forEach(function(job) {
                     result.push({key: runKey + ":" + job.id, parent: stageKey, kind: "job", depth: 3, title: job.name, subtitle: "",
-                        status: state(job), info: duration(job, now), repo: repo.repo, run: String(run.id), url: job.html_url});
+                        status: job.conclusion === "failed" && job.allow_failure ? "allowed to fail" : state(job),
+                        info: duration(job, now), repo: repo.repo, run: String(run.id), url: job.html_url});
                 });
             });
         });
