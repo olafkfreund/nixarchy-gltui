@@ -87,6 +87,26 @@ assert.equal(ranked[0].title, 'b/running');
 assert.equal(ranked[0].info, '2 running');
 assert.equal(ranked[2].info, 'not checked');
 assert.equal(model.rows([{repo:'a/b', description:'find this project'}], {}, {}, 'find this', Date.now()).length, 1);
+const searchRepos = [
+  {repo:'needle-project', runs:[{name:'CI'}]},
+  {repo:'description-match', description:'needle', runs:[{name:'CI'}]},
+  {repo:'pipeline-name', runs:[{name:'needle'}]},
+  {repo:'pipeline-title', runs:[{display_title:'needle'}]},
+  {repo:'pipeline-branch', runs:[{head_branch:'needle'}]},
+  {repo:'pipeline-status', runs:[{conclusion:'needle'}]},
+  {repo:'no-match', runs:[{name:'CI'}]}
+];
+assert.equal(JSON.stringify(model.autoOpen(searchRepos, '')), '{}');
+assert.equal(JSON.stringify(model.autoOpen(searchRepos, 'NEEDLE')),
+  JSON.stringify({'repo:pipeline-name':true, 'repo:pipeline-title':true,
+    'repo:pipeline-branch':true, 'repo:pipeline-status':true}));
+const explicit = {'repo:constructor':true, 'pipeline:1':true};
+const automatic = {'repo:pipeline-name':true};
+const collapsed = {'pipeline:1':true};
+const before = [JSON.stringify(explicit), JSON.stringify(automatic), JSON.stringify(collapsed)];
+assert.equal(JSON.stringify(model.merge(explicit, automatic, collapsed)),
+  JSON.stringify({'repo:constructor':true, 'repo:pipeline-name':true}));
+assert.deepEqual([JSON.stringify(explicit), JSON.stringify(automatic), JSON.stringify(collapsed)], before);
 const backing = [];
 let edits = 0;
 const list = {

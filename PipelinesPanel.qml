@@ -18,6 +18,8 @@ Item {
     property var repos: []
     property var details: ({})
     property var expanded: ({})
+    property var shown: ({})
+    property var searchCollapsed: ({})
     property var entries: []
     property int cursor: 0
     property int zoomPercent: 100
@@ -40,7 +42,7 @@ Item {
     readonly property string helper: localPath("gitlab.py")
     function localPath(name) { return decodeURIComponent(Qt.resolvedUrl(name).toString().replace(/^file:\/\//, "")) }
     onFilterTextChanged: {
-        expanded = ({})
+        searchCollapsed = ({})
         rebuild(true)
         selectionChanged(false)
     }
@@ -102,12 +104,13 @@ Item {
     }
 
     function rebuild(resetSelection) {
+        shown = Model.merge(expanded, Model.autoOpen(repos, filterText), searchCollapsed)
         var key = current ? current.key : ""
         var topIndex = list.indexAt(1, list.contentY + 1)
         var topItem = list.itemAtIndex(topIndex)
         var topKey = entries[topIndex] ? entries[topIndex].key : ""
         var topOffset = topItem ? topItem.y - list.contentY : 0
-        var next = Model.rows(repos, expanded, details, filterText, now)
+        var next = Model.rows(repos, shown, details, filterText, now)
         var structureChanged = Model.syncRows(visibleRows, next)
         entries = next
         cursor = resetSelection ? 0 : Model.selection(entries, key, cursor)
@@ -135,18 +138,24 @@ Item {
         var row = current
         if (!row) return
         var next = Object.assign({}, expanded)
-        if (collapse) {
-            if (next[row.key]) delete next[row.key]
-            else {
+        var collapsed = Object.assign({}, searchCollapsed)
+        var expandable = ["repo", "run", "stage"].indexOf(row.kind) >= 0
+        if (collapse || expandable) {
+            if (expandable && shown[row.key]) {
+                delete next[row.key]
+                if (row.kind === "repo" && filterText) collapsed[row.key] = true
+            } else if (collapse) {
                 cursor = Model.selection(entries, row.parent, cursor)
                 list.positionViewAtIndex(cursor, ListView.Contain)
                 selectionChanged(false)
                 return
+            } else {
+                next[row.key] = true
+                delete collapsed[row.key]
             }
-        } else if (["repo", "run", "stage"].indexOf(row.kind) >= 0) {
-            next[row.key] = !next[row.key]
         }
         expanded = next
+        searchCollapsed = collapsed
         rebuild()
         selectionChanged(true)
         pump()
@@ -159,7 +168,7 @@ Item {
             if (!/^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$/.test(configured)) throw new Error("invalid host " + configured)
             if (configured !== host) {
                 polling = Polling.resetHost(polling)
-                expanded = ({}); details = ({}); updated = ""; error = ""; cursor = 0
+                expanded = ({}); searchCollapsed = ({}); details = ({}); updated = ""; error = ""; cursor = 0
             }
             host = configured
             var names = entry && Array.isArray(entry.projects) ? entry.projects : []
@@ -172,7 +181,7 @@ Item {
     }
     function selectionChanged(immediate) {
         if (!polling) return
-        Polling.select(polling, current ? current.repo : "", current ? current.run : "", expanded, Date.now(), immediate)
+        Polling.select(polling, current ? current.repo : "", current ? current.run : "", shown, Date.now(), immediate)
     }
     function adopt() {
         repos = polling.repos.slice()
@@ -452,7 +461,7 @@ Item {
                                     anchors.verticalCenter: parent.verticalCenter
                                     Text {
                                         width: parent.width
-                                        text: (["repo", "run", "stage"].indexOf(modelData.kind) >= 0 ? (root.expanded[modelData.key] ? "▾ " : "▸ ") : "") + modelData.title
+                                        text: (["repo", "run", "stage"].indexOf(modelData.kind) >= 0 ? (root.shown[modelData.key] ? "▾ " : "▸ ") : "") + modelData.title
                                         color: index === root.cursor ? Commons.Color.menu.selectedText : Commons.Color.menu.text
                                         font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.body); bold: modelData.kind === "repo" }
                                         elide: Text.ElideRight
