@@ -128,4 +128,20 @@ assert.equal(model.browsable('https://gitlab.com/g/p/-/pipelines/1', 'gitlab.com
 assert.equal(model.browsable('https://git.example.org:8443/g/p', 'git.example.org:8443'), true);
 for (const url of ['https://evil.com/x', 'https://gitlab.com.evil/x', 'https://gitlabXcom/x', 'https://gitlab.com/a\u0007b', 'https://gitlab.com/a b', 'http://gitlab.com/x', 5, undefined])
   assert.equal(model.browsable(url, 'gitlab.com'), false, String(url));
+// Zoom steps: 75..200, multiples of 10 from 100, no allowed level skipped (#22).
+const levels = [75]; for (let l = 80; l <= 200; l += 10) levels.push(l);
+for (let p = 75; p <= 200; p++) for (const dir of [1, -1]) {
+  const r = model.zoomStep(p, dir);
+  assert.ok(r === 75 || r % 10 === 0, `${p},${dir} -> ${r}`);
+  assert.ok(r >= 75 && r <= 200, `${p},${dir} -> ${r}`);
+  assert.ok(dir > 0 ? r > p || p === 200 : r < p || p === 75, `${p},${dir} -> ${r}`);
+  assert.ok(!levels.some(l => dir > 0 ? l > p && l < r : l < p && l > r), `${p},${dir} skips a level -> ${r}`);
+  assert.equal(model.zoomStep(p, 0), 100);
+}
+let z = 100; const down = [];
+for (let i = 0; i < 4; i++) down.push(z = model.zoomStep(z, -1));
+assert.deepEqual(down, [90, 80, 75, 75]);
+z = 75; const up = [];
+for (let i = 0; i < 14; i++) up.push(z = model.zoomStep(z, 1));
+assert.deepEqual(up, [80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 200]);
 console.log('Model: stage hierarchy, aggregation, filtering, progress, selection and duration passed');

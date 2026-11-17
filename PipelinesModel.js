@@ -149,3 +149,10 @@ function syncRows(model, rows) {
     }
     return structureChanged;
 }
+
+// Panel zoom: one step of 10 points from the current percent, clamped to 75..200; direction 0 resets.
+function zoomStep(percent, direction) {
+    if (direction > 0) return Math.min(200, Math.floor(percent / 10) * 10 + 10);
+    if (direction < 0) return Math.max(75, Math.ceil(percent / 10) * 10 - 10);
+    return 100;
+}
