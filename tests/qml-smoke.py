@@ -211,6 +211,165 @@ ShellRoot {
             Qt.quit()
         }
     ]
+    property int ei: 0
+    property double holdSince: 0
+    function zRepos() { return Array.from({length:40},function(_, i) { return {repo:"z/p"+(i<10 ? "0" : "")+i,checked:"x",runs:[]} }) }
+    function eq(actual, expected, label) { check(actual===expected, label + ": got " + JSON.stringify(actual)) }
+    // True once cond has held for 300 ms, so the strip's Qt.callLater and the list's layout have run.
+    function held(cond) {
+        if (!cond) { holdSince=0; return false }
+        if (!holdSince) { holdSince=Date.now(); return false }
+        if (Date.now()-holdSince<300) return false
+        holdSince=0
+        return true
+    }
+    function inView() {
+        var l=panel.listItem, r=l.itemAtIndex(39)
+        check(r,"row 39 exists")
+        check(r.y>=l.contentY-1 && r.y+r.height<=l.contentY+l.height+1,"row 39 is inside the viewport")
+    }
+    function clearStops() { panel.polling.error=""; panel.polling.catalogueError=""; panel.polling.auth=false; panel.polling.cooldown=0 }
+    property var esteps: [
+        function() {
+            var P=panel
+            eq(P.errorHint("Authenticate with glab auth login","",true,false),"then press r","hint: glab stop")
+            eq(P.errorHint("Authenticate with glab auth login","",true,true),"then press Esc and r","hint: glab stop, searching")
+            eq(P.errorHint("python3 not found","",true,true),"see the shell log, then press Esc and r","hint: other stop, searching")
+            eq(P.errorHint("python3 not found","",true,false),"see the shell log, then press r","hint: other stop")
+            eq(P.errorHint("see the shell log","",true,false),"then press r","hint: shell log stop")
+            eq(P.errorHint("x","x",false,false),"check the token's access, then press R","hint: catalogue error")
+            eq(P.errorHint("x","x",false,true),"check the token's access, then press Esc and R","hint: catalogue error, searching")
+            eq(P.errorHint("x","x",true,false),"check the token's access, then press R","hint: catalogue error beats stop")
+            eq(P.errorHint("net","",false,false),"","hint: plain error")
+            eq(P.errorHint("net","",false,true),"","hint: plain error, searching")
+            eq(P.errorHint("","",false,false),"","hint: no error")
+            eq(P.emptyText("e","h","c",false,0,"f"),"e — h","empty 1: error with hint beats everything")
+            eq(P.emptyText("e","","c",true,1,""),"e","empty 1: error without hint")
+            eq(P.emptyText("","","paused",false,0,"f"),"paused","empty 2: pause beats loading")
+            eq(P.emptyText("","","",false,0,"f"),"Still discovering projects… no matches so far","empty 3: loading with filter")
+            eq(P.emptyText("","","",false,0,""),"Discovering projects…","empty 3: loading")
+            eq(P.emptyText("","","",true,0,""),"No projects found on this account","empty 4")
+            eq(P.emptyText("","","",true,0,"x"),"No projects found on this account","empty 4 beats 5")
+            eq(P.emptyText("","","",true,3,"zzz"),"No projects or pipelines match “zzz”","empty 5")
+            eq(P.emptyText("","","",true,3,""),"No matching projects or pipelines","empty 6")
+        },
+        function() {
+            check(!panel.errorItem.visible,"no strip without an error or pause")
+            for (var i=0;i<5;i++) panel.polling.repos[i].checked=""
+            panel.adopt()
+            check(panel.placeholderItem.text.indexOf("Activity checked 35/40")>=0,"placeholder shows the activity count: " + panel.placeholderItem.text)
+            for (var j=0;j<5;j++) panel.polling.repos[j].checked="x"
+            panel.adopt()
+        },
+        function() {
+            panel.polling.repos=[]
+            panel.polling.catalogueComplete=false
+            panel.adopt()
+            check(panel.emptyItem.visible,"empty label shows while loading")
+            eq(panel.emptyItem.text,"Discovering projects…","loading text")
+        },
+        function() {
+            panel.polling.catalogueComplete=true
+            panel.adopt()
+            eq(panel.emptyItem.text,"No projects found on this account","no projects text")
+        },
+        function() {
+            panel.polling.repos=zRepos()
+            panel.adopt()
+            panel.filterText="zzz"
+            check(panel.emptyItem.visible,"empty label shows with no match")
+            eq(panel.emptyItem.text,"No projects or pipelines match “zzz”","no match text")
+            panel.filterText=""
+        },
+        function() {
+            panel.polling.auth=true
+            panel.polling.error="Authenticate with glab auth login"
+            panel.adopt()
+            panel.searchItem.forceActiveFocus()
+            check(panel.filtering,"search box is focused")
+            check(panel.errorItem.visible,"strip shows the login stop")
+            check(panel.errorItem.text.indexOf("Authenticate with glab auth login")>=0 && panel.errorItem.text.indexOf("Esc and r")>=0,"strip has the error and the hint: " + panel.errorItem.text)
+            check(panel.placeholderItem.text.indexOf("Authenticate")<0,"placeholder does not show the error")
+        },
+        function() {
+            for (var i=0;i<3;i++) tc.keyClick("z")
+            eq(panel.filterText,"zzz","typed filter")
+            check(panel.errorItem.visible,"strip stays while typing")
+            check(panel.emptyItem.text.indexOf("Authenticate with glab auth login")===0,"empty label starts with the error: " + panel.emptyItem.text)
+        },
+        function() {
+            clearStops()
+            panel.adopt()
+            tc.keyClick(Qt.Key_Escape)
+            eq(panel.filterText,"","Esc clears the filter")
+            panel.polling.cooldown=Date.now()+3600000
+            panel.adopt()
+        },
+        function() {
+            check(panel.cooldownText!=="","pause text shows")
+            check(panel.errorItem.visible,"strip shows the pause")
+            eq(panel.errorItem.text,panel.cooldownText,"strip is only the pause")
+            check(panel.errorItem.text.indexOf("·")<0,"no separator without an error")
+        },
+        // 9a
+        function() {
+            clearStops()
+            panel.filterText=""
+            panel.adopt()
+            listFocus()
+            pressKey(Qt.Key_End)
+            eq(panel.cursor,39,"End moves the cursor to row 39")
+        },
+        // 9b: the strip appears
+        function() {
+            if (panel.errorItem.visible) return false
+            panel.polling.error="short error"
+            panel.adopt()
+        },
+        // 9c
+        function() {
+            if (!held(panel.errorItem.visible)) return false
+            inView()
+        },
+        // 9d: the strip grows
+        function() {
+            panel.polling.error=""
+            panel.polling.cooldown=Date.now()+3600000
+            panel.adopt()
+        },
+        // 9e
+        function() {
+            if (panel.errorItem.text!==panel.cooldownText) return false
+            panel.polling.error="word ".repeat(40)
+            panel.adopt()
+        },
+        // 9f
+        function() {
+            if (!held(panel.errorItem.lineCount===2)) return false
+            inView()
+        },
+        // 9g
+        function() {
+            clearStops()
+            panel.adopt()
+        },
+        function() {
+            panel.workerBusy=false
+            panel.close()
+            panel.polling=Polling.create()
+            panel.polling.repos=zRepos()
+            panel.polling.discover=false
+            panel.polling.catalogueComplete=true
+            panel.polling.catalogueAt=Date.now()
+            // Set before open(): open() pumps at once and the cooldown is what keeps Polling.next from returning a request.
+            panel.polling.cooldown=Date.now()+3600000
+            panel.expanded=({})
+            panel.filterText=""
+            panel.open("{}")
+            panel.adopt()
+            stage=11
+        }
+    ]
     Timer {
         interval: 1000; running: true
         onTriggered: {
@@ -358,18 +517,21 @@ ShellRoot {
             } else if(stage===9 && !panel.workerBusy && !panel.polling.flight) {
                 panel.close()
                 panel.polling=Polling.create()
-                panel.polling.repos=Array.from({length:40},function(_, i) { return {repo:"z/p"+(i<10 ? "0" : "")+i,checked:"x",runs:[]} })
+                panel.polling.repos=zRepos()
                 panel.polling.discover=false
                 panel.polling.catalogueComplete=true
                 panel.polling.catalogueAt=Date.now()
-                // Set before open(): open() pumps at once and the cooldown is what keeps Polling.next from returning a request.
-                panel.polling.cooldown=Date.now()+3600000
+                // workerBusy before open(): open() pumps at once, and with it set nothing starts, so the error and empty states stay put.
+                panel.workerBusy=true
                 panel.expanded=({})
                 panel.filterText=""
                 panel.open("{}")
                 panel.adopt()
                 stage=10
             } else if(stage===10) {
+                var estep=esteps[ei]
+                if (estep() !== false) ei++
+            } else if(stage===11) {
                 var step=zsteps[zi]
                 if (step() !== false) zi++
             }

@@ -261,3 +261,15 @@ p510 stays on 1.0.0, as the owner decided.
 
 Revert the PR's merge commit and release `v1.1.2`, or point the nixarchy pin
 back at `b055ffb` (v1.1.0). No data or config format changes.
+
+## Deviations
+
+- **Step 3, `held()`:** 9c and 9f wait until their condition has held for
+  300 ms (`held(cond)`), not just until it is true. This lets the strip's
+  `Qt.callLater` and the list's layout run before the viewport check.
+- **Step 3, sub-step 8:** no wait for `now` to update. The cooldown is set
+  in the future, so `cooldownText` is non-empty straight away.
+- **Step 3, smoke tests:** these run in a microVM (`nixarchy-desktop`
+  template, `gltui-26`), not on the host desktop. The owner asked for this,
+  because the test opens windows on the desktop. The watchdog was not
+  raised.
