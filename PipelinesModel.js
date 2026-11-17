@@ -77,13 +77,40 @@ function duration(item, now) {
     return seconds >= 60 ? Math.floor(seconds / 60) + "m " + seconds % 60 + "s" : seconds + "s";
 }
 
+function repoMatches(repo, query) {
+    return (repo.repo + " " + (repo.description || "")).toLowerCase().indexOf(query) >= 0;
+}
+
+function runMatches(run, query) {
+    return [run.name, run.display_title, run.head_branch, state(run)].join(" ").toLowerCase().indexOf(query) >= 0;
+}
+
+function autoOpen(repos, filter) {
+    var result = {};
+    var query = filter.toLowerCase();
+    if (!query) return result;
+    repos.forEach(function(repo) {
+        if (!repoMatches(repo, query) && (repo.runs || []).some(function(run) { return runMatches(run, query); }))
+            result["repo:" + repo.repo] = true;
+    });
+    return result;
+}
+
+function merge(expanded, auto, collapsed) {
+    var result = {};
+    Object.keys(expanded).forEach(function(key) { if (Object.prototype.hasOwnProperty.call(expanded, key)) result[key] = expanded[key]; });
+    Object.keys(auto).forEach(function(key) { if (Object.prototype.hasOwnProperty.call(auto, key)) result[key] = auto[key]; });
+    Object.keys(collapsed).forEach(function(key) { if (Object.prototype.hasOwnProperty.call(collapsed, key)) delete result[key]; });
+    return result;
+}
+
 function rows(repos, expanded, details, filter, now) {
     var result = [];
     var query = filter.toLowerCase();
     repos.slice().sort(function(a, b) { return (b.active || 0) - (a.active || 0); }).forEach(function(repo) {
-        var repoMatch = (repo.repo + " " + (repo.description || "")).toLowerCase().indexOf(query) >= 0;
+        var repoMatch = repoMatches(repo, query);
         var runs = (repo.runs || []).filter(function(run) {
-            return repoMatch || [run.name, run.display_title, run.head_branch, state(run)].join(" ").toLowerCase().indexOf(query) >= 0;
+            return repoMatch || runMatches(run, query);
         });
         if (query && !repoMatch && !runs.length) return;
         var active = repo.active === undefined ? (repo.runs || []).filter(function(run) { return run.status === "in_progress"; }).length : repo.active;
