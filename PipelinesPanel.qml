@@ -34,6 +34,7 @@ Item {
     property double now: Date.now()
     readonly property bool discoveryComplete: polling.catalogueComplete
     readonly property string cooldownText: now < polling.cooldown ? "GitLab paused until " + new Date(polling.cooldown).toLocaleTimeString() : ""
+    readonly property string errorHintText: errorHint(error, polling.catalogueError || "", !!polling.auth, filtering)
     readonly property int checkedCount: repos.filter(function(repo) { return !!repo.checked || repo.archived || repo.disabled }).length
     readonly property var current: entries[cursor] || null
     readonly property string helper: localPath("gitlab.py")
@@ -222,6 +223,22 @@ Item {
         if (status === "failed" || status === "error") return Commons.Color.urgent
         if (status === "running" || status === "success") return Commons.Color.accent
         return Commons.Color.menu.text
+    }
+    function errorHint(error, catalogueError, stopped, filtering) {
+        var escape = filtering ? "Esc and " : ""
+        if (error !== "" && error === catalogueError) return "check the token's access, then press " + escape + "R"
+        if (stopped && error.indexOf("glab") < 0 && error.indexOf("shell log") < 0) return "see the shell log, then press " + escape + "r"
+        if (stopped) return "then press " + escape + "r"
+        return ""
+    }
+    function emptyText(error, hint, cooldownText, discoveryComplete, repoCount, filter) {
+        if (error) return error + (hint ? " — " + hint : "")
+        if (cooldownText) return cooldownText
+        if (!discoveryComplete && filter) return "Still discovering projects… no matches so far"
+        if (!discoveryComplete) return "Discovering projects…"
+        if (repoCount === 0) return "No projects found on this account"
+        if (filter) return "No projects or pipelines match “" + filter + "”"
+        return "No matching projects or pipelines"
     }
     function openBrowser() {
         if (current && Model.browsable(current.url, host))
