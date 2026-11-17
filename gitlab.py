@@ -16,7 +16,7 @@ PHASES = ("running", "pending", "created", "waiting_for_resource", "preparing")
 # ZWNJ and ZWJ are Cf but kept: emoji sequences and several scripts need them, and they cannot reorder text (#15).
 JOINERS = "\u200c\u200d"
 IN_PROGRESS = ("running", "canceling")
-QUEUED = ("created", "waiting_for_resource", "preparing", "pending")
+QUEUED = ("created", "waiting_for_resource", "preparing", "pending", "waiting_for_callback")
 SEGMENT = r"[A-Za-z0-9_.][A-Za-z0-9_.-]*"
 
 

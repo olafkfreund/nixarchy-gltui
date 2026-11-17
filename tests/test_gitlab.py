@@ -69,6 +69,9 @@ class NormaliseTest(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertEqual(gitlab.state(raw), expected)
 
+    def test_waiting_for_callback_job_is_queued(self):
+        self.assertEqual(gitlab.job({"id": 5, "status": "waiting_for_callback"})["status"], "queued")
+
     def test_pipeline_fields_and_attempt(self):
         running = gitlab.pipeline(PIPELINE)
         self.assertEqual(running, {"id": 7, "run_number": 3, "name": "merge request event", "display_title": "01234567",
@@ -131,6 +134,12 @@ class PageTest(unittest.TestCase):
         self.assertEqual(data[0]["completed_at"], "2026-01-01T00:02:00Z")
         self.assertEqual((data[1]["conclusion"], data[1]["allow_failure"]), ("failed", True))
         self.assertNotIn("leak", json.dumps(data))
+
+    def test_waiting_for_callback_job_is_not_completed(self):
+        jobs = [{"id": 5, "name": "deploy", "stage": "deploy", "status": "waiting_for_callback"}]
+        with patch.object(gitlab, "request", return_value=reply(jobs)):
+            data = gitlab.read_page({"kind": "jobs", "repo": "g/p", "run": "7", "requestId": 1})["data"]
+        self.assertNotEqual(data[0]["status"], "completed")
 
     def test_single_pipeline(self):
         with patch.object(gitlab, "request", return_value=reply({**PIPELINE, "status": "success"})):

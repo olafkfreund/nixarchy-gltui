@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const {test} = require('node:test');
 // Baseline 0.2.2 / 91f6bde: activity waits 2s after each 1s response;
 // selected summaries issue six sequential pages, then wait 30s. No inspected job.
 function baseline(duration = 1800000) {
@@ -226,3 +227,324 @@ assert.ok(rerun.details['a/b:7'],'finishing does not discard jobs');
 polling.mergeRuns(rerun,rerun.repos[0],[{id:7,status:'completed',run_attempt:'t2'}]);
 assert.equal(rerun.details['a/b:7'],undefined,'finished pipeline with new updated_at is a rerun');
 console.log('Polling: GitLab catalogue order and rerun detection passed');
+
+test('attempt change between jobs pages restarts the snapshot', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:[{id:7,status:'completed',run_attempt:'t1'}],activityAt:0,summaryAt:0}];
+  polling.select(x,'a/b','7',{'a/b:7':true},0,true);
+  let request=polling.next(x,0); assert.equal(request.kind,'jobs');
+  polling.complete(x,response(request,[{id:1,status:'completed'}],2),100);
+  polling.mergeRuns(x,x.repos[0],[{id:7,status:'completed',run_attempt:'t2'}]);
+  assert.equal(x.details['a/b:7'],undefined);
+  request=polling.next(x,1000); assert.equal(request.page,1);
+  polling.complete(x,response(request,[{id:2,status:'completed'}]),1100);
+  assert.deepEqual(Array.from(x.details['a/b:7'].jobs, job=>job.id),[2]);
+  assert.equal(x.details['a/b:7'].finalAttempt,'t2');
+});
+
+test('active to finished to active discards an in-flight jobs page', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:[{id:7,status:'in_progress',run_attempt:'active'}],activityAt:0,summaryAt:0}];
+  polling.select(x,'a/b','7',{'a/b:7':true},0,true);
+  let request=polling.next(x,0); assert.equal(request.kind,'jobs');
+  polling.complete(x,response(request,[{id:1,status:'in_progress'}],2),100);
+  request=polling.next(x,1000); assert.equal(request.page,2);
+  polling.mergeRuns(x,x.repos[0],[{id:7,status:'completed',run_attempt:'t1'}]);
+  polling.mergeRuns(x,x.repos[0],[{id:7,status:'in_progress',run_attempt:'active'}]);
+  polling.complete(x,response(request,[{id:2,status:'in_progress'}]),1100);
+  assert.equal(x.details['a/b:7'],undefined);
+  request=polling.next(x,2000); assert.equal(request.kind,'jobs'); assert.equal(request.page,1);
+});
+
+test('manual refresh clears a selected summary retry delay', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',activityAt:0}]; polling.select(x,'a/b','',{},0,true);
+  let now=0, task;
+  for(let i=0;i<7;i++) {
+    const request=polling.next(x,now); assert.equal(request.kind,'summary');
+    now+=1000;
+    polling.complete(x,{...response(request),error:'offline',errorType:'network'},now);
+    task=x.tasks['summary:a/b:'];
+    if(i<6) now=task.due;
+  }
+  assert.ok(task.due-now>=300000);
+  polling.manual(x,now,false);
+  assert.equal(task.due,now);
+  assert.equal(task.failures,0);
+});
+
+test('manual refresh discards an in-flight summary and restarts at recent page one', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',activityAt:0,runs:[]}]; polling.select(x,'a/b','',{},0,true);
+  let request=polling.next(x,0); assert.equal(request.status,'recent');
+  polling.complete(x,response(request,[]),100);
+  request=polling.next(x,1000); assert.equal(request.status,'running');
+  polling.complete(x,response(request,[]),1100);
+  request=polling.next(x,2000); assert.equal(request.status,'pending');
+  polling.manual(x,2100,false);
+  assert.equal(polling.complete(x,response(request,[{id:99,status:'in_progress'}]),2200),true);
+  assert.equal(x.repos[0].runs.length,0);
+  request=polling.next(x,3000);
+  assert.equal(request.kind,'summary');
+  assert.equal(request.status,'recent');
+  assert.equal(request.page,1);
+});
+
+test('rate limit on a restarted task still sets cooldown', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',activityAt:0}]; polling.select(x,'a/b','',{},0,true);
+  const request=polling.next(x,0); assert.equal(request.kind,'summary');
+  polling.manual(x,100,false);
+  polling.complete(x,{...response(request),error:'rate',errorType:'rate',remaining:0,resetAt:120000},200);
+  assert.equal(x.cooldown,120000);
+  assert.equal(x.tasks['summary:a/b:'].due,200);
+});
+
+test('catalogue permission error stops discovery until manual catalogue refresh', () => {
+  const x=polling.create(); polling.open(x,0);
+  let request=polling.next(x,0); assert.equal(request.kind,'catalogue');
+  polling.complete(x,{...response(request),error:'forbidden',errorType:'permission'},100);
+  assert.equal(x.catalogueError,'forbidden');
+  x.repos=[{repo:'a/b'}]; // never checked, so its activity request is due at once
+  let served=0;
+  for(let now=200;now<=10000;now+=1000) { request=polling.next(x,now); if(request) { served++; assert.notEqual(request.kind,'catalogue'); polling.complete(x,response(request,[]),now+10); } }
+  assert.ok(served>0,'known projects keep polling');
+  assert.equal(x.error,'','a successful request clears the transient error');
+  assert.equal(x.catalogueError,'forbidden','the catalogue refusal survives successful requests');
+  polling.close(x); polling.open(x,20000);
+  for(let now=20000;now<=30000;now+=1000) { request=polling.next(x,now); if(request) { assert.notEqual(request.kind,'catalogue'); polling.complete(x,response(request,[]),now+10); } }
+  polling.manual(x,31000,true);
+  assert.equal(x.catalogueError,'');
+  request=polling.next(x,31000); assert.equal(request.kind,'catalogue');
+});
+
+test('background queued run is looked up after 15 seconds', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',active:0,activityAt:0,runs:[{id:7,status:'queued'}]}];
+  assert.equal(polling.next(x,0),null);
+  assert.equal(polling.next(x,14000),null);
+  const request=polling.next(x,15000);
+  assert.equal(request.kind,'run'); assert.equal(request.run,'7');
+  assert.equal(x.tasks[x.flight.key].group,'background');
+});
+
+for(const [status,errorType] of [['in_progress',''],['completed',''],['queued','permission']])
+  test(`queued run follow-up stops after ${errorType || status}`, () => {
+    const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+    x.repos=[{repo:'a/b',active:0,activityAt:0,runs:[{id:7,status:'queued'}]}];
+    assert.equal(polling.next(x,0),null);
+    const request=polling.next(x,15000); assert.equal(request.kind,'run');
+    polling.complete(x,errorType ? {...response(request,{}),error:'forbidden',errorType} : response(request,{id:7,status}),16000);
+    const later=polling.next(x,31000);
+    assert.notEqual(later && later.kind,'run');
+    assert.equal(x.repos[0].runs[0].lookupError,errorType ? 'forbidden' : undefined);
+  });
+
+test('queued background lookups coexist with running projects and inspected jobs under the request cap', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  const queued=Array.from({length:3},(_,i)=>({repo:`queued/r${i}`,active:0,activityAt:0,
+    runs:Array.from({length:10},(_,j)=>({id:i*10+j+1,status:'queued'}))}));
+  const running=Array.from({length:5},(_,i)=>({repo:`running/r${i}`,active:1,activityAt:i*1000,
+    runs:[{id:100+i,status:'in_progress'}]}));
+  running[0].summaryAt=0;
+  running[0].runs.push({id:200,status:'completed',run_attempt:1});
+  x.repos=running.concat(queued);
+  polling.select(x,'running/r0','200',{'running/r0:200':true},0,true);
+  const history=[], checked={};
+  for(let now=0;now<600000;now+=250) {
+    const request=polling.next(x,now);
+    if(request) {
+      history.push({at:now,kind:request.kind,repo:request.repo,run:request.run});
+      if(request.kind==='run') checked[request.repo+':'+request.run]=true;
+      let data=[];
+      if(request.kind==='activity' || request.kind==='summary' && request.status==='running')
+        data=[{id:100+Number(request.repo.slice(-1)),status:'in_progress'}];
+      else if(request.kind==='run') data={id:Number(request.run),status:'queued'};
+      else if(request.kind==='jobs') data=[{id:1,status:'completed'}];
+      polling.complete(x,response(request,data),now);
+      if(request.kind==='jobs') polling.select(x,'','',{},now,true);
+    }
+  }
+  for(let i=60;i<history.length;i++) assert.ok(history[i].at-history[i-60].at>=60000);
+  for(const repo of running) {
+    const times=history.filter(h=>h.repo===repo.repo && (h.kind==='activity' || h.kind==='summary' && h.at>=15000)).map(h=>h.at);
+    assert.ok(times.length>0,repo.repo+' was never checked');
+    for(let i=1;i<times.length;i++) assert.ok(times[i]-times[i-1]<=16000,repo.repo+' went unchecked for '+(times[i]-times[i-1])+' ms');
+  }
+  assert.equal(Object.keys(checked).length,30,'every queued run is looked up');
+  assert.ok(history.some(h=>h.kind==='jobs'),'inspected jobs are fetched');
+});
+
+// Step 8: a total from the activity reply is not overwritten by a run lookup.
+test('run lookup keeps the active count taken from the activity total', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:[{id:7,status:'in_progress'}],activityAt:0}];
+  polling.select(x,'',  '', {'a/b:7':true},0,true);
+  polling.activity(x,x.repos[0],[],1000,250);
+  assert.equal(x.repos[0].active,250);
+  assert.equal(x.repos[0].runs[0].awaitingFinal,true);
+  const request=polling.next(x,2000); assert.equal(request.kind,'run');
+  polling.complete(x,response(request,{id:7,status:'in_progress'}),2100);
+  assert.equal(x.repos[0].runs[0].awaitingFinal,false);
+  assert.equal(x.repos[0].active,250);
+  polling.activity(x,x.repos[0],[{id:7,status:'in_progress'}],3000);
+  assert.equal(x.repos[0].active,1);
+  assert.equal(x.repos[0].activeFromTotal,false);
+});
+
+// Step 9: details of runs that leave r.runs are pruned.
+const completedRuns=(from,to)=>{const l=[]; for(let i=from;i<=to;i++) l.push({id:i,status:'completed',run_attempt:1}); return l;};
+function pruneFixture() {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:completedRuns(1,10),activityAt:0}];
+  x.details['a/b:1']={jobs:[]};
+  return x;
+}
+test('a run dropped by a summary page loses its details', () => {
+  const x=pruneFixture();
+  assert.ok(x.details['a/b:1']);
+  polling.mergeRuns(x,x.repos[0],[{id:11,status:'completed',run_attempt:1}]);
+  assert.equal(x.repos[0].runs.some(r=>r.id===1),false);
+  assert.equal(x.details['a/b:1'],undefined);
+});
+test('a run dropped by a run lookup loses its details', () => {
+  const x=pruneFixture();
+  x.repos[0].runs=completedRuns(2,11).concat([{id:1,status:'in_progress',awaitingFinal:true}]);
+  const request=polling.next(x,1000); assert.equal(request.kind,'run'); assert.equal(request.run,'1');
+  polling.complete(x,response(request,{id:1,status:'completed',run_attempt:1}),1100);
+  assert.equal(x.repos[0].runs.some(r=>r.id===1),false);
+  assert.equal(x.details['a/b:1'],undefined);
+});
+test('a completed run absent from the final summary loses its details', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:[{id:5,status:'completed',run_attempt:1}],activityAt:0}];
+  x.details['a/b:5']={jobs:[]};
+  polling.select(x,'a/b','',{},0,true);
+  let n=0;
+  for(let now=0;x.tasks['summary:a/b:'] || n===0;now+=1000) {
+    const request=polling.next(x,now); if(!request) continue;
+    assert.equal(request.kind,'summary'); n++;
+    polling.complete(x,response(request,[]),now+10);
+  }
+  assert.equal(n,6);
+  assert.equal(x.repos[0].runs.length,0);
+  assert.equal(x.details['a/b:5'],undefined);
+});
+test('a run dropped by activity on a partial page loses its details', () => {
+  const x=polling.create(); polling.open(x,0);
+  x.repos=[{repo:'a/b',runs:[{id:7,status:'in_progress'}]}];
+  x.details['a/b:7']={jobs:[]};
+  polling.activity(x,x.repos[0],[{id:8,status:'in_progress'}],1000,250);
+  assert.equal(x.repos[0].runs.some(r=>r.id===7),false);
+  assert.equal(x.details['a/b:7'],undefined);
+});
+test('runs of a project removed from the catalogue lose their details', () => {
+  const x=polling.create(); polling.open(x,0); x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:[]},{repo:'x/y',runs:[{id:7}]}];
+  x.details['x/y:7']={jobs:[]}; x.details['a/b:7']={jobs:[]};
+  polling.manual(x,0,true);
+  const request=polling.next(x,0); assert.equal(request.kind,'catalogue');
+  polling.complete(x,response(request,[{repo:'a/b'}]),100);
+  assert.equal(x.repos.length,1);
+  assert.equal(x.details['x/y:7'],undefined);
+  assert.ok(x.details['a/b:7']);
+});
+test('an expanded run beyond the recent ten keeps its details', () => {
+  const x=pruneFixture();
+  x.expanded={'a/b:1':true};
+  polling.mergeRuns(x,x.repos[0],[{id:11,status:'completed',run_attempt:1}]);
+  assert.equal(x.repos[0].runs.some(r=>r.id===1),true);
+  assert.ok(x.details['a/b:1']);
+});
+
+// Step 10: a host change replaces the state and drops the old flight.
+test('resetHost starts a new generation and ignores the old reply', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b'}]; x.details['a/b:7']={jobs:[]};
+  const old=polling.next(x,0); assert.equal(old.kind,'activity');
+  x.cooldown=5;
+  const y=polling.resetHost(x);
+  assert.notEqual(y,x);
+  assert.equal(y.repos.length,0); assert.equal(Object.keys(y.details).length,0); assert.equal(y.cooldown,0);
+  assert.equal(y.starts.length,1); assert.equal(y.opened,true);
+  assert.equal(y.generation,x.generation+1);
+  assert.equal(polling.complete(y,response(old,[]),100),false);
+  const fresh=polling.next(y,2000); assert.equal(fresh.kind,'catalogue');
+  assert.equal(polling.complete(y,response(old,[{repo:'old/host'}]),2100),false);
+  assert.equal(y.repos.length,0);
+});
+
+test('idle polling seeds once until selection changes', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',active:0,activityAt:0}];
+  for(let now=0;now<50000;now+=1000) assert.equal(polling.next(x,now),null);
+  assert.equal(x.seeds,1);
+  polling.select(x,'a/b','',{},50000,true);
+  const request=polling.next(x,50000);
+  assert.equal(request.kind,'summary');
+  assert.equal(x.seeds,2);
+});
+
+test('a future task wakes polling when it becomes due', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  polling.ensure(x,'catalogue','','','background',5000);
+  assert.equal(polling.next(x,0),null);
+  assert.equal(x.wakeAt,5000);
+  assert.equal(polling.next(x,4000),null);
+  const request=polling.next(x,5000);
+  assert.equal(request.kind,'catalogue');
+  assert.equal(x.seeds,2);
+});
+
+test('a queued run that starts running moves its project to the active cadence', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:[{id:7,status:'queued'}]},{repo:'c/d'}];
+  polling.select(x,'c/d','',{},0,true);
+  let request;
+  for(let now=0;now<5000 && !(request && request.kind==='activity' && request.repo==='a/b');now+=1000) {
+    request=polling.next(x,now);
+    if(request && !(request.kind==='activity' && request.repo==='a/b')) { polling.complete(x,response(request,[]),now+10); request=null; }
+  }
+  assert.equal(request.kind,'activity');
+  polling.complete(x,{...response(request,[]),total:0},4100);
+  assert.equal(x.repos[0].active,0); assert.equal(x.repos[0].activeFromTotal,true);
+  let lookup=null;
+  for(let now=5000;now<=25000 && !lookup;now+=1000) {
+    const r=polling.next(x,now);
+    if(r && r.kind==='run' && r.repo==='a/b') lookup={r,now};
+    else if(r) polling.complete(x,response(r,r.kind==='run'?{}:[]),now+10);
+  }
+  assert.ok(lookup,'queued run is looked up');
+  polling.complete(x,response(lookup.r,{id:7,status:'in_progress'}),lookup.now+10);
+  assert.equal(x.repos[0].active,1,'a confirmed running pipeline counts as active');
+});
+
+test('manual refresh also clears an inspected jobs retry delay', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:[{id:7,status:'in_progress',run_attempt:'active'}]}];
+  polling.select(x,'a/b','7',{'a/b:7':true},0,true);
+  const jobs=polling.ensure(x,'jobs','a/b','7','interactive',0);
+  jobs.due=300000; jobs.failures=6; // focused fixture: a jobs task deep in network backoff
+  polling.manual(x,1000,false);
+  assert.equal(jobs.due,1000); assert.equal(jobs.failures,0);
+});
+
+test('an idle selected project wakes for its summary', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',summaryAt:0,activityAt:55000,runs:[]}];
+  polling.select(x,'a/b','',{},0,true);
+  assert.equal(polling.next(x,1000),null);
+  assert.equal(x.wakeAt,60000);
+  assert.equal(polling.next(x,60000).kind,'summary');
+});
+
+test('an inspected unfinished pipeline wakes for its jobs', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',summaryAt:1000,activityAt:1000,runs:[{id:7,status:'in_progress',run_attempt:'active'}]}];
+  x.details['a/b:7']={jobs:[],jobsAt:1000};
+  polling.select(x,'a/b','7',{'a/b:7':true},0,true);
+  assert.equal(polling.next(x,2000),null);
+  assert.equal(x.wakeAt,6000);
+  assert.equal(polling.next(x,6000).kind,'jobs');
+});
+

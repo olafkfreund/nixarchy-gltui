@@ -137,3 +137,7 @@ class RegistrationTest(unittest.TestCase):
                 path.unlink()
                 menu.register_menu()
                 self.assertFalse(path.exists())
+                Path(plugin, 'menu.managed').unlink()
+                Path(plugin, 'menu.managed').symlink_to(Path(plugin, 'missing'))  # dangling marker still counts
+                menu.register_menu()
+                self.assertFalse(path.exists())
