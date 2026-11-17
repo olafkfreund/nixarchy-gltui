@@ -214,6 +214,8 @@ When a running pipeline disappears from the running list, the panel fetches its 
 
 GitLab's `Retry-After` and `RateLimit-Reset` headers pause all work. A rate limit without a deadline starts with a one-minute wait and backs off up to fifteen minutes. Network and server errors back off the affected resource from five seconds up to five minutes. Permission failures leave that project unavailable until the next catalogue or manual refresh. Authentication failures pause polling until you retry or reopen. Manual refresh never bypasses a server cooldown.
 
+Errors and pauses show in a line under the search box, with the key that fixes them: `r` after a login or setup stop, `R` after a project-list failure (press Esc first if the search box has focus).
+
 Closing the panel cancels the helper and its `glab` child. Nothing is polled while the panel is closed. Each request times out after 25 seconds and shares your account's GitLab API quota with other tools.
 
 ## Known limits
