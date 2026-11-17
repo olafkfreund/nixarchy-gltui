@@ -495,3 +495,27 @@ test('a future task wakes polling when it becomes due', () => {
   assert.equal(request.kind,'catalogue');
   assert.equal(x.seeds,2);
 });
+
+test('a queued run that starts running moves its project to the active cadence', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:[{id:7,status:'queued'}]},{repo:'c/d'}];
+  polling.select(x,'c/d','',{},0,true);
+  let request;
+  for(let now=0;now<5000 && !(request && request.kind==='activity' && request.repo==='a/b');now+=1000) {
+    request=polling.next(x,now);
+    if(request && !(request.kind==='activity' && request.repo==='a/b')) { polling.complete(x,response(request,[]),now+10); request=null; }
+  }
+  assert.equal(request.kind,'activity');
+  polling.complete(x,{...response(request,[]),total:0},4100);
+  assert.equal(x.repos[0].active,0); assert.equal(x.repos[0].activeFromTotal,true);
+  let lookup=null;
+  for(let now=5000;now<=25000 && !lookup;now+=1000) {
+    const r=polling.next(x,now);
+    if(r && r.kind==='run' && r.repo==='a/b') lookup={r,now};
+    else if(r) polling.complete(x,response(r,r.kind==='run'?{}:[]),now+10);
+  }
+  assert.ok(lookup,'queued run is looked up');
+  polling.complete(x,response(lookup.r,{id:7,status:'in_progress'}),lookup.now+10);
+  assert.equal(x.repos[0].active,1,'a confirmed running pipeline counts as active');
+});
+

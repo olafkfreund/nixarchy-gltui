@@ -237,7 +237,9 @@ function complete(s,reply,now) {
         if (r) {
             var resolved=Object.assign({},data,{awaitingFinal:false,followupAt:now});
             mergeRuns(s,r,[resolved]);
-            if (!r.activeFromTotal) r.active=(r.runs || []).filter(function(run) { return run.status==="in_progress" && !run.awaitingFinal }).length;
+            var running=(r.runs || []).filter(function(run) { return run.status==="in_progress" && !run.awaitingFinal }).length;
+            // GitLab's total already excludes runs that left; a lookup can only add running ones it has not counted yet.
+            r.active=r.activeFromTotal ? Math.max(r.active || 0,running) : running;
             if (resolved.status==="completed" && t.repo===s.selected && t.run===s.inspected && s.expanded[t.repo+":"+t.run])
                 ensure(s,"jobs",t.repo,t.run,"interactive",now);
         }

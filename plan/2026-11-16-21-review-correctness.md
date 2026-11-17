@@ -190,6 +190,12 @@ quoted code, not only on the number.
      `r.activeFromTotal=typeof total==="number" && total>=0;`.
    - `run` branch (`:205`): only recompute `r.active` when
      `!r.activeFromTotal`.
+   - **Deviation (found in the Codex diff review):** with a server total,
+     use `Math.max(r.active, confirmed running)` instead of leaving it alone.
+     Otherwise a total of 0, followed by a queued-run lookup that returns
+     `in_progress`, keeps the project on the 10-minute idle schedule. Test:
+     "a queued run that starts running moves its project to the active
+     cadence".
 
    Tests:
    - activity with `total: 250`, then a run lookup: `active` stays 250;
