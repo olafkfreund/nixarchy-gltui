@@ -401,7 +401,8 @@ Item {
                         // The strip changes the list's height; keep the cursor row in view.
                         function keepCursor() {
                             Qt.callLater(function() {
-                                if (root.opened && root.cursor >= 0 && root.cursor < list.count) list.positionViewAtIndex(root.cursor, ListView.Contain)
+                                // forceLayout: the Column may not have resized the list yet when this runs.
+                                if (root.opened && root.cursor >= 0 && root.cursor < list.count) { list.forceLayout(); list.positionViewAtIndex(root.cursor, ListView.Contain) }
                             })
                         }
                         onVisibleChanged: keepCursor()

@@ -267,6 +267,8 @@ ShellRoot {
             panel.adopt()
             check(panel.emptyItem.visible,"empty label shows while loading")
             eq(panel.emptyItem.text,"Discovering projects…","loading text")
+            var top=panel.emptyItem.mapToItem(panel.listItem,0,0).y
+            check(top>=0 && top+panel.emptyItem.height<=panel.listItem.height,"empty label sits inside the list: y=" + top)
         },
         function() {
             panel.polling.catalogueComplete=true
@@ -296,6 +298,7 @@ ShellRoot {
             eq(panel.filterText,"zzz","typed filter")
             check(panel.errorItem.visible,"strip stays while typing")
             check(panel.emptyItem.text.indexOf("Authenticate with glab auth login")===0,"empty label starts with the error: " + panel.emptyItem.text)
+            check(Qt.colorEqual(panel.emptyItem.color,Commons.Color.urgent),"empty label is urgent with an error")
         },
         function() {
             clearStops()
@@ -310,6 +313,16 @@ ShellRoot {
             check(panel.errorItem.visible,"strip shows the pause")
             eq(panel.errorItem.text,panel.cooldownText,"strip is only the pause")
             check(panel.errorItem.text.indexOf("·")<0,"no separator without an error")
+            check(!panel.filtering,"list has focus")
+            check(panel.placeholderItem.text.indexOf("paused")<0,"placeholder does not show the pause: " + panel.placeholderItem.text)
+            check(Qt.colorEqual(panel.placeholderItem.color,Commons.Color.menu.text),"placeholder keeps its normal colour")
+            panel.polling.error="Project list refused"
+            panel.polling.catalogueError="Project list refused"
+            panel.adopt()
+            eq(panel.errorItem.text,"Project list refused — check the token's access, then press R · "+panel.cooldownText,"strip joins the error, hint and pause")
+            panel.polling.error=""
+            panel.polling.catalogueError=""
+            panel.adopt()
         },
         // 9a
         function() {

@@ -273,3 +273,13 @@ back at `b055ffb` (v1.1.0). No data or config format changes.
   template, `gltui-26`), not on the host desktop. The owner asked for this,
   because the test opens windows on the desktop. The watchdog was not
   raised.
+- **Review fixes (Opus review):**
+  - `keepCursor` calls `list.forceLayout()` before repositioning, so it does not
+    act on the list's old height.
+  - The smoke test now also checks:
+    - the placeholder with the list focused (no pause text, normal colour);
+      the old check ran with the search box focused and could not fail;
+    - the full strip join (error, hint and pause), through the
+      catalogue-error binding;
+    - the empty label's urgent colour;
+    - that the empty label sits inside the list.
