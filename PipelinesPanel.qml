@@ -364,6 +364,8 @@ Item {
                         clip: true
                         model: visibleRows
                         boundsBehavior: Flickable.StopAtBounds
+                        // The footer settles after the zoom's callLater, which shrinks the list a few px; keep the cursor row contained.
+                        onHeightChanged: if (root.opened && root.cursor >= 0 && root.cursor < count) positionViewAtIndex(root.cursor, ListView.Contain)
                         delegate: Rectangle {
                             required property var rowData
                             readonly property var modelData: rowData
