@@ -35,16 +35,33 @@ That causes two problems:
 
 - An error or rate-limit pause has a place of its own that stays visible
   while the user searches.
-- The empty list tells these states apart:
-  - **loading:** discovery has not finished and nothing has been found yet;
-  - **error:** shows the error, plus what to do ("run `glab auth login`,
-    then press `r`") when it is a login or setup error;
-  - **no projects:** discovery finished and found none;
-  - **no matches:** a filter is set and nothing matches it.
-- When nothing is wrong, the search box still shows its normal hint and
-  progress text.
-- The smoke test covers each empty state, and checks that the error stays
-  visible with text in the search box.
+- When the list is empty, it shows the first of these that applies:
+  1. **Error:** the error text, with advice that depends on the cause:
+     - **Login error** (`errorType` `auth`): "Run `glab auth login`, then
+       press Esc and `r`."
+     - **Setup error** (`setup`, for example invalid helper data): keep the
+       real message and point to the shell log. Login advice would be
+       wrong here.
+     - **Project list refused** (`catalogueError`, a permission error):
+       "Check the token's access, then press `R` to reload projects." Only
+       `R` clears this error (`Polling.manual(..., catalogue)`,
+       `Polling.js:51-54`).
+  2. **Paused:** the rate-limit pause, when there is no error.
+  3. **Loading:** discovery has not finished. If a filter is set, the text
+     says the results are not final yet ("Still discovering… no matches so
+     far").
+  4. **No projects:** discovery finished and found none.
+  5. **No matches:** a filter is set and nothing matches it.
+- When there is both an error and a pause, both are shown.
+- When nothing is wrong, the search box keeps its current text: "Search
+  projects…", "Discovering projects… N found" and "Activity checked N/M".
+  The existing `polling.error || polling.catalogueError` fallback
+  (`PipelinesPanel.qml:176`) stays.
+- The smoke test covers:
+  - each empty state above;
+  - discovery finished while activity checks are still running;
+  - a pause without an error;
+  - an error staying visible while the search box has text or focus.
 
 ## Affected users and systems
 
@@ -71,6 +88,21 @@ That causes two problems:
    strip between the search box and the list, shown only when there is an
    error or a pause. The other option is to replace the footer hint while
    there is an error.
-2. **Should the empty list show the login steps?** I recommend yes, for the
-   `auth` and `setup` errors only. It costs one line and is what a new user
-   needs.
+2. **Should the empty list give recovery steps?** I recommend yes, worded
+   by cause as listed above. A new user needs this the most.
+
+## Review notes
+
+Codex reviewed the draft read-only; agy is out of use (#2748). It confirmed
+both problems and the line references. Its findings, which I checked in
+the code and folded in above:
+- the login advice was wrong for `setup` errors;
+- `r` does not reach the panel while the search box has focus;
+- a refused project list leaves discovery unfinished, so treating every
+  unfinished discovery as "loading" would show loading forever. That is
+  why errors come first in the order above;
+- only `R` clears `catalogueError`;
+- the pause already shows in the footer, and can happen without an error;
+- discovery can finish while activity checks are still running.
+
+Codex agreed with both recommendations.
