@@ -17,12 +17,16 @@ mean different things look the same:
   from "done and green".
 - **An allowed failure looks like a real failure.** A job with
   `allow_failure: true` that failed has the status `failed`, so it gets the red
-  `✕`, the same as a job that breaks the pipeline. The stage above it is shown
-  as success (`stageStatus`, `PipelinesModel.js:40`), so the job row and its
-  stage disagree, and nothing says "failed, but allowed".
-- **Manual, skipped and scheduled jobs look the same.** All three get `−` in the
-  plain text colour (`PipelinesModel.js:24`). A manual job that waits for
-  someone to press play is indistinguishable from a job that will never run.
+  `✕`, the same as a job that breaks the pipeline. A stage whose jobs all
+  succeeded or failed-but-allowed is shown as success (`stageStatus`,
+  `PipelinesModel.js:38`). So the job row and its stage disagree, and nothing
+  says "failed, but allowed". Job rows also drop `allow_failure`
+  (`PipelinesModel.js:112-113`).
+- **Manual, skipped and scheduled jobs look the same at a glance.** All three
+  get `−` in the plain text colour (`PipelinesModel.js:24`,
+  `PipelinesPanel.qml:228`). Only the small status word in the info column
+  (`PipelinesPanel.qml:468`) tells a manual job waiting for someone to press
+  play from a job that will never run.
 - **Skipped jobs are as loud as the rest.** They have the same weight as jobs
   that ran.
 - **Queued states fall back to `○`.** That covers `created`, `pending`,
@@ -31,24 +35,38 @@ mean different things look the same:
 
 ## Proposed outcome
 
-Each of these states has its own icon, and its colour adds meaning but is never
-the only signal:
+Every status maps to one of these groups. Within a group, rows look the same.
+The icon is the signal that always differs; colour reinforces it where the
+theme's palette allows.
 
-| State | What the user should see |
-|---|---|
-| Running | its own icon and colour, distinct from success |
-| Success | `✓`, a "good" colour |
-| Failed (blocking) | `✕`, the urgent colour |
-| Failed but allowed | its own warning icon (for example `!`), a warning colour, and "allowed to fail" in the row's info |
-| Manual | `▶`, so it reads as "waiting for you" |
-| Skipped | dimmed, so rows that ran stand out |
-| Queued / pending | its own "waiting" icon, not the unknown `○` |
-| Canceled | `⊘`, unchanged |
+| Group | Statuses | What the user sees |
+|---|---|---|
+| Running | `running`, `canceling` | its own running icon, distinct from success |
+| Success | `success` | `✓` |
+| Failed (blocking) | `failed` without `allow_failure`, repo `error`, `unavailable` | `✕`, the urgent colour |
+| Allowed failure | `failed` with `allow_failure` | its own warning icon (for example `!`), and "allowed to fail" in the info column |
+| Manual | `manual` | `▶`, so it reads as "waiting for you" |
+| Scheduled | `scheduled` | its own clock-like icon, not `−` |
+| Queued | `created`, `pending`, `waiting_for_resource`, `preparing`, `waiting_for_callback`, `awaiting final status`, the "Loading jobs…" row (`queued`) | its own waiting icon, not the unknown `○` |
+| Skipped | `skipped` | `−`, dimmed |
+| Canceled | `canceled` | `⊘`, unchanged |
+| Neutral | repo rows with nothing running (`neutral`) | unchanged |
+| Unknown | anything else | `○`, unchanged |
 
-- Stages and pipelines use the same mapping as jobs.
+- **Icons are the guarantee.** Every group above has a different icon in every
+  theme.
+- **Colours reinforce, where the palette allows.** Running and success should
+  differ in colour, but the shell's `accent` and `foreground` can be equal in
+  some themes (`Commons/Color.qml:19-21`). There, only the icon separates them,
+  and that is accepted.
+- **Dimmed** means reduced opacity on the whole row's status icon and info
+  text, not only a muted colour, which can fall back to `foreground`.
+- **Selected row:** in every group, the icon and info text stay visible on the
+  selected row's background.
+- Stages and pipelines keep their existing status rules (`stageStatus`), and
+  show the result with this same mapping.
 - The colours follow the current Omarchy theme, so they change with it.
-- The selected row stays readable in every state.
-- Tests cover the mapping from each status to its icon and colour.
+- Tests cover every status in the table: its icon and its colour.
 
 ## Affected users and systems
 
@@ -91,7 +109,22 @@ the only signal:
      then reads a theme file itself.
 
    I recommend **(a)**. It stays inside the shell's contract and keeps the
-   icons as the main signal.
+   icons as the main signal. As the table says, colour is a bonus, not a
+   guarantee.
 2. **Allowed-failure text:** should the info column say "allowed to fail", or
-   show only the icon? I recommend the text: it costs a few characters and
-   removes the doubt.
+   show only the icon? I recommend the text, with the duration kept after it.
+   It costs a few characters and removes the doubt.
+
+## Review notes
+
+Codex reviewed the draft read-only; agy is out of use (#2748). It confirmed
+the problems and agreed with both recommendations. Its findings, which I
+checked in the code and folded in above:
+- the table left out `scheduled`, `waiting_for_callback`, `canceling`,
+  "awaiting final status", "unavailable", and the repo and loading-row
+  statuses;
+- option (a) cannot guarantee that running and success differ in colour, so
+  icons are now the guarantee;
+- "indistinguishable" overstated the problem, because the info column
+  prints the status word;
+- one line reference was wrong, and the stage claim was too broad.
