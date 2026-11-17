@@ -79,6 +79,7 @@ Item {
     readonly property Item placeholderItem: placeholder
 
     function open(payload) {
+        root.now = Date.now()
         var monitor = Hyprland.focusedMonitor
         targetScreen = null
         for (var i = 0; i < Quickshell.screens.length; i++)
@@ -469,9 +470,10 @@ Item {
                                         textFormat: Text.PlainText
                                     }
                                     Text {
+                                        objectName: "rowSubtitle"
                                         visible: !!modelData.subtitle
                                         width: parent.width
-                                        text: modelData.subtitle || ""
+                                        text: Model.subtitleText(modelData, root.now)
                                         color: index === root.cursor ? Commons.Color.menu.selectedText : Commons.Color.menu.text
                                         opacity: 0.65
                                         font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.caption) }
@@ -485,7 +487,7 @@ Item {
                                     opacity: root.statusOpacity(modelData.status)
                                     width: Math.min(implicitWidth, list.width * 0.35)
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: modelData.kind === "repo" ? modelData.info : modelData.status + (modelData.info ? " · " + modelData.info : "")
+                                    text: Model.infoText(modelData, root.now)
                                     color: root.statusColor(modelData.status)
                                     font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.caption) }
                                     elide: Text.ElideRight

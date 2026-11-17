@@ -72,6 +72,22 @@ class NormaliseTest(unittest.TestCase):
     def test_waiting_for_callback_job_is_queued(self):
         self.assertEqual(gitlab.job({"id": 5, "status": "waiting_for_callback"})["status"], "queued")
 
+    def test_job_details(self):
+        base = {"id": 5, "status": "failed"}
+        result = gitlab.job({**base, "failure_reason": "script\u0000_failure\n", "duration": 62,
+                             "queued_duration": 1.5})
+        self.assertEqual((result["failure_reason"], result["duration"], result["queued_duration"]),
+                         ("script_failure", 62, 1.5))
+        self.assertEqual(gitlab.job(base)["failure_reason"], "")
+        self.assertEqual(gitlab.job({**base, "failure_reason": 12})["failure_reason"], "")
+        for value in (None, -1, True, "12", float("inf")):
+            with self.subTest(value=value):
+                result = gitlab.job({**base, "duration": value, "queued_duration": value})
+                self.assertIsNone(result["duration"])
+                self.assertIsNone(result["queued_duration"])
+        self.assertIsNone(gitlab.job(base)["duration"])
+        self.assertIsNone(gitlab.job(base)["queued_duration"])
+
     def test_pipeline_fields_and_attempt(self):
         running = gitlab.pipeline(PIPELINE)
         self.assertEqual(running, {"id": 7, "run_number": 3, "name": "merge request event", "display_title": "01234567",

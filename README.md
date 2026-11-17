@@ -190,6 +190,8 @@ Icons accompany the GitLab status:
 | · | neutral |
 | ○ | anything else |
 
+Merge-request pipelines show `!N` for their branch. Times count up live, and finished rows say how long ago they ended. Failed jobs show the failure reason and the queue time, and project rows say when they were last checked.
+
 Running is now `●` and scheduled is `◷`. A failed job that is allowed to fail shows `!` with "allowed to fail", and skipped jobs are dimmed.
 
 Stage status follows GitLab's rules, in this order:

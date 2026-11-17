@@ -213,6 +213,8 @@ ShellRoot {
         }
     ]
     property int ei: 0
+    property var live: ({})
+    function rowItem(key) { return panel.listItem.itemAtIndex(panel.entries.findIndex(function(r) { return r.key===key })) }
     property double holdSince: 0
     function zRepos() { return Array.from({length:40},function(_, i) { return {repo:"z/p"+(i<10 ? "0" : "")+i,checked:"x",runs:[]} }) }
     function findByName(item, name) {
@@ -566,6 +568,56 @@ ShellRoot {
             check(has("repo:a/one"),"E10 a/one shown through pipeline 1")
             check(!panel.entries.some(function(r) { return r.kind==="more" }),"E10 no more row")
             panel.filterText=""
+        },
+        function() {
+            // S1: live times. Build the whole fixture, then adopt once.
+            var t=Date.now()
+            function iso(ms) { return new Date(ms).toISOString() }
+            panel.filterText=""
+            var R1={id:1,name:"MR",status:"completed",conclusion:"success",run_number:1,head_branch:"refs/merge-requests/42/head",run_started_at:iso(t-70000),completed_at:iso(t-2000)}
+            var R2={id:2,name:"Live",status:"in_progress",conclusion:"running",run_number:2,head_branch:"main",run_started_at:iso(t-30000)}
+            panel.polling.repos=[{repo:"t/live",checked:iso(t-5000),runs:[R1,R2]}]
+            panel.polling.details={"t/live:2":{jobs:[
+                {id:21,name:"spin",stage:"build",status:"in_progress",conclusion:"running",started_at:iso(t-30000),duration:5},
+                {id:22,name:"boom",stage:"build",status:"completed",conclusion:"failed",failure_reason:"script_failure",duration:62,queued_duration:40,started_at:iso(t-100000),completed_at:iso(t-20000)}]}}
+            panel.expanded=({"repo:t/live":true,"t/live:2":true,"t/live:2:stage:build":true})
+            panel.adopt()
+            eq(panel.entries.length,6,"S1 six rows")
+            panel.cursor=0
+            panel.listItem.positionViewAtIndex(0, ListView.Beginning)
+        },
+        function() {
+            // S2 baseline and S3 static checks, in one tick.
+            var l=panel.listItem
+            for (var i=0;i<6;i++) if (!l.itemAtIndex(i)) return false
+            var run1=rowItem("t/live:1"), spin=rowItem("t/live:2:21"), boom=rowItem("t/live:2:22")
+            check(run1 && spin && boom,"S2 rows exist")
+            live={key0:panel.current.key,y0:l.contentY,req0:panel.polling.requests,ents:panel.entries,
+                  a1:findByName(run1,"statusInfo").text,aSpin:findByName(spin,"statusInfo").text,t0:Date.now()}
+            var sub=findByName(run1,"rowSubtitle").text
+            check(sub.indexOf("!42")===0,"S3 subtitle starts with !42: " + sub)
+            var b=findByName(boom,"statusInfo").text
+            check(b.indexOf("script failure")>=0 && b.indexOf("1m 2s")>=0 && b.indexOf("queued 40s")>=0,"S3 boom info: " + b)
+            check(live.a1.indexOf("just now")>=0,"S3 run 1 says just now: " + live.a1)
+        },
+        function() {
+            // S4: both clocks advance, with the view stable on every pass.
+            var run1=rowItem("t/live:1"), spin=rowItem("t/live:2:21")
+            check(run1 && spin,"S4 rows exist")
+            eq(panel.current.key,live.key0,"S4 cursor row")
+            eq(panel.listItem.contentY,live.y0,"S4 contentY")
+            eq(panel.polling.requests,live.req0,"S4 no requests")
+            check(panel.entries===live.ents,"S4 entries not rebuilt")
+            var a1=findByName(run1,"statusInfo").text, s=findByName(spin,"statusInfo").text
+            if (a1.indexOf("s ago")>=0 && s!==live.aSpin) { live.spin=s; return }
+            check(Date.now()-live.t0<15000,"S4 clocks advance within 15 s: " + a1 + " | " + s)
+            return false
+        },
+        function() {
+            // S5: the running job ignores the server snapshot (5s).
+            var d=live.spin.split(" · ")[1], m=/^(?:(\d+)m )?(\d+)s$/.exec(d)
+            check(d!=="5s" && m,"S5 duration part is live: " + d)
+            check(m && (+(m[1]||0))*60+(+m[2])>=30,"S5 at least 30 s: " + d)
         },
         function() {
             panel.workerBusy=false
