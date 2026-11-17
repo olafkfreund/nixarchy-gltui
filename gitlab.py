@@ -1,6 +1,7 @@
 """Read-only GitLab pipeline data, using glab's existing authentication."""
 import argparse
 import json
+import math
 import re
 import signal
 import subprocess
@@ -157,9 +158,14 @@ def pipeline(row):
 
 def job(row):
     entry(row)
+    def number(value):
+        return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
+
     return {"id": row["id"], "name": plain(row.get("name") or "Job"), "stage": plain(str(row.get("stage") or "")),
             "status": state(row["status"]), "conclusion": row["status"], "allow_failure": bool(row.get("allow_failure")),
-            "started_at": row.get("started_at"), "completed_at": row.get("finished_at"), "html_url": row.get("web_url") or ""}
+            "started_at": row.get("started_at"), "completed_at": row.get("finished_at"), "html_url": row.get("web_url") or "",
+            "failure_reason": plain(row["failure_reason"]) if isinstance(row.get("failure_reason"), str) else "",
+            "duration": number(row.get("duration")), "queued_duration": number(row.get("queued_duration"))}
 
 
 def project(row):

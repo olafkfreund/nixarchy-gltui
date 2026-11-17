@@ -72,9 +72,60 @@ function duration(item, now) {
     var start = Date.parse(item.started_at || item.run_started_at || "");
     if (!isFinite(start)) return "";
     var end = Date.parse(item.completed_at || (item.status === "completed" ? item.updated_at : "") || "");
-    var seconds = Math.max(0, Math.floor(((isFinite(end) ? end : now) - start) / 1000));
-    if (seconds >= 3600) return Math.floor(seconds / 3600) + "h " + Math.floor(seconds % 3600 / 60) + "m";
-    return seconds >= 60 ? Math.floor(seconds / 60) + "m " + seconds % 60 + "s" : seconds + "s";
+    return seconds(Math.max(0, Math.floor(((isFinite(end) ? end : now) - start) / 1000)));
+}
+
+function seconds(n) {
+    if (n >= 3600) return Math.floor(n / 3600) + "h " + Math.floor(n % 3600 / 60) + "m";
+    return n >= 60 ? Math.floor(n / 60) + "m " + n % 60 + "s" : n + "s";
+}
+
+function ago(iso, now) {
+    var time = Date.parse(iso || "");
+    if (!isFinite(time)) return "";
+    var s = Math.floor((now - time) / 1000);
+    if (s < 10) return "just now";
+    if (s < 60) return s + "s ago";
+    if (s < 3600) return Math.floor(s / 60) + "m ago";
+    if (s < 86400) return Math.floor(s / 3600) + "h ago";
+    return Math.floor(s / 86400) + "d ago";
+}
+
+function shortRef(ref) {
+    var match = /^refs\/merge-requests\/(\d+)\/(head|merge|train)$/.exec(ref);
+    return match ? "!" + match[1] : ref;
+}
+
+function reasonText(code) {
+    var names = {script_failure: "script failure", runner_system_failure: "runner error",
+        stuck_or_timeout_failure: "timed out", job_execution_timeout: "timed out", api_failure: "API error",
+        missing_dependency_failure: "missing dependency", runner_unsupported: "runner unsupported",
+        scheduler_failure: "scheduler error", data_integrity_failure: "data error", unknown_failure: "unknown failure"};
+    return Object.prototype.hasOwnProperty.call(names, code) ? names[code] : (code ? code.replace(/_/g, " ") : "");
+}
+
+function infoText(row, now) {
+    if (row.kind === "repo") {
+        var checked = row.info && /running$/.test(row.info) ? ago(row.checked, now) : "";
+        return row.info + (checked ? " · checked " + checked : "");
+    }
+    var live = duration({started_at: row.started, completed_at: row.ended,
+        status: row.ended ? "completed" : ""}, now);
+    var parts = [row.status];
+    if (row.kind === "run") parts.push(live, ago(row.finished, now));
+    else if (row.kind === "stage") parts.push(row.done + "/" + row.total + " jobs", live);
+    else if (row.kind === "job") {
+        if (row.status === "failed" || row.status === "allowed to fail") parts.push(reasonText(row.reason));
+        parts.push(row.complete && typeof row.serverDuration === "number" ? seconds(Math.round(row.serverDuration)) : live);
+        if (row.queued > 0) parts.push("queued " + seconds(Math.round(row.queued)));
+        parts.push(ago(row.finished, now));
+    } else return row.status + (row.info ? " · " + row.info : "");
+    return parts.filter(Boolean).join(" · ");
+}
+
+function subtitleText(row, now) {
+    var fetched = row.kind === "run" ? ago(row.fetched, now) : "";
+    return (row.subtitle || "") + (fetched ? " · jobs fetched " + fetched : "");
 }
 
 function repoMatches(repo, query) {
@@ -82,7 +133,7 @@ function repoMatches(repo, query) {
 }
 
 function runMatches(run, query) {
-    return [run.name, run.display_title, run.head_branch, state(run)].join(" ").toLowerCase().indexOf(query) >= 0;
+    return [run.name, run.display_title, run.head_branch, shortRef(run.head_branch), state(run)].join(" ").toLowerCase().indexOf(query) >= 0;
 }
 
 function autoOpen(repos, filter) {
@@ -118,7 +169,7 @@ function rows(repos, expanded, details, filter, now) {
         result.push({key: repoKey, parent: "", kind: "repo", depth: 0, title: repo.repo,
             subtitle: repo.error || repo.description || "", status: repo.error ? "error" : (active ? "running" : "neutral"),
             info: repo.archived ? "archived" : repo.disabled ? "disabled" : repo.error ? "unavailable" : repo.checked || repo.runs ? active + " running" : "not checked",
-            repo: repo.repo, url: repo.url ? repo.url + "/-/pipelines" : ""});
+            checked: repo.checked || "", repo: repo.repo, url: repo.url ? repo.url + "/-/pipelines" : ""});
         if (!expanded[repoKey]) return;
         // Pipelines past the first page of each unfinished status are counted, not fetched (#15).
         var hidden = repo.hidden || {};
@@ -134,10 +185,12 @@ function rows(repos, expanded, details, filter, now) {
             if (more && run.status === "completed") { result.push(more); more = null; }
             var runKey = repo.repo + ":" + run.id;
             var detail = details[runKey];
-            var stamp = detail && detail.updated ? " · jobs fetched " + detail.updated.slice(11, 19) + " UTC" : "";
             result.push({key: runKey, parent: repoKey, kind: "run", depth: 1, title: run.name || "Pipeline",
-                subtitle: (run.head_branch || "") + " · #" + run.run_number + stamp + " · " + (run.display_title || ""),
-                status: state(run), info: duration(run, now), repo: repo.repo, run: String(run.id), url: run.html_url});
+                subtitle: (shortRef(run.head_branch) || "") + " · #" + run.run_number + " · " + (run.display_title || ""),
+                status: state(run), info: duration(run, now), started: run.started_at || run.run_started_at || "",
+                ended: run.completed_at || (run.status === "completed" ? run.updated_at : "") || "",
+                finished: run.completed_at || "", fetched: detail && detail.updated || "",
+                repo: repo.repo, run: String(run.id), url: run.html_url});
             if (!expanded[runKey]) return;
             if (!detail || detail.error) result.push({key: runKey + ":message", parent: runKey, kind: "message", depth: 2,
                 title: detail ? detail.error : "Loading jobs…", subtitle: "", status: detail ? "error" : "queued", info: "", repo: repo.repo, run: String(run.id)});
@@ -146,12 +199,17 @@ function rows(repos, expanded, details, filter, now) {
                 var done = stage.jobs.filter(function(job) { return job.status === "completed"; }).length;
                 result.push({key: stageKey, parent: runKey, kind: "stage", depth: 2, title: stage.name, subtitle: "",
                     status: stage.status, info: done + "/" + stage.jobs.length + " jobs · " + duration(stage.span, now),
+                    started: stage.span.started_at || "", ended: stage.span.completed_at || "", done: done, total: stage.jobs.length,
                     repo: repo.repo, run: String(run.id), url: run.html_url});
                 if (!expanded[stageKey]) return;
                 stage.jobs.forEach(function(job) {
                     result.push({key: runKey + ":" + job.id, parent: stageKey, kind: "job", depth: 3, title: job.name, subtitle: "",
                         status: job.conclusion === "failed" && job.allow_failure ? "allowed to fail" : state(job),
-                        info: duration(job, now), repo: repo.repo, run: String(run.id), url: job.html_url});
+                        info: duration(job, now), started: job.started_at || "", ended: job.completed_at || "",
+                        finished: job.completed_at || "", complete: job.status === "completed",
+                        serverDuration: job.duration == null ? null : job.duration,
+                        queued: job.queued_duration == null ? null : job.queued_duration,
+                        reason: job.failure_reason || "", repo: repo.repo, run: String(run.id), url: job.html_url});
                 });
             });
         });
@@ -166,7 +224,8 @@ function selection(rows, key, previous) {
 }
 
 // ponytail: the fields the delegate reads that can change for a key; add any new one the delegate reads.
-var shownFields = ["title", "subtitle", "status", "info"];
+var shownFields = ["title", "subtitle", "status", "info", "checked", "started", "ended", "finished",
+    "fetched", "done", "total", "complete", "serverDuration", "queued", "reason"];
 
 // Keep delegates alive when polling changes a status or inserts a running repo.
 // Removing gone rows first keeps one removal from cascading into a move per later row.

@@ -56,6 +56,65 @@ assert.equal(agg('canceled', 'success'), 'canceled');
 assert.equal(agg('manual', 'manual'), 'manual');
 assert.equal(agg('manual', 'skipped'), 'skipped');
 assert.equal(model.duration({started_at:'2026-01-01T00:00:00Z'}, Date.parse('2026-01-01T00:01:15Z')), '1m 15s');
+const now = Date.parse('2026-01-01T00:02:00Z');
+for (const suffix of ['head', 'merge', 'train'])
+  assert.equal(model.shortRef('refs/merge-requests/123/' + suffix), '!123');
+for (const ref of ['main', 'refs/merge-requests/123/other', 'refs/merge-requests/x/head'])
+  assert.equal(model.shortRef(ref), ref);
+assert.equal(model.runMatches({head_branch:'refs/merge-requests/123/head'}, '!123'), true);
+assert.equal(model.runMatches({head_branch:'refs/merge-requests/123/head'}, '123'), true);
+for (const [s, expected] of [[9,'just now'],[10,'10s ago'],[59,'59s ago'],[60,'1m ago'],
+  [3599,'59m ago'],[3600,'1h ago'],[86399,'23h ago'],[86400,'1d ago']])
+  assert.equal(model.ago(new Date(now - s * 1000).toISOString(), now), expected);
+assert.equal(model.ago(new Date(now + 1000).toISOString(), now), 'just now');
+assert.equal(model.ago('', now), '');
+assert.equal(model.ago('invalid', now), '');
+for (const [code, expected] of Object.entries({script_failure:'script failure', runner_system_failure:'runner error',
+  stuck_or_timeout_failure:'timed out', job_execution_timeout:'timed out', api_failure:'API error',
+  missing_dependency_failure:'missing dependency', runner_unsupported:'runner unsupported',
+  scheduler_failure:'scheduler error', data_integrity_failure:'data error', unknown_failure:'unknown failure',
+  new_code:'new code', constructor:'constructor'}))
+  assert.equal(model.reasonText(code), expected);
+assert.equal(model.reasonText(''), '');
+assert.equal(model.seconds(45), '45s');
+assert.equal(model.seconds(62), '1m 2s');
+assert.equal(model.seconds(3900), '1h 5m');
+assert.equal(model.duration({started_at:'2026-01-01T00:00:00Z', completed_at:'2026-01-01T00:01:02Z'}, now), '1m 2s');
+const at = s => new Date(now - s * 1000).toISOString();
+assert.equal(model.infoText({kind:'repo', info:'2 running', checked:at(10)}, now), '2 running · checked 10s ago');
+assert.equal(model.infoText({kind:'repo', info:'not checked', checked:at(10)}, now), 'not checked');
+assert.equal(model.infoText({kind:'repo', info:'archived', checked:at(10)}, now), 'archived');
+assert.equal(model.infoText({kind:'run', status:'success', started:at(70), ended:at(10), finished:at(9)}, now),
+  'success · 1m 0s · just now');
+assert.equal(model.infoText({kind:'stage', status:'running', done:1, total:2, started:at(70)}, now),
+  'running · 1/2 jobs · 1m 10s');
+assert.equal(model.infoText({kind:'job', status:'running', started:at(30), serverDuration:5}, now), 'running · 30s');
+assert.equal(model.infoText({kind:'job', status:'success', complete:true, serverDuration:0}, now), 'success · 0s');
+assert.equal(model.infoText({kind:'job', status:'failed', complete:true, serverDuration:62,
+  reason:'script_failure', queued:40, finished:at(20)}, now),
+  'failed · script failure · 1m 2s · queued 40s · 20s ago');
+assert.equal(model.infoText({kind:'job', status:'allowed to fail', complete:true, serverDuration:62,
+  reason:'script_failure'}, now), 'allowed to fail · script failure · 1m 2s');
+assert.equal(model.infoText({kind:'message', status:'queued', info:''}, now), 'queued');
+assert.equal(model.infoText({kind:'message', status:'error', info:'unavailable'}, now), 'error · unavailable');
+assert.equal(model.subtitleText({kind:'run', subtitle:'!42 · #1 · abc', fetched:at(20)}, now),
+  '!42 · #1 · abc · jobs fetched 20s ago');
+assert.equal(model.subtitleText({kind:'run', subtitle:'main', fetched:''}, now), 'main');
+assert.equal(model.subtitleText({kind:'job', subtitle:'job', fetched:at(20)}, now), 'job');
+const detailRows = model.rows([{repo:'g/p', checked:at(20), runs:[{id:1, head_branch:'refs/merge-requests/42/head',
+  status:'completed', conclusion:'success', run_number:1, run_started_at:at(70), completed_at:at(10)}]}],
+  {'repo:g/p':true, 'g/p:1':true, 'g/p:1:stage:build':true},
+  {'g/p:1':{updated:at(20), jobs:[{id:2, name:'job', stage:'build', status:'completed', conclusion:'failed',
+    started_at:at(60), completed_at:at(10), duration:0, queued_duration:4, failure_reason:'script_failure'}]}}, '', now);
+assert.equal(detailRows[0].checked, at(20));
+assert.equal(detailRows[1].subtitle, '!42 · #1 · ');
+assert.deepEqual([detailRows[1].started, detailRows[1].ended, detailRows[1].finished, detailRows[1].fetched],
+  [at(70), at(10), at(10), at(20)]);
+assert.deepEqual([detailRows[2].started, detailRows[2].ended, detailRows[2].done, detailRows[2].total],
+  [at(60), at(10), 1, 1]);
+assert.deepEqual([detailRows[3].started, detailRows[3].ended, detailRows[3].finished, detailRows[3].complete,
+  detailRows[3].serverDuration, detailRows[3].queued, detailRows[3].reason],
+  [at(60), at(10), at(10), true, 0, 4, 'script_failure']);
 const groups = [
   ['running', '●', ['running', 'canceling']],
   ['success', '✓', ['success']],
@@ -130,6 +189,14 @@ assert.equal(backing[1], originalA, 'Reordering moves the row instead of recreat
 model.syncRows(list, [first[0]]);
 assert.equal(list.count, 1);
 assert.equal(backing[0].rowKey, 'a');
+for (const field of ['checked','started','ended','finished','fetched','done','total','complete',
+  'serverDuration','queued','reason']) {
+  const value = field === 'serverDuration' ? 0 : field === 'complete' ? false : 'value';
+  model.syncRows(list, [{...first[0], [field]:value}]);
+  assert.equal(backing[0].rowData[field], value, field + ' appeared');
+  model.syncRows(list, [first[0]]);
+  assert.equal(backing[0].rowData[field], undefined, field + ' disappeared');
+}
 // Large projects: a "more" row for pipelines counted but not fetched (#15).
 const bigRepo = {repo:'g/p', url:'https://gitlab.com/g/p', checked:true,
   hidden:{running:150, pending:1500, created:0, waiting_for_resource:-1},
