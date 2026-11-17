@@ -176,12 +176,19 @@ Icons accompany the GitLab status:
 
 | Icon | Status |
 | --- | --- |
+| ● | running, canceling |
 | ✓ | success |
-| ✕ | failed |
-| ◷ | running, canceling |
-| ○ | created, pending, preparing, waiting |
+| ✕ | failed, error, unavailable |
+| ! | allowed to fail |
+| ▶ | manual |
+| ◷ | scheduled |
+| ◌ | created, pending, waiting_for_resource, preparing, waiting_for_callback, queued, awaiting final status |
+| − | skipped |
 | ⊘ | canceled |
-| − | skipped, manual, scheduled |
+| · | neutral |
+| ○ | anything else |
+
+Running is now `●` and scheduled is `◷`. A failed job that is allowed to fail shows `!` with "allowed to fail", and skipped jobs are dimmed.
 
 Stage status follows GitLab's rules, in this order:
 
