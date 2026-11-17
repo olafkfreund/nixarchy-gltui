@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 27
 intent: intent/2026-11-17-27-filter-expansion.md
 ---
