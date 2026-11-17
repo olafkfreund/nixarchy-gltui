@@ -170,6 +170,8 @@ The plugin uses your existing `glab` login and never reads, extracts or stores a
 | Ctrl + - | Make it smaller |
 | Ctrl + 0 | Reset the size |
 
+Searching keeps the rows you opened open, and a project that matches only through one of its pipelines opens by itself. Left closes such a project for that search, and clearing the search restores what you had opened.
+
 The zoom multiplies the theme's `[font] base-size`, ranges from 75% to 200%, and resets when the shell restarts.
 
 Icons accompany the GitLab status:
