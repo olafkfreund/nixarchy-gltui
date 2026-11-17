@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 26
 author: olafkfreund
 ---
@@ -84,11 +84,11 @@ That causes two problems:
 
 ## Open questions
 
-1. **Where does the error go while searching?** I recommend a one-line error
+1. **Where does the error go while searching?** Decided: the strip. I recommended a one-line error
    strip between the search box and the list, shown only when there is an
    error or a pause. The other option is to replace the footer hint while
    there is an error.
-2. **Should the empty list give recovery steps?** I recommend yes, worded
+2. **Should the empty list give recovery steps?** Decided: yes, worded
    by cause as listed above. A new user needs this the most.
 
 ## Review notes
