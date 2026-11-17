@@ -253,3 +253,15 @@ p510 stays on 1.0.0.
 
 Revert the PR's merge commit and release `v1.2.1`, or point the pins back at
 `59e6856` (v1.1.1). No data or config format changes.
+
+## Deviations
+
+- **Step 3, wait and check in one estep:** the selected-rows check keeps the
+  wait and the check in one `estep`, with a `gPlaced` flag. The first tick
+  places the cursor and scrolls, and a later tick waits for the delegate and
+  checks it. The plan asked for separate functions.
+- **Step 3, stage 12:** the lint row's "later tick" is a new tick-timer stage,
+  `stage===12`. It runs between stage 1 and stage 2, and does the close that
+  stage 1 used to do.
+- **Step 3, group fixture:** the selected-rows fixture covers every group
+  except `allowed`, which the lint row covers.
