@@ -20,6 +20,8 @@ Item {
     property var expanded: ({})
     property var entries: []
     property int cursor: 0
+    property int zoomPercent: 100
+    readonly property real borderWidth: Math.max(1, Style.space(2))
     property alias filterText: searchField.text
     readonly property bool filtering: searchField.activeFocus
     property string error: ""
@@ -41,6 +43,34 @@ Item {
         rebuild(true)
         selectionChanged(false)
     }
+
+    function zf(v) { return Math.round(v * zoomPercent / 100) }
+    function zs(v) { return v * zoomPercent / 100 }
+    // Ctrl + = / + zooms in, Ctrl + - out, Ctrl + 0 resets; Alt or Meta (AltGr, Super) is not a zoom key.
+    function zoomKey(event) {
+        if (!(event.modifiers & Qt.ControlModifier) || (event.modifiers & (Qt.AltModifier | Qt.MetaModifier))) return false
+        var dir = event.key === Qt.Key_Equal || event.key === Qt.Key_Plus ? 1 : event.key === Qt.Key_Minus ? -1 : event.key === Qt.Key_0 ? 0 : null
+        if (dir === null) return false
+        zoomPercent = Model.zoomStep(zoomPercent, dir)
+        return true
+    }
+    // Keep the cursor row in view once the zoomed layout has run; rebuild() is not safe here (it reads list geometry).
+    onZoomPercentChanged: {
+        zoomSettle.restart()
+        Qt.callLater(function() {
+            list.forceLayout()
+            if (cursor >= 0 && cursor < list.count) list.positionViewAtIndex(cursor, ListView.Contain)
+        })
+    }
+    // The footer settles after the zoom's callLater; only that settle may move the view, not later resizes or scrolling.
+    Timer { id: zoomSettle; interval: 300 }
+    // Test hooks for tests/qml-smoke.py.
+    readonly property Item cardItem: card
+    readonly property Item listItem: list
+    readonly property Item searchItem: searchField
+    readonly property Item hintItem: hint
+    readonly property Item zoomItem: zoomLabel
+    readonly property Item hairlineItem: hairline
 
     function open(payload) {
         var monitor = Hyprland.focusedMonitor
@@ -247,12 +277,12 @@ Item {
         BorderSurface {
             id: card
             anchors.centerIn: parent
-            width: Math.min(Style.space(900), window.width - Style.gapsOut * 2)
-            height: Math.min(Style.space(680), window.height - Style.gapsOut * 2)
+            width: Math.min(root.zs(Style.space(900)), window.width - Style.gapsOut * 2)
+            height: Math.min(root.zs(Style.space(680)), window.height - Style.gapsOut * 2)
             color: Commons.Color.menu.background
             radius: Style.cornerRadius
-            borderSpec: Border.surfaceSpec("menu", "border", Commons.Color.menu.border, Math.max(1, Style.space(2)))
-            padding: Style.spacing.panelPadding
+            borderSpec: Border.surfaceSpec("menu", "border", Commons.Color.menu.border, root.borderWidth)
+            padding: root.zs(Style.spacing.panelPadding)
 
             Item {
                 id: keys
@@ -263,6 +293,7 @@ Item {
                 anchors.bottomMargin: card.contentBottomInset
                 focus: true
                 Keys.onPressed: function(event) {
+                    if (root.zoomKey(event)) { event.accepted = true; return }
                     event.accepted = true
                     if (event.key === Qt.Key_Escape) {
                         if (root.filterText) root.filterText = ""
@@ -285,12 +316,12 @@ Item {
 
                 Column {
                     anchors.fill: parent
-                    spacing: Style.spacing.md
+                    spacing: root.zs(Style.spacing.md)
                     Text {
                         width: parent.width
                         text: "GitLab Pipelines  ·  " + root.repos.length + (root.repos.length === 1 ? " project" : " projects")
                         color: Commons.Color.menu.text
-                        font { family: Style.font.menuFamily; pixelSize: Style.font.title; bold: true }
+                        font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.title); bold: true }
                         textFormat: Text.PlainText
                     }
                     TextInput {
@@ -298,12 +329,13 @@ Item {
                         width: parent.width
                         height: Math.ceil(font.pixelSize * 1.4)
                         color: Commons.Color.menu.text
-                        font { family: Style.font.menuFamily; pixelSize: Style.font.caption }
+                        font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.caption) }
                         clip: true
                         selectByMouse: true
                         selectionColor: Commons.Color.menu.selectedBackground
                         selectedTextColor: Commons.Color.menu.selectedText
                         Keys.onPressed: function(event) {
+                            if (root.zoomKey(event)) { event.accepted = true; return }
                             if (event.key === Qt.Key_Up || event.key === Qt.Key_Down) {
                                 root.move(event.key === Qt.Key_Up ? -1 : 1)
                             } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
@@ -329,34 +361,36 @@ Item {
                             textFormat: Text.PlainText
                         }
                     }
-                    Rectangle { width: parent.width; height: Style.spacing.hairline; color: Commons.Color.menu.border; opacity: 0.4 }
+                    Rectangle { id: hairline; width: parent.width; height: Style.spacing.hairline; color: Commons.Color.menu.border; opacity: 0.4 }
                     ListView {
                         id: list
                         width: parent.width
-                        height: Math.max(0, parent.height - y - footer.height - Style.spacing.md)
+                        height: Math.max(0, parent.height - y - footer.height - root.zs(Style.spacing.md))
                         clip: true
                         model: visibleRows
                         boundsBehavior: Flickable.StopAtBounds
+                        // The footer settles after the zoom's callLater, which shrinks the list a few px; keep the cursor row contained.
+                        onHeightChanged: if (zoomSettle.running && root.opened && root.cursor >= 0 && root.cursor < count) positionViewAtIndex(root.cursor, ListView.Contain)
                         delegate: Rectangle {
                             required property var rowData
                             readonly property var modelData: rowData
                             required property int index
                             width: list.width
-                            height: modelData.subtitle ? Math.max(Style.space(64), Style.font.body + Style.font.caption + Style.space(16)) : Math.max(Style.space(40), Style.font.body + Style.space(12))
+                            height: modelData.subtitle ? Math.max(root.zs(Style.space(64)), root.zf(Style.font.body) + root.zf(Style.font.caption) + root.zs(Style.space(16))) : Math.max(root.zs(Style.space(40)), root.zf(Style.font.body) + root.zs(Style.space(12)))
                             color: index === root.cursor ? Commons.Color.menu.selectedBackground : "transparent"
                             radius: 0
                             Row {
                                 anchors.fill: parent
-                                anchors.leftMargin: Style.space(8) + modelData.depth * Style.space(18)
-                                anchors.rightMargin: Style.space(8)
-                                spacing: Style.spacing.sm
+                                anchors.leftMargin: root.zs(Style.space(8)) + modelData.depth * root.zs(Style.space(18))
+                                anchors.rightMargin: root.zs(Style.space(8))
+                                spacing: root.zs(Style.spacing.sm)
                                 Text {
                                     id: statusIcon
-                                    width: Style.space(18)
+                                    width: root.zs(Style.space(18))
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: Model.icon(modelData.status)
                                     color: root.statusColor(modelData.status)
-                                    font { family: Style.font.menuFamily; pixelSize: Style.font.body }
+                                    font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.body) }
                                 }
                                 Column {
                                     width: Math.max(0, parent.width - statusIcon.width - info.width - parent.spacing * 2)
@@ -365,7 +399,7 @@ Item {
                                         width: parent.width
                                         text: (["repo", "run", "stage"].indexOf(modelData.kind) >= 0 ? (root.expanded[modelData.key] ? "▾ " : "▸ ") : "") + modelData.title
                                         color: index === root.cursor ? Commons.Color.menu.selectedText : Commons.Color.menu.text
-                                        font { family: Style.font.menuFamily; pixelSize: Style.font.body; bold: modelData.kind === "repo" }
+                                        font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.body); bold: modelData.kind === "repo" }
                                         elide: Text.ElideRight
                                         textFormat: Text.PlainText
                                     }
@@ -375,7 +409,7 @@ Item {
                                         text: modelData.subtitle || ""
                                         color: index === root.cursor ? Commons.Color.menu.selectedText : Commons.Color.menu.text
                                         opacity: 0.65
-                                        font { family: Style.font.menuFamily; pixelSize: Style.font.caption }
+                                        font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.caption) }
                                         elide: Text.ElideRight
                                         textFormat: Text.PlainText
                                     }
@@ -386,7 +420,7 @@ Item {
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: modelData.kind === "repo" ? modelData.info : modelData.status + (modelData.info ? " · " + modelData.info : "")
                                     color: root.statusColor(modelData.status)
-                                    font { family: Style.font.menuFamily; pixelSize: Style.font.caption }
+                                    font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.caption) }
                                     elide: Text.ElideRight
                                     textFormat: Text.PlainText
                                 }
@@ -397,18 +431,33 @@ Item {
                             visible: root.entries.length === 0
                             text: "No matching projects or pipelines"
                             color: Commons.Color.menu.text
-                            font { family: Style.font.menuFamily; pixelSize: Style.font.body }
+                            font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.body) }
                         }
                     }
-                    Text {
+                    Item {
                         id: footer
                         width: parent.width
-                        text: root.cooldownText || "↑↓ move  ←→ expand  / search  r refresh  R projects  o GitLab  Esc close"
-                        color: Commons.Color.menu.text
-                        opacity: 0.65
-                        font { family: Style.font.menuFamily; pixelSize: Style.font.caption }
-                        elide: Text.ElideRight
-                        textFormat: Text.PlainText
+                        height: Math.max(hint.implicitHeight, zoomLabel.visible ? zoomLabel.implicitHeight : 0)
+                        Text {
+                            id: hint
+                            width: parent.width - (zoomLabel.visible ? zoomLabel.implicitWidth + root.zs(Style.spacing.sm) : 0)
+                            text: root.cooldownText || "↑↓ move  ←→ expand  / search  r refresh  R projects  o GitLab  Ctrl +/- zoom  Esc close"
+                            color: Commons.Color.menu.text
+                            opacity: 0.65
+                            font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.caption) }
+                            elide: Text.ElideRight
+                            textFormat: Text.PlainText
+                        }
+                        Text {
+                            id: zoomLabel
+                            anchors.right: parent.right
+                            visible: root.zoomPercent !== 100
+                            text: root.zoomPercent + "%"
+                            color: Commons.Color.menu.text
+                            opacity: 0.65
+                            font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.caption) }
+                            textFormat: Text.PlainText
+                        }
                     }
                 }
             }

@@ -20,6 +20,9 @@ Esc → Clear filter, then close
 r → Refresh selected project, expanded pipeline and activity
 Shift + R → Rediscover accessible projects
 o → Open selected project, pipeline or job on GitLab
+Ctrl + = / Ctrl + + → Make the panel larger
+Ctrl + - → Make the panel smaller
+Ctrl + 0 → Reset the panel size
 Search editing → Native cursor movement, selection, Backspace and Delete
 KEYS
 }

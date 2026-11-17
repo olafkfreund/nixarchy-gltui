@@ -50,6 +50,7 @@ print(json.dumps({'requestId':request['requestId'],'data':data,'nextPage':0,'err
             menu_path.symlink_to(home / 'managed-menu')
         (root / 'shell.qml').write_text('''
 import QtQuick
+import QtTest
 import Quickshell
 import Quickshell.Io
 import qs.Commons as Commons
@@ -65,7 +66,7 @@ ShellRoot {
         onFileChanged: reload()
     }
     Timer {
-        interval: 40000; running: true
+        interval: 45000; running: true
         onTriggered: { console.error("CHECK FAILED: timeout stage=" + stage + " " + panel.status()); Qt.quit() }
     }
     property int stage: 0
@@ -73,6 +74,143 @@ ShellRoot {
     property double closedAt: 0
     property int closedRequests: 0
     function check(value, label) { if (!value) throw new Error("CHECK FAILED: " + label) }
+    // when: false keeps TestCase from running tests and quitting; it is only used for keyClick.
+    TestCase { id: tc; when: false }
+    property int zi: 0
+    property int zRequests: 0
+    property var zv: ({})
+    function pressKey(key, modifiers) { tc.keyClick(key, modifiers || Qt.NoModifier) }
+    function listFocus() { panel.searchItem.parent.parent.forceActiveFocus() }
+    function resetZoom() { listFocus(); pressKey(Qt.Key_0, Qt.ControlModifier); check(panel.zoomPercent===100,"Ctrl+0 resets to 100") }
+    function zoomIn(times) { for (var i=0;i<times;i++) pressKey(Qt.Key_Equal, Qt.ControlModifier) }
+    function screenW() { return panel.cardItem.parent.width }
+    function screenH() { return panel.cardItem.parent.height }
+    function near(a, b, label) { check(Math.abs(a-b)<=1, label + ": " + a + " vs " + b) }
+    property var zsteps: [
+        function() {
+            // Fixture: a fresh 40-project state under a one-hour cooldown, so no request starts during the zoom stages.
+            if (!panel.opened || panel.listItem.count!==40 || screenW()<=0 || !panel.searchItem.parent.parent.activeFocus) return false
+            check(panel.entries.length===40,"fixture has 40 rows")
+            check(panel.cooldownText!=="","cooldown text shows")
+            zRequests=panel.polling.requests
+        },
+        function() {
+            resetZoom()
+            panel.cursor=0
+            pressKey(Qt.Key_J)
+            check(panel.cursor===1,"delivery: j moves the cursor by one")
+        },
+        function() {
+            resetZoom()
+            pressKey(Qt.Key_Equal, Qt.ControlModifier); check(panel.zoomPercent===110,"Ctrl+= zooms in")
+            pressKey(Qt.Key_Equal, Qt.ControlModifier | Qt.ShiftModifier); check(panel.zoomPercent===120,"Ctrl+Shift+= zooms in")
+            pressKey(Qt.Key_Plus, Qt.ControlModifier | Qt.ShiftModifier); check(panel.zoomPercent===130,"Ctrl+Shift++ zooms in")
+            pressKey(Qt.Key_Minus, Qt.ControlModifier); check(panel.zoomPercent===120,"Ctrl+- zooms out")
+            pressKey(Qt.Key_0, Qt.ControlModifier); check(panel.zoomPercent===100,"Ctrl+0 resets")
+        },
+        function() {
+            resetZoom()
+            pressKey(Qt.Key_Equal, Qt.ControlModifier | Qt.AltModifier); check(panel.zoomPercent===100,"Ctrl+Alt+= is not a zoom key")
+            pressKey(Qt.Key_Equal, Qt.ControlModifier | Qt.MetaModifier); check(panel.zoomPercent===100,"Ctrl+Meta+= is not a zoom key")
+            var before=panel.cursor
+            pressKey(Qt.Key_J)
+            check(panel.cursor===before+1,"keys are still delivered after the modifier checks")
+        },
+        function() {
+            resetZoom()
+            var f=panel.searchItem
+            f.forceActiveFocus()
+            f.text="ab"
+            f.selectAll()
+            pressKey(Qt.Key_Minus, Qt.ControlModifier)
+            check(panel.zoomPercent===90,"Ctrl+- zooms out from the search field")
+            check(f.text==="ab" && f.selectedText==="ab" && f.activeFocus,"search field keeps its text, selection and focus")
+            f.text=""
+            listFocus()
+        },
+        function() { resetZoom(); panel.cursor=0 },
+        function() {
+            var f=panel.searchItem, row=panel.listItem.itemAtIndex(0)
+            check(row,"first row exists")
+            zv={font:f.font.pixelSize,row:row.height,pad:panel.cardItem.padding,radius:panel.cardItem.radius,hair:panel.hairlineItem.height}
+            zoomIn(5)
+            check(panel.zoomPercent===150,"five Ctrl+= reach 150")
+        },
+        function() {
+            var f=panel.searchItem, row=panel.listItem.itemAtIndex(0)
+            near(f.font.pixelSize, zv.font*1.5, "font scales x1.5")
+            near(row.height, zv.row*1.5, "row height scales x1.5")
+            near(panel.cardItem.padding, zv.pad*1.5, "card padding scales x1.5")
+            check(panel.cardItem.radius===zv.radius,"corner radius unchanged")
+            check(panel.hairlineItem.height===zv.hair,"hairline unchanged")
+        },
+        function() { resetZoom() },
+        function() {
+            var g=Commons.Style.gapsOut, w=panel.cardItem.width, h=panel.cardItem.height
+            zv={w:w,h:h,wFree:w<screenW()-2*g-1,hFree:h<screenH()-2*g-1}
+            if (!zv.wFree || !zv.hFree) console.log("SKIP growth: card already capped at 100 (w=" + zv.wFree + " h=" + zv.hFree + " free)")
+            zoomIn(2)
+            check(panel.zoomPercent===120,"two Ctrl+= reach 120")
+        },
+        function() {
+            if (zv.wFree) check(panel.cardItem.width>zv.w,"card grows wider at 120")
+            if (zv.hFree) check(panel.cardItem.height>zv.h,"card grows taller at 120")
+            zoomIn(8)
+            check(panel.zoomPercent===200,"ten Ctrl+= reach 200")
+        },
+        function() {
+            var g=Commons.Style.gapsOut
+            near(panel.cardItem.width, Math.min(Commons.Style.space(900)*2, screenW()-2*g), "card width at 200 is capped to the screen")
+            near(panel.cardItem.height, Math.min(Commons.Style.space(680)*2, screenH()-2*g), "card height at 200 is capped to the screen")
+        },
+        function() { resetZoom(); panel.cursor=0 },
+        function() {
+            var l=panel.listItem
+            panel.cursor=39
+            l.positionViewAtIndex(0, ListView.Beginning)
+            check(l.contentHeight>l.height,"list overflows at 100")
+            var r=l.itemAtIndex(39)
+            check(!r || r.y>=l.contentY+l.height,"row 39 is outside the viewport before zooming")
+            pressKey(Qt.Key_Equal, Qt.ControlModifier)
+            check(panel.zoomPercent===110,"Ctrl+= reaches 110")
+        },
+        function() {
+            var l=panel.listItem, r=l.itemAtIndex(39)
+            check(r,"row 39 exists after zooming")
+            check(r.y>=l.contentY-1,"row 39 starts inside the viewport")
+            check(r.y+r.height<=l.contentY+l.height+1,"row 39 ends inside the viewport")
+        },
+        function() { resetZoom(); panel.cursor=0 },
+        function() {
+            zoomIn(2)
+            check(panel.zoomPercent===120,"two Ctrl+= reach 120")
+            panel.cardItem.width=Commons.Style.space(300)
+        },
+        function() {
+            var h=panel.hintItem, z=panel.zoomItem, footerWidth=z.parent.width
+            check(panel.cooldownText!=="","cooldown text is the hint")
+            check(h.truncated,"hint is really elided")
+            check(z.visible && z.text==="120%","zoom label shows 120%")
+            check(z.x+z.width<=footerWidth,"zoom label lies inside the footer")
+            check(h.x+h.width<=z.x,"hint does not overlap the zoom label")
+            panel.cardItem.width=Qt.binding(function() { return Math.min(panel.zs(Commons.Style.space(900)), screenW()-Commons.Style.gapsOut*2) })
+        },
+        function() { resetZoom() },
+        function() {
+            zoomIn(3)
+            check(panel.zoomPercent===130,"three Ctrl+= reach 130")
+            panel.close()
+            panel.open("{}")
+            check(panel.zoomPercent===130,"zoom survives close and open")
+        },
+        function() {
+            if (!panel.searchItem.parent.parent.activeFocus) return false
+            resetZoom()
+            check(panel.polling.requests===zRequests,"the zoom stages made no requests")
+            console.log("QML_CHECKS_PASSED")
+            Qt.quit()
+        }
+    ]
     Timer {
         interval: 1000; running: true
         onTriggered: {
@@ -217,23 +355,37 @@ ShellRoot {
                 check(!panel.repos.some(function(r) { return r.repo==="one/sub/repo" }),"old host data did not reappear")
                 panel.configure('{"plugins":[{"id":"olafkfreund.gitlab-pipelines","host":"gitlab.example.org","projects":["one/sub/repo","two/repo"]}]}')
                 stage=9
-            } else if(stage===9 && !panel.workerBusy) {
-                console.log("QML_CHECKS_PASSED")
-                Qt.quit()
+            } else if(stage===9 && !panel.workerBusy && !panel.polling.flight) {
+                panel.close()
+                panel.polling=Polling.create()
+                panel.polling.repos=Array.from({length:40},function(_, i) { return {repo:"z/p"+(i<10 ? "0" : "")+i,checked:"x",runs:[]} })
+                panel.polling.discover=false
+                panel.polling.catalogueComplete=true
+                panel.polling.catalogueAt=Date.now()
+                // Set before open(): open() pumps at once and the cooldown is what keeps Polling.next from returning a request.
+                panel.polling.cooldown=Date.now()+3600000
+                panel.expanded=({})
+                panel.filterText=""
+                panel.open("{}")
+                panel.adopt()
+                stage=10
+            } else if(stage===10) {
+                var step=zsteps[zi]
+                if (step() !== false) zi++
             }
         }
     }
 }
 ''')
         try:
-            result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=50,
+            result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=60,
                                   env={**os.environ, 'HOME':str(home), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower()})
         except subprocess.TimeoutExpired as error:
             print(error.stdout, error.stderr)
             raise
         output=result.stdout+result.stderr
         print(output)
-        if result.returncode or 'QML_CHECKS_PASSED' not in output or any(term in output for term in ('ERROR:', 'ReferenceError','TypeError','CHECK FAILED')):
+        if result.returncode or 'QML_CHECKS_PASSED' not in output or any(term in output for term in ('ERROR:', 'ReferenceError','TypeError','CHECK FAILED','binding loop')):
             raise SystemExit('QML smoke check failed')
         if scenario == 'managed':
             assert 'GitLab Pipelines menu registration failed:' in output and 'Menu is managed:' in output

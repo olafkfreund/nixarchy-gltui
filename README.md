@@ -166,6 +166,11 @@ The plugin uses your existing `glab` login and never reads, extracts or stores a
 | r | Refresh the selected project and expanded pipeline |
 | Shift + R | Rediscover projects from GitLab |
 | o | Open the selected project, pipeline or job on GitLab |
+| Ctrl + = / Ctrl + + | Make the panel larger |
+| Ctrl + - | Make it smaller |
+| Ctrl + 0 | Reset the size |
+
+The zoom multiplies the theme's `[font] base-size`, ranges from 75% to 200%, and resets when the shell restarts.
 
 Icons accompany the GitLab status:
 
