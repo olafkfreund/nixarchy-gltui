@@ -156,7 +156,7 @@ function mergeRuns(s,r,incoming) {
     incoming.forEach(function(run) {
         var old=runFor(s,r.repo,run.id);
         var jobs=s.tasks[key("jobs",r.repo,run.id)];
-        if (old && old.run_attempt!==run.run_attempt && jobs) restart(s,jobs,s.clock || 0);
+        if (old && (old.run_attempt || 1)!==(run.run_attempt || 1) && jobs) restart(s,jobs,s.clock || 0);
         if (old && old.status!=="completed" && run.status==="completed" && s.selected===r.repo && s.inspected===String(run.id) && s.expanded[r.repo+":"+run.id])
             ensure(s,"jobs",r.repo,run.id,"interactive",s.clock || 0);
     });

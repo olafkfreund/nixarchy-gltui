@@ -519,3 +519,32 @@ test('a queued run that starts running moves its project to the active cadence',
   assert.equal(x.repos[0].active,1,'a confirmed running pipeline counts as active');
 });
 
+test('manual refresh also clears an inspected jobs retry delay', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',runs:[{id:7,status:'in_progress',run_attempt:'active'}]}];
+  polling.select(x,'a/b','7',{'a/b:7':true},0,true);
+  const jobs=polling.ensure(x,'jobs','a/b','7','interactive',0);
+  jobs.due=300000; jobs.failures=6; // focused fixture: a jobs task deep in network backoff
+  polling.manual(x,1000,false);
+  assert.equal(jobs.due,1000); assert.equal(jobs.failures,0);
+});
+
+test('an idle selected project wakes for its summary', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',summaryAt:0,activityAt:55000,runs:[]}];
+  polling.select(x,'a/b','',{},0,true);
+  assert.equal(polling.next(x,1000),null);
+  assert.equal(x.wakeAt,60000);
+  assert.equal(polling.next(x,60000).kind,'summary');
+});
+
+test('an inspected unfinished pipeline wakes for its jobs', () => {
+  const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
+  x.repos=[{repo:'a/b',summaryAt:1000,activityAt:1000,runs:[{id:7,status:'in_progress',run_attempt:'active'}]}];
+  x.details['a/b:7']={jobs:[],jobsAt:1000};
+  polling.select(x,'a/b','7',{'a/b:7':true},0,true);
+  assert.equal(polling.next(x,2000),null);
+  assert.equal(x.wakeAt,6000);
+  assert.equal(polling.next(x,6000).kind,'jobs');
+});
+
