@@ -65,7 +65,7 @@ This is the single source of truth.
      - replace the icon assertions (from `assert.equal(model.icon('success'), '✓');`
        through `assert.equal(model.icon('pending'), '○');`) with a loop over
        every status in the table, checking `group` and `icon`, plus
-       `group('frobnicated')==='unknown'`;
+       `group('frobnicated')==='unknown'` and `icon('frobnicated')==='○'`;
      - check that the eleven icons are distinct (a `Set` of size 11);
      - change `assert.equal(allowed[3].status, 'failed', 'the job row stays failed');`
        to expect `'allowed to fail'`, keeping `allowed[2].status === 'success'`;
@@ -119,6 +119,10 @@ This is the single source of truth.
         `"1m 2s"`.
      4. Move the cursor onto it with `panel.cursor=<index>` and
         `panel.selectionChanged(true)`.
+     5. Scroll it into view with
+        `panel.listItem.positionViewAtIndex(<index>, ListView.Contain)`.
+        `selectionChanged()` does not scroll (`PipelinesPanel.qml:173-175`);
+        only `move()` does (`:129-132`).
 
      Then a later tick (new stage or a `held()` wait):
      - `listItem.itemAtIndex(<index>)` exists;
@@ -130,9 +134,8 @@ This is the single source of truth.
      Find the children with a small recursive `findByName(item, name)` helper
      that walks `children`.
 
-     Afterwards, restore the expansion so the later stages see the state
-     they expect, or put this check where it does not affect them. Record
-     where, as a deviation if needed.
+     Afterwards, delete the `stage:test` key from `panel.expanded` and call
+     `panel.rebuild()`, so the later stages see the rows they expect.
    - **New `esteps` entries** (the #26 error-state stages run at stage 10),
      before the restore step:
      - **Colour and opacity table:** for every status in the group table,
@@ -143,12 +146,19 @@ This is the single source of truth.
          `run`-less repo rows for `neutral` and `error`, and one repo with
          runs whose `conclusion` covers each other group's first status;
        - expand the repo, then `adopt()`;
-       - for each row, set the cursor, wait for its delegate, and check that
-         `statusIcon` / `statusInfo` `color` and `opacity` match the
-         functions and are at least 0.5.
+       - for each row:
+         - set the cursor;
+         - call `panel.listItem.positionViewAtIndex(i, ListView.Contain)`;
+         - wait for `itemAtIndex(i)`;
+         - check that `statusIcon` / `statusInfo` `color` and `opacity` match
+           the functions and are at least 0.5.
 
        Put the wait and the check in separate functions, as #26 did.
-     - Restore the error-fixture state that the next `estep` expects.
+     - **Insertion point:** these entries go immediately before the final
+       `estep`, the one that sets `panel.workerBusy=false`, closes the panel,
+       rebuilds the 40-repo zoom fixture with its cooldown and sets
+       `stage=11`. That step already restores everything the zoom stages
+       need, so no extra restore is required.
 
    Check: the microVM smoke run passes, with `passed=2 rc=0 binding_loop=0`.
 
@@ -168,6 +178,9 @@ This is the single source of truth.
      `!` with "allowed to fail", and that skipped jobs are dimmed.
    - **`manifest.json`:** `"version": "1.2.0"`, because the change is
      visible.
+   - **Release notes:** the `v1.2.0` GitHub release body (written by the lead
+     at release) states the running icon change (`◷` → `●`), and the new `!`,
+     `▶`, `◷`, `◌` and `·` icons.
 
    Check: the full test set.
 
@@ -177,15 +190,51 @@ This is the single source of truth.
 node tests/polling.cjs && node tests/model.cjs && python3 -m unittest discover -s tests
 ```
 
-**QML smoke test, in the microVM only.**
-1. Create and start it:
-   `nixarchy vm create gltui-25 --template nixarchy-desktop && nixarchy vm run --detach gltui-25`,
-   then wait about 45 s.
-2. Put `run-smoke.sh` in `~/.local/state/nixarchy/microvm/gltui-25/share`,
-   the same as #26 used.
-3. Use the `vm-smoke.sh` runner, with the VM name `gltui-25`.
+**QML smoke test, in the microVM only.** Never on the host desktop.
 
-Expected result: `passed=2 rc=0 binding_loop=0`.
+1. Start the VM once:
+   ```bash
+   nixarchy vm create gltui-25 --template nixarchy-desktop
+   nixarchy vm run --detach gltui-25
+   ```
+   Wait about 45 s, until `~/.local/state/nixarchy/microvm/gltui-25/vsock-cid`
+   exists and omarchy's first run has finished.
+2. Create the in-guest runner, `~/.local/state/nixarchy/microvm/gltui-25/share/run-smoke.sh`.
+   The share is `/mnt/host` in the guest.
+   ```sh
+   #!/bin/sh
+   cd /mnt/host/repo || exit 1
+   { python3 tests/qml-smoke.py; echo "rc=$?"; } > /mnt/host/smoke.out 2>&1
+   touch /mnt/host/smoke.done
+   ```
+3. Each run: copy the working tree in, start the runner in the guest, and
+   read the result.
+   ```sh
+   share=~/.local/state/nixarchy/microvm/gltui-25/share
+   rm -rf $share/repo && mkdir $share/repo && git ls-files -z | xargs -0 tar -c | tar -x -C $share/repo
+   rm -f $share/smoke.done $share/smoke.out
+   echo '[{"tool":"launch","args":{"argv":["sh","/mnt/host/run-smoke.sh"],"timeout":2,"generation":"@generation"}}]' \
+     | ~/.claude/skills/ai-mirror/mirror-vm gltui-25 - --out /tmp/gltui-25-shots >/dev/null 2>&1
+   for i in $(seq 1 60); do [ -f $share/smoke.done ] && break; sleep 5; done
+   echo "passed=$(grep -c QML_CHECKS_PASSED $share/smoke.out) $(grep -o 'rc=[0-9]*' $share/smoke.out | tail -1) binding_loop=$(grep -c 'binding loop' $share/smoke.out)"
+   grep 'CHECK FAILED' $share/smoke.out
+   ```
+   Expected: `passed=2 rc=0 binding_loop=0`. Run one copy at a time.
+4. **Glyph check, before the PR merges** (done by the lead):
+   - open the panel in the guest on a fixture with one row per group, and
+     take a screenshot with `mirror-vm` (`{"tool":"screenshot"}`);
+   - check that every icon renders as a glyph, not as a box, and that no
+     icon overlaps the title column.
+   - If one fails, swap it for a covered glyph before merging, and record
+     that as a deviation.
+5. Afterwards, remove the VM:
+   ```bash
+   nixarchy vm stop gltui-25
+   ```
+   When `nixarchy vm list` shows it stopped, run:
+   ```bash
+   nixarchy vm rm gltui-25
+   ```
 
 **Review:** a fresh Opus agent, given only this plan and `git diff`, and
 Codex's read-only review of the diff.
@@ -197,7 +246,6 @@ Codex's read-only review of the diff.
    unless edge has caught up.
 4. Switch p620, keeping its live overrides, then razer. Announce on the bus
    first.
-5. Do the manual microVM screenshot check from the spec.
 
 p510 stays on 1.0.0.
 
