@@ -32,7 +32,7 @@ This is the single source of truth.
 | `manual` | `manual` | `▶` | `Commons.Color.accent` | 1 |
 | `scheduled` | `scheduled` | `◷` | `Commons.Color.menu.text` | 1 |
 | `queued` | `created`, `pending`, `waiting_for_resource`, `preparing`, `waiting_for_callback`, `queued`, `awaiting final status` | `◌` | `Commons.Color.menu.text` | 1 |
-| `skipped` | `skipped` | `−` | `Commons.Color.muted` | 0.5 |
+| `skipped` | `skipped` | `−` | `Commons.Color.menu.text` (was `muted`; see Deviations) | 0.5 |
 | `canceled` | `canceled` | `⊘` | `Commons.Color.menu.text` | 1 |
 | `neutral` | `neutral` | `·` | `Commons.Color.menu.text` | 1 |
 | `unknown` | anything else | `○` | `Commons.Color.menu.text` | 1 |
@@ -265,3 +265,9 @@ Revert the PR's merge commit and release `v1.2.1`, or point the pins back at
   stage 1 used to do.
 - **Step 3, group fixture:** the selected-rows fixture covers every group
   except `allowed`, which the lint row covers.
+- **Glyph check (Tests, item 4), skipped colour:** the microVM screenshot
+  showed that every icon renders. But a skipped row in `muted` at 0.5
+  opacity was nearly invisible: the theme's `muted` is dark blue-grey on a
+  dark background, so the row was dimmed twice. Skipped now uses `menu.text`
+  at 0.5 opacity. It is still dimmed and still has its own icon (`−`), but
+  stays readable. `statusColor` no longer returns `muted`.

@@ -391,7 +391,7 @@ ShellRoot {
                 ["failed",C.urgent,1],["error",C.urgent,1],["unavailable",C.urgent,1],["allowed to fail",C.urgent,0.6],
                 ["manual",C.accent,1],["scheduled",C.menu.text,1],["created",C.menu.text,1],["pending",C.menu.text,1],
                 ["waiting_for_resource",C.menu.text,1],["preparing",C.menu.text,1],["waiting_for_callback",C.menu.text,1],
-                ["queued",C.menu.text,1],["awaiting final status",C.menu.text,1],["skipped",C.muted,0.5],
+                ["queued",C.menu.text,1],["awaiting final status",C.menu.text,1],["skipped",C.menu.text,0.5],
                 ["canceled",C.menu.text,1],["neutral",C.menu.text,1],["frobnicated",C.menu.text,1]]
             table.forEach(function(r) {
                 check(Qt.colorEqual(panel.statusColor(r[0]),r[1]),"statusColor " + r[0])

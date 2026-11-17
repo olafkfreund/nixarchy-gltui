@@ -226,7 +226,6 @@ Item {
         switch (Model.group(status)) {
         case "success": case "manual": return Commons.Color.accent
         case "failed": case "allowed": return Commons.Color.urgent
-        case "skipped": return Commons.Color.muted
         default: return Commons.Color.menu.text
         }
     }
