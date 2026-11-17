@@ -34,6 +34,7 @@ Item {
     property double now: Date.now()
     readonly property bool discoveryComplete: polling.catalogueComplete
     readonly property string cooldownText: now < polling.cooldown ? "GitLab paused until " + new Date(polling.cooldown).toLocaleTimeString() : ""
+    readonly property string errorHintText: errorHint(error, polling.catalogueError || "", !!polling.auth, filtering)
     readonly property int checkedCount: repos.filter(function(repo) { return !!repo.checked || repo.archived || repo.disabled }).length
     readonly property var current: entries[cursor] || null
     readonly property string helper: localPath("gitlab.py")
@@ -71,6 +72,9 @@ Item {
     readonly property Item hintItem: hint
     readonly property Item zoomItem: zoomLabel
     readonly property Item hairlineItem: hairline
+    readonly property Item errorItem: errorStrip
+    readonly property Item emptyItem: emptyLabel
+    readonly property Item placeholderItem: placeholder
 
     function open(payload) {
         var monitor = Hyprland.focusedMonitor
@@ -223,6 +227,22 @@ Item {
         if (status === "running" || status === "success") return Commons.Color.accent
         return Commons.Color.menu.text
     }
+    function errorHint(error, catalogueError, stopped, filtering) {
+        var escape = filtering ? "Esc and " : ""
+        if (error !== "" && error === catalogueError) return "check the token's access, then press " + escape + "R"
+        if (stopped && error.indexOf("glab") < 0 && error.indexOf("shell log") < 0) return "see the shell log, then press " + escape + "r"
+        if (stopped) return "then press " + escape + "r"
+        return ""
+    }
+    function emptyText(error, hint, cooldownText, discoveryComplete, repoCount, filter) {
+        if (error) return error + (hint ? " — " + hint : "")
+        if (cooldownText) return cooldownText
+        if (!discoveryComplete && filter) return "Still discovering projects… no matches so far"
+        if (!discoveryComplete) return "Discovering projects…"
+        if (repoCount === 0) return "No projects found on this account"
+        if (filter) return "No projects or pipelines match “" + filter + "”"
+        return "No matching projects or pipelines"
+    }
     function openBrowser() {
         if (current && Model.browsable(current.url, host))
             Quickshell.execDetached(["xdg-open", current.url])
@@ -350,16 +370,43 @@ Item {
                             event.accepted = true
                         }
                         Text {
+                            id: placeholder
                             anchors.fill: parent
                             visible: searchField.text.length === 0
-                            text: root.filtering ? "Search projects…" : root.cooldownText || root.error ||
+                            text: root.filtering ? "Search projects…" :
                                 (root.discoveryComplete ? "Activity checked " + root.checkedCount + "/" + root.repos.length + " · running first · / search projects" : "Discovering projects… " + root.repos.length + " found")
-                            color: root.error || root.cooldownText ? Commons.Color.urgent : Commons.Color.menu.text
+                            color: Commons.Color.menu.text
                             opacity: 0.75
                             font: searchField.font
                             elide: Text.ElideRight
                             textFormat: Text.PlainText
                         }
+                    }
+                    Text {
+                        id: errorStrip
+                        width: parent.width
+                        visible: root.error !== "" || root.cooldownText !== ""
+                        text: {
+                            var parts = []
+                            if (root.error !== "") parts.push(root.error + (root.errorHintText ? " — " + root.errorHintText : ""))
+                            if (root.cooldownText !== "") parts.push(root.cooldownText)
+                            return parts.join(" · ")
+                        }
+                        color: Commons.Color.urgent
+                        font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.caption) }
+                        wrapMode: Text.Wrap
+                        maximumLineCount: 2
+                        elide: Text.ElideRight
+                        textFormat: Text.PlainText
+                        // The strip changes the list's height; keep the cursor row in view.
+                        function keepCursor() {
+                            Qt.callLater(function() {
+                                // forceLayout: the Column may not have resized the list yet when this runs.
+                                if (root.opened && root.cursor >= 0 && root.cursor < list.count) { list.forceLayout(); list.positionViewAtIndex(root.cursor, ListView.Contain) }
+                            })
+                        }
+                        onVisibleChanged: keepCursor()
+                        onHeightChanged: keepCursor()
                     }
                     Rectangle { id: hairline; width: parent.width; height: Style.spacing.hairline; color: Commons.Color.menu.border; opacity: 0.4 }
                     ListView {
@@ -427,11 +474,16 @@ Item {
                             }
                         }
                         Text {
+                            id: emptyLabel
                             anchors.centerIn: parent
+                            width: parent.width - 2 * root.zs(Style.space(16))
                             visible: root.entries.length === 0
-                            text: "No matching projects or pipelines"
-                            color: Commons.Color.menu.text
+                            text: root.emptyText(root.error, root.errorHintText, root.cooldownText, root.discoveryComplete, root.repos.length, root.filterText)
+                            color: root.error ? Commons.Color.urgent : Commons.Color.menu.text
                             font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.body) }
+                            wrapMode: Text.Wrap
+                            horizontalAlignment: Text.AlignHCenter
+                            textFormat: Text.PlainText
                         }
                     }
                     Item {
