@@ -72,6 +72,9 @@ Item {
     readonly property Item hintItem: hint
     readonly property Item zoomItem: zoomLabel
     readonly property Item hairlineItem: hairline
+    readonly property Item errorItem: errorStrip
+    readonly property Item emptyItem: emptyLabel
+    readonly property Item placeholderItem: placeholder
 
     function open(payload) {
         var monitor = Hyprland.focusedMonitor
@@ -367,16 +370,42 @@ Item {
                             event.accepted = true
                         }
                         Text {
+                            id: placeholder
                             anchors.fill: parent
                             visible: searchField.text.length === 0
-                            text: root.filtering ? "Search projects…" : root.cooldownText || root.error ||
+                            text: root.filtering ? "Search projects…" :
                                 (root.discoveryComplete ? "Activity checked " + root.checkedCount + "/" + root.repos.length + " · running first · / search projects" : "Discovering projects… " + root.repos.length + " found")
-                            color: root.error || root.cooldownText ? Commons.Color.urgent : Commons.Color.menu.text
+                            color: Commons.Color.menu.text
                             opacity: 0.75
                             font: searchField.font
                             elide: Text.ElideRight
                             textFormat: Text.PlainText
                         }
+                    }
+                    Text {
+                        id: errorStrip
+                        width: parent.width
+                        visible: root.error !== "" || root.cooldownText !== ""
+                        text: {
+                            var parts = []
+                            if (root.error !== "") parts.push(root.error + (root.errorHintText ? " — " + root.errorHintText : ""))
+                            if (root.cooldownText !== "") parts.push(root.cooldownText)
+                            return parts.join(" · ")
+                        }
+                        color: Commons.Color.urgent
+                        font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.caption) }
+                        wrapMode: Text.Wrap
+                        maximumLineCount: 2
+                        elide: Text.ElideRight
+                        textFormat: Text.PlainText
+                        // The strip changes the list's height; keep the cursor row in view.
+                        function keepCursor() {
+                            Qt.callLater(function() {
+                                if (root.opened && root.cursor >= 0 && root.cursor < list.count) list.positionViewAtIndex(root.cursor, ListView.Contain)
+                            })
+                        }
+                        onVisibleChanged: keepCursor()
+                        onHeightChanged: keepCursor()
                     }
                     Rectangle { id: hairline; width: parent.width; height: Style.spacing.hairline; color: Commons.Color.menu.border; opacity: 0.4 }
                     ListView {
@@ -444,11 +473,16 @@ Item {
                             }
                         }
                         Text {
+                            id: emptyLabel
                             anchors.centerIn: parent
+                            width: parent.width - 2 * root.zs(Style.space(16))
                             visible: root.entries.length === 0
-                            text: "No matching projects or pipelines"
-                            color: Commons.Color.menu.text
+                            text: root.emptyText(root.error, root.errorHintText, root.cooldownText, root.discoveryComplete, root.repos.length, root.filterText)
+                            color: root.error ? Commons.Color.urgent : Commons.Color.menu.text
                             font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.body) }
+                            wrapMode: Text.Wrap
+                            horizontalAlignment: Text.AlignHCenter
+                            textFormat: Text.PlainText
                         }
                     }
                     Item {
