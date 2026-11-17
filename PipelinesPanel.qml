@@ -375,7 +375,8 @@ Item {
                                 root.move(event.key === Qt.Key_Up ? -1 : 1)
                             } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                                 keys.forceActiveFocus()
-                                root.expand(false)
+                                // Enter from the search only opens: the first result may already be auto-open (#27).
+                                if (!(root.current && root.shown[root.current.key])) root.expand(false)
                             } else if (event.key === Qt.Key_Escape) {
                                 root.filterText = ""
                                 keys.forceActiveFocus()

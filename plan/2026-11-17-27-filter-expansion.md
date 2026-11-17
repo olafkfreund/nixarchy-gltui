@@ -339,3 +339,15 @@ Revert the PR's merge commit and release `v1.3.1`, or point the pins back at
   run is the cause, not a hang.
 - **Step 3, focus waits:** waits for focus (`activeFocus`) get their own
   functions, including the one before typing `fix` in E6.
+- **Review fixes (Opus):**
+  - **Enter from the search box** (`PipelinesPanel.qml`, the search field's
+    `Qt.Key_Return` branch) only opens. If the current row is already open
+    (often an auto-opened first result), it just moves focus to the list.
+    Before this fix, Enter toggled that row shut; in v1.2.0 it opened it.
+    The plan's table did not specify Enter on an open row. E2 now presses
+    Enter and checks that the result stays open.
+  - **E4 now tests a real poll-arriving match.** It adds a project, `c/three`,
+    that is in neither `expanded` nor `searchCollapsed`, so only `autoOpen`
+    on `adopt()` can open it. E5 removes it again.
+  - **E10's redundant `searchCollapsed` reset is removed,** so a regression
+    in the filter handler's reset cannot be hidden.

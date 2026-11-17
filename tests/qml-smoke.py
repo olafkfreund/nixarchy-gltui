@@ -461,7 +461,9 @@ ShellRoot {
             var it=panel.listItem.itemAtIndex(0)
             check(it && arrowOf(it).indexOf("▾")===0,"E2 arrow is open: " + (it && arrowOf(it)))
             check(panel.expanded["repo:a/one"] && panel.expanded["a/one:1"] && panel.expanded["a/one:1:stage:build"],"E2 expanded keeps a/one keys")
-            listFocus()
+            // Enter from the search moves to the list and must not close the auto-open first result.
+            pressKey(Qt.Key_Return)
+            check(panel.shown["repo:b/two"] && !panel.searchCollapsed["repo:b/two"],"E2 Enter keeps the auto-open result open")
         },
         // E3: auto-only collapse
         function() {
@@ -477,16 +479,21 @@ ShellRoot {
         // E4: a match arrives by poll
         function() {
             panel.polling.repos[0].runs.push({id:4,name:"CI",status:"completed",conclusion:"success",run_number:4,head_branch:"feature-z"})
+            // c/three is in neither expanded nor searchCollapsed, so only autoOpen on adopt() can open it.
+            panel.polling.repos.push({repo:"c/three",checked:"x",runs:[{id:5,name:"CI",status:"completed",conclusion:"success",run_number:5,head_branch:"feature-q"}]})
             panel.adopt()
             check(has("repo:a/one") && has("a/one:4"),"E4 a/one and pipeline 4 shown")
             check(panel.shown["repo:a/one"],"E4 a/one is open")
             check(!has("a/one:1"),"E4 pipeline 1 hidden")
+            check(!panel.expanded["repo:c/three"] && panel.shown["repo:c/three"] && has("c/three:5"),"E4 a poll-arriving project auto-opens")
         },
         // E5: the match disappears
         function() {
             panel.polling.repos[0].runs.pop()
+            panel.polling.repos.pop()
             panel.adopt()
             check(!has("repo:a/one"),"E5 a/one gone")
+            check(!has("repo:c/three") && !panel.shown["repo:c/three"],"E5 c/three gone and not open")
         },
         // E6: change the search
         function() {
@@ -559,7 +566,6 @@ ShellRoot {
             check(has("repo:a/one"),"E10 a/one shown through pipeline 1")
             check(!panel.entries.some(function(r) { return r.kind==="more" }),"E10 no more row")
             panel.filterText=""
-            panel.searchCollapsed=({})
         },
         function() {
             panel.workerBusy=false
