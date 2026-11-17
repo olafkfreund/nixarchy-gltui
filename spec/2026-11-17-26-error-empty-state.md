@@ -8,145 +8,195 @@ intent: intent/2026-11-17-26-error-empty-state.md
 
 ## Design
 
-### 1. Two pure functions in `PipelinesModel.js`
+All changes are in `PipelinesPanel.qml` and `tests/qml-smoke.py`, the scope
+the intent approved. The polling, model and helper code do not change.
 
-Both take plain values and return a string. QML only binds to them, and
-`tests/model.cjs` tests them.
+### 1. What kind of error is showing
+
+`receivePage` (`PipelinesPanel.qml:206-219`) already sees each reply's
+`errorType`. The panel keeps the last one in a new panel property,
+`errorType`. This is panel display state only; nothing is added to the
+polling state.
+
+- After `Polling.complete(...)`, set `errorType` to `reply.errorType || ""`
+  when `reply.error` is set, and to `""` when it is not.
+- `configure()` clears it, together with `error`, when the host changes
+  (`PipelinesPanel.qml:158`).
+
+### 2. Two pure functions on the panel root
+
+These functions are on `root`, so the smoke test can call them directly
+with any inputs and also check the bindings that use them.
 
 ```js
-// What to do about the current error, or "" when no action helps.
-function errorHint(error, catalogueError, stopped, filtering)
+// Advice for the current error, or "" when no action is needed.
+function errorHint(error, catalogueError, stopped, kind, filtering)
 // The text of the empty list.
 function emptyText(error, hint, cooldownText, discoveryComplete, repoCount, filter)
 ```
 
-**`errorHint`** picks the advice from state the panel already has.
+**`errorHint`** returns the first hint that applies (`k` is `r` or `R`):
 
-| Condition | Hint |
-|---|---|
-| The shown error is the project-list error (`error === catalogueError`, not empty) | `press R to reload projects` (in search: `press Esc, then R`) |
-| Polling stopped for a login or setup error (`polling.auth`) | `then press r` (in search: `press Esc, then r`) |
-| Anything else | `""` (the error retries by itself) |
+| Condition | Hint, outside the search box | Hint, inside the search box |
+|---|---|---|
+| The project list was refused: `error !== ""` and `error === catalogueError` | `check the token's access, then press R` | `check the token's access, then press Esc and R` |
+| Stopped after a setup error: `stopped` and `kind === "setup"` | `see the shell log, then press r`, or `then press r` if the message already says "shell log" | the same, with `Esc and r` |
+| Stopped after a login error: `stopped` (`polling.auth`) | `then press r` | `then press Esc and r` |
+| Anything else | `""` | `""` |
 
-The helper's messages already say what to fix:
-- "Authenticate with glab auth login" (`gitlab.py:181,207`);
-- "Install glab (GitLab CLI)" (`gitlab.py:236`);
-- "GitLab helper returned invalid data; see the shell log"
-  (`PipelinesPanel.qml:214`).
+Notes on the table:
+- `error === catalogueError` holds even when `polling.error` is also set,
+  because a permission refusal sets both (`Polling.js:216,220`).
+- `polling.auth` is set for both `auth` and `setup` errors
+  (`Polling.js:218`). `r` clears it (`Polling.manual`, `Polling.js:53`), and
+  only `R` clears `catalogueError` (`Polling.js:54`).
+- `r` and `R` do not reach the panel while the search box has focus. Esc
+  leaves the box first (`PipelinesPanel.qml:344-346`).
+- **Login errors:** the helper's message already says what to fix:
+  "Authenticate with glab auth login" (`gitlab.py:181,207`).
+- **Setup errors:** these keep their real message:
+  - "python3 not found";
+  - "GitLab helper failed (exit N); see the shell log";
+  - "Install glab (GitLab CLI)";
+  - "GitLab helper returned invalid data", with or without "; see the shell
+    log".
 
-So the error text stays as it is, and the hint only adds the key to press.
-`polling.auth` is set for both `auth` and `setup` errors (`Polling.js:218`),
-and `r` clears it (`Polling.manual`, `Polling.js:51-53`). This gives the
-per-cause advice the intent asks for without adding polling state, and
-without tracking `errorType`. `r` does not reach the panel while the search box has focus. Outside the
-box, Esc clears a filter or closes the panel (`PipelinesPanel.qml:298-300`).
-So with `filtering` true the hints say "press Esc, then r" and "press Esc,
-then R". With `filtering` false they say "then press r" and "press R to
-reload projects".
+  The hint adds the pointer to the shell log only when the message lacks
+  it. These are our own fixed strings, not server text.
+- **Other errors** get no hint. Network and rate errors retry by
+  themselves, and a refused single project is marked blocked on its own row
+  (`Polling.js:221`); that row already shows the error. This change does not
+  add recovery advice for those.
 
-**`emptyText`** returns the first match of the approved order:
+**`emptyText`** returns the first match, in the order approved in the
+intent:
 
-1. `error`: `error + (hint ? " — " + hint : "")`
-2. `cooldownText`: the pause text
-3. `!discoveryComplete`: `"Still discovering projects… no matches so far"`
-   when a filter is set, otherwise `"Discovering projects…"`
-4. `repoCount === 0`: `"No projects found on this account"`
-5. otherwise: `"No projects or pipelines match “" + filter + "”"`
+1. An error: `error + (hint ? " — " + hint : "")`.
+2. A pause: `cooldownText`.
+3. Discovery not finished:
+   - with a filter: `"Still discovering projects… no matches so far"`;
+   - without one: `"Discovering projects…"`.
+4. Discovery finished, no projects: `"No projects found on this account"`.
+5. A filter set: `"No projects or pipelines match “<filter>”"`.
+6. Otherwise: `"No matching projects or pipelines"` (the old text, kept as
+   a fallback; today's model never hides every row without a filter).
 
-Step 5 is reached with no filter only if every project row is hidden. The
-model does not do that today, but the old wording stays as the fallback
-(`"No matching projects or pipelines"`).
-
-### 2. An error strip in `PipelinesPanel.qml`
+### 3. An error strip
 
 A new `Text` (`id: errorStrip`) goes between the search box and the
-hairline. It is the "strip" option decided in the intent.
+hairline, inside the existing `Column`.
+
 - **When it shows:** `visible: root.error !== "" || root.cooldownText !== ""`.
-  When hidden, it takes no space, because the `Column` skips invisible items.
-- **What it says:** the error with its hint, then the pause, joined with `·`.
-  When there is both an error and a pause, both are shown.
+  A `Column` gives no space to invisible children, so the layout is
+  unchanged when there is no error.
+- **What it says:** the error, then `" — " + hint` if there is one, then
+  `" · "` and the pause if there is one.
 - **Style:**
   - colour `Commons.Color.urgent`;
   - font size `root.zf(Style.font.caption)`;
   - `wrapMode: Text.Wrap`, capped at two lines with `maximumLineCount: 2`
     and `elide: Text.ElideRight`;
-  - `textFormat: Text.PlainText`, because errors can contain server text.
-- **The list:** its height already comes from `y`, so it shrinks by
-  itself.
+  - `textFormat: Text.PlainText`.
+- **Keeping the cursor in view:** the list's height already follows its
+  `y` (`PipelinesPanel.qml:368`). But the list only repositions while a zoom
+  settles (`PipelinesPanel.qml:373`). So the strip gets:
 
-The search placeholder (`PipelinesPanel.qml:355-357`) stops showing the
-error and the pause. It keeps the hint and progress text: "Search
-projects…", "Activity checked N/M…" and "Discovering projects… N found".
-Its colour is always `Commons.Color.menu.text`.
+  ```qml
+  onVisibleChanged: Qt.callLater(function() {
+      if (root.opened && root.cursor >= 0 && root.cursor < list.count)
+          list.positionViewAtIndex(root.cursor, ListView.Contain)
+  })
+  ```
 
-The empty-list `Text` (`PipelinesPanel.qml:429-435`) binds `text` to
-`Model.emptyText(...)`. It gets the following:
-- `width: parent.width` with side padding;
-- `wrapMode: Text.Wrap` and `horizontalAlignment: Text.AlignHCenter`;
-- `textFormat: Text.PlainText`;
-- `Commons.Color.urgent` when it shows an error, `menu.text` otherwise.
+  The cursor row then stays in view when an error appears or clears.
 
-The footer does not change. It already shows the pause instead of the key
-hints (`PipelinesPanel.qml:444`).
+### 4. Search placeholder, empty list and footer
 
-Two read-only test hooks are added next to the existing ones
-(`PipelinesPanel.qml:68-73`): `errorItem: errorStrip` and
-`emptyItem: <the empty Text>`.
+- **Search placeholder** (`PipelinesPanel.qml:355-357`): it no longer shows
+  the error or the pause. It keeps the hint and progress text: "Search
+  projects…", "Activity checked N/M…" and "Discovering projects… N found".
+  Its colour is always `Commons.Color.menu.text`.
+- **Empty list** (`PipelinesPanel.qml:429-435`): `text` binds to
+  `root.emptyText(...)`. It also gets:
+  - `width: parent.width` with side padding;
+  - `wrapMode: Text.Wrap` and `horizontalAlignment: Text.AlignHCenter`;
+  - `textFormat: Text.PlainText`;
+  - `Commons.Color.urgent` when it shows an error, `menu.text` otherwise.
+- **Footer:** unchanged. It already shows the pause in place of the key
+  hints (`PipelinesPanel.qml:444`).
+
+### 5. Test hooks
+
+Two read-only hooks join the existing ones (`PipelinesPanel.qml:68-73`):
+`errorItem: errorStrip` and `emptyItem` (the empty-list `Text`).
 
 ## Alternatives rejected
 
-- **Show the error in the footer instead of a strip.** The footer is the
-  only place the keys are listed, and the intent chose the strip.
-- **Track `errorType` in polling state for advice by cause.** The intent
-  rules out new polling state. The helper's messages already name the fix,
-  and `polling.auth` / `catalogueError` are enough to pick the key to press.
-- **Keep the error in the placeholder, and also show it while typing.** A
+- **Show the error in the footer:** the footer is the only list of keys,
+  and the intent chose the strip.
+- **Put the functions in `PipelinesModel.js` with unit tests:** easier to
+  test, but the approved intent keeps the model unchanged. The smoke test
+  calls the root functions directly instead.
+- **Track `errorType` in the polling state:** the intent rules out new
+  polling state. The panel sees every reply anyway.
+- **Choose advice from the error text alone:** brittle. The text is used
+  only to avoid saying "shell log" twice, and only for our own fixed
+  strings.
+- **Keep the error in the placeholder and also show it while typing:** a
   placeholder and typed text cannot share one line.
-- **Compute the texts inline in QML.** Pure functions can be unit-tested in
-  `tests/model.cjs` with no running shell, and the cases are many.
 
 ## Risks
 
 - **Layout shift:** the strip pushes the list down when an error appears.
-  This is acceptable: errors are rare and need attention. The list keeps
-  the cursor row in view, because the list height is bound to `y`.
-- **Long server messages:** the strip is capped at two lines, with an
-  ellipsis.
-- **Zoom (#22):** the strip's font uses `zf`, so it scales. The zoom smoke
-  stages have no error, so the strip stays hidden and their measurements do
-  not change. The cooldown fixture does show the strip, though, so the
-  stages that check vertical sizes must be re-checked (see Verification).
+  This is acceptable, because errors need attention. The cursor row is
+  repositioned (section 3).
+- **Long messages:** the strip is capped at two lines, with an ellipsis.
+- **Zoom smoke stages (#22):** the zoom fixture sets a one-hour pause
+  (`tests/qml-smoke.py:365`), so the strip is visible for all zoom stages,
+  and the list is one or two lines shorter. Most of those checks compare
+  relative sizes. The checks that depend on the list's viewport (the cursor
+  row staying contained after zoom, `tests/qml-smoke.py:168-185`) must still
+  pass. If one does not, the fix is in the stage's measurement, not in
+  hiding the strip.
 - **Hosts:** a panel-only change. It reaches p620 and razer through the
   usual release → nixarchy → nixos_config chain. p510 stays on 1.0.0, as
   the owner decided.
 
 ## Verification
 
-- `node tests/model.cjs`: new cases for `errorHint` (the project-list
-  error, a stop in and out of the search box, an error that retries by
-  itself) and for `emptyText`, covering each of the five steps and the
-  order between them:
-  - an error beats a pause;
-  - a pause beats loading;
-  - a project-list error during unfinished discovery shows the error, not
-    loading;
-  - loading with a filter says "no matches so far";
-  - discovery finished with no repos;
-  - discovery finished, with a filter and no match.
-- `node tests/polling.cjs`, `python3 -m unittest`: unchanged, still pass.
-- `python3 tests/qml-smoke.py`: one new stage, on the cooldown fixture so no
-  request starts. It sets an auth stop and an error on `panel.polling`,
-  calls `adopt()`, types text into the search box with `keyClick`, and
-  checks:
-  - `errorItem.visible` and its text contain both the error and the hint
-    `Esc, then r`;
-  - the placeholder does not contain the error;
-  - with a filter that matches nothing, `emptyItem.text` is the error, not
-    "no matches".
+- `node tests/polling.cjs`, `node tests/model.cjs` and
+  `python3 -m unittest`: unchanged, still pass.
+- `python3 tests/qml-smoke.py`: new stages run before the zoom stages, on
+  their own cooldown-free fixture with `discover=false` and no flight, so no
+  request starts. They check the following.
+  - **The functions directly:** every row of the `errorHint` table, both
+    inside and outside the search box, and every step of `emptyText`. That
+    includes the cases where order matters:
+    - an error beats a pause;
+    - a pause beats loading;
+    - a project-list error during unfinished discovery shows the error;
+    - loading with a filter shows "no matches so far".
+  - **The bindings, through the real UI:**
+    - Loading: no repos, discovery unfinished; `emptyItem.text` is
+      "Discovering projects…".
+    - Activity still running: discovery finished with repos, some not yet
+      checked. The placeholder shows "Activity checked N/M".
+    - No projects: discovery finished with none.
+    - No matches: a filter that matches nothing.
+    - Login stop: `polling.auth` and an auth error.
+      - With the search box focused but empty, `errorItem` is visible with
+        the error and `Esc and r`, and the placeholder does not contain the
+        error.
+      - After typing with `keyClick`, the same holds, and `emptyItem.text`
+        is the error, not "no matches".
+    - Pause without an error: the strip shows only the pause.
+    - Cursor in view: with the cursor on the last row of a full list,
+      showing the strip keeps that row inside the viewport.
 
-  It then clears the error and checks the strip shows only the pause. The
-  existing zoom stages still pass; their "cooldown text shows" check now
-  finds the pause in the strip and the footer.
-- Manual check on p620 after deploy: log out of `glab`, open the panel, and
-  check that the login error and hint stay visible while you type a
-  search.
+  The stages then restore the filter, focus, error state and fixture, so
+  the existing zoom stages start as before. They wait one frame before
+  checking any sizes.
+- The existing zoom stages still pass with the strip visible.
+- Manual check on p620 after deploy: log out of `glab`, open the panel,
+  focus the search box and type. The login error and its hint stay
+  visible. Press Esc and `r` after logging back in, and the list fills.
