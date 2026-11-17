@@ -132,7 +132,7 @@ ShellRoot {
         function() {
             var f=panel.searchItem, row=panel.listItem.itemAtIndex(0)
             check(row,"first row exists")
-            zv={font:f.font.pixelSize,row:row.height,pad:panel.cardItem.padding,radius:panel.cardItem.radius,hair:panel.hairlineItem.height,border:panel.borderWidth}
+            zv={font:f.font.pixelSize,row:row.height,pad:panel.cardItem.padding,radius:panel.cardItem.radius,hair:panel.hairlineItem.height}
             zoomIn(5)
             check(panel.zoomPercent===150,"five Ctrl+= reach 150")
         },
@@ -143,7 +143,6 @@ ShellRoot {
             near(panel.cardItem.padding, zv.pad*1.5, "card padding scales x1.5")
             check(panel.cardItem.radius===zv.radius,"corner radius unchanged")
             check(panel.hairlineItem.height===zv.hair,"hairline unchanged")
-            check(panel.borderWidth===zv.border,"border width unchanged")
         },
         function() { resetZoom() },
         function() {

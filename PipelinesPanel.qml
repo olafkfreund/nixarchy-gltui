@@ -55,10 +55,15 @@ Item {
         return true
     }
     // Keep the cursor row in view once the zoomed layout has run; rebuild() is not safe here (it reads list geometry).
-    onZoomPercentChanged: Qt.callLater(function() {
-        list.forceLayout()
-        if (cursor >= 0 && cursor < list.count) list.positionViewAtIndex(cursor, ListView.Contain)
-    })
+    onZoomPercentChanged: {
+        zoomSettle.restart()
+        Qt.callLater(function() {
+            list.forceLayout()
+            if (cursor >= 0 && cursor < list.count) list.positionViewAtIndex(cursor, ListView.Contain)
+        })
+    }
+    // The footer settles after the zoom's callLater; only that settle may move the view, not later resizes or scrolling.
+    Timer { id: zoomSettle; interval: 300 }
     // Test hooks for tests/qml-smoke.py.
     readonly property Item cardItem: card
     readonly property Item listItem: list
@@ -365,7 +370,7 @@ Item {
                         model: visibleRows
                         boundsBehavior: Flickable.StopAtBounds
                         // The footer settles after the zoom's callLater, which shrinks the list a few px; keep the cursor row contained.
-                        onHeightChanged: if (root.opened && root.cursor >= 0 && root.cursor < count) positionViewAtIndex(root.cursor, ListView.Contain)
+                        onHeightChanged: if (zoomSettle.running && root.opened && root.cursor >= 0 && root.cursor < count) positionViewAtIndex(root.cursor, ListView.Contain)
                         delegate: Rectangle {
                             required property var rowData
                             readonly property var modelData: rowData
