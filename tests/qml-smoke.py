@@ -522,6 +522,9 @@ ShellRoot {
                 panel.listItem.positionViewAtIndex(lintIndex, ListView.Contain)
                 stage=12
             } else if(stage===12) {
+                // A poll reply between ticks can rebuild and shift rows, so find lint again.
+                var at=panel.entries.findIndex(function(row) { return row.kind==="job" && row.title==="lint" })
+                if (at!==lintIndex) { lintIndex=at; panel.listItem.positionViewAtIndex(at, ListView.Contain); return }
                 var lintItem=panel.listItem.itemAtIndex(lintIndex)
                 if (!lintItem) return
                 selCheck(lintItem,"allowed to fail","!")

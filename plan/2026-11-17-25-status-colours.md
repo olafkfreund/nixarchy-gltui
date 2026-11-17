@@ -271,3 +271,8 @@ Revert the PR's merge commit and release `v1.2.1`, or point the pins back at
   dark background, so the row was dimmed twice. Skipped now uses `menu.text`
   at 0.5 opacity. It is still dimmed and still has its own icon (`−`), but
   stays readable. `statusColor` no longer returns `muted`.
+- **Review fix (Opus):** stage 12 looks up the `lint` row again before
+  checking it. A poll reply between ticks can rebuild the list and shift
+  rows. The selected-row colour checks compare the delegate with the same
+  functions it binds to. So they catch a dropped binding or a selection
+  override, while the colour-table `estep` proves the values themselves.
