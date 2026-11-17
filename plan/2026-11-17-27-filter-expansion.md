@@ -328,3 +328,14 @@ p510 stays on 1.0.0.
 
 Revert the PR's merge commit and release `v1.3.1`, or point the pins back at
 `e2b13c0` (v1.2.0). No data or config format changes.
+
+## Deviations
+
+- **Step 3, watchdog:** the E1–E10 stages push a full smoke run past the
+  QML watchdog, so it now runs to 60000 ms (was 45000). The Python
+  `subprocess` timeout is now 75 s (was 60), so it stays above the
+  watchdog. A full microVM run takes about 1 min 45 s. With the new stages
+  removed, the run passed three times under the old limit, so the longer
+  run is the cause, not a hang.
+- **Step 3, focus waits:** waits for focus (`activeFocus`) get their own
+  functions, including the one before typing `fix` in E6.

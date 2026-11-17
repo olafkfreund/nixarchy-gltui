@@ -66,7 +66,7 @@ ShellRoot {
         onFileChanged: reload()
     }
     Timer {
-        interval: 45000; running: true
+        interval: 60000; running: true
         onTriggered: { console.error("CHECK FAILED: timeout stage=" + stage + " " + panel.status()); Qt.quit() }
     }
     property int stage: 0
@@ -248,6 +248,16 @@ ShellRoot {
         check(r.y>=l.contentY-1 && r.y+r.height<=l.contentY+l.height+1,"row 39 is inside the viewport")
     }
     function clearStops() { panel.polling.error=""; panel.polling.catalogueError=""; panel.polling.auth=false; panel.polling.cooldown=0 }
+    function rkeys() { return panel.entries.map(function(r) { return r.key }) }
+    function has(key) { return rkeys().indexOf(key)>=0 }
+    function cursorTo(key) { var i=rkeys().indexOf(key); check(i>=0,"row exists: " + key); panel.cursor=i }
+    function arrowOf(item) {
+        if (item.text && /^[▾▸] /.test(item.text)) return item.text
+        for (var i=0;i<item.children.length;i++) { var f=arrowOf(item.children[i]); if (f) return f }
+        return ""
+    }
+    function typeText(t) { for (var i=0;i<t.length;i++) tc.keyClick(t[i]) }
+    function nokeys(a, label) { eq(Object.keys(a).sort().join(","),"",label) }
     property var esteps: [
         function() {
             var P=panel
@@ -425,6 +435,132 @@ ShellRoot {
             gi++; gPlaced=false
             if (gi<panel.entries.length) return false
         },
+        // E1: fixture
+        function() {
+            panel.polling.repos=[
+                {repo:"a/one",checked:"x",runs:[{id:1,name:"CI",status:"completed",conclusion:"success",run_number:1,head_branch:"main"}]},
+                {repo:"b/two",checked:"x",runs:[{id:2,name:"CI",status:"completed",conclusion:"success",run_number:2,head_branch:"feature-x"},{id:3,name:"CI",status:"completed",conclusion:"success",run_number:3,head_branch:"fix-y"}]}]
+            panel.polling.details={"a/one:1":{jobs:[
+                {id:11,name:"compile",stage:"build",status:"completed",conclusion:"success"},
+                {id:12,name:"pack",stage:"build",status:"completed",conclusion:"success"},
+                {id:13,name:"unit",stage:"test",status:"completed",conclusion:"success"}]}}
+            panel.filterText=""
+            panel.expanded=({"repo:a/one":true,"a/one:1":true,"a/one:1:stage:build":true})
+            panel.adopt()
+            eq(rkeys().join(","),"repo:a/one,a/one:1,a/one:1:stage:build,a/one:1:11,a/one:1:12,a/one:1:stage:test,repo:b/two","E1 rows")
+            panel.searchItem.forceActiveFocus()
+        },
+        // E2: type feature
+        function() {
+            if (!panel.searchItem.activeFocus) return false
+            typeText("feature")
+            eq(panel.filterText,"feature","E2 typed filter")
+            eq(rkeys().join(","),"repo:b/two,b/two:2","E2 rows")
+            check(panel.shown["repo:b/two"],"E2 b/two auto-open")
+            check(!panel.expanded["repo:b/two"],"E2 filter leaves expanded alone")
+            var it=panel.listItem.itemAtIndex(0)
+            check(it && arrowOf(it).indexOf("▾")===0,"E2 arrow is open: " + (it && arrowOf(it)))
+            check(panel.expanded["repo:a/one"] && panel.expanded["a/one:1"] && panel.expanded["a/one:1:stage:build"],"E2 expanded keeps a/one keys")
+            listFocus()
+        },
+        // E3: auto-only collapse
+        function() {
+            if (!panel.searchItem.parent.parent.activeFocus) return false
+            panel.cursor=0
+            pressKey(Qt.Key_Left)
+            check(panel.searchCollapsed["repo:b/two"],"E3 searchCollapsed set")
+            eq(rkeys().join(","),"repo:b/two","E3 rows")
+            check(!panel.expanded["repo:b/two"],"E3 expanded has no b/two")
+            panel.adopt()
+            eq(rkeys().join(","),"repo:b/two","E3 still collapsed after adopt")
+        },
+        // E4: a match arrives by poll
+        function() {
+            panel.polling.repos[0].runs.push({id:4,name:"CI",status:"completed",conclusion:"success",run_number:4,head_branch:"feature-z"})
+            panel.adopt()
+            check(has("repo:a/one") && has("a/one:4"),"E4 a/one and pipeline 4 shown")
+            check(panel.shown["repo:a/one"],"E4 a/one is open")
+            check(!has("a/one:1"),"E4 pipeline 1 hidden")
+        },
+        // E5: the match disappears
+        function() {
+            panel.polling.repos[0].runs.pop()
+            panel.adopt()
+            check(!has("repo:a/one"),"E5 a/one gone")
+        },
+        // E6: change the search
+        function() {
+            panel.searchItem.forceActiveFocus()
+        },
+        function() {
+            if (!panel.searchItem.activeFocus) return false
+            panel.filterText=""
+            typeText("fix")
+            eq(panel.filterText,"fix","E6 typed filter")
+            nokeys(panel.searchCollapsed,"E6 searchCollapsed is empty")
+            check(has("repo:b/two") && has("b/two:3"),"E6 b/two and pipeline 3 shown")
+            check(panel.shown["repo:b/two"],"E6 b/two auto-open")
+            listFocus()
+        },
+        function() {
+            if (!panel.searchItem.parent.parent.activeFocus) return false
+            cursorTo("b/two:3")
+            pressKey(Qt.Key_Right)
+            check(panel.expanded["b/two:3"],"E6 Right opens pipeline 3")
+        },
+        // E7: explicit project collapse
+        function() {
+            cursorTo("repo:b/two")
+            pressKey(Qt.Key_Right)
+            check(panel.searchCollapsed["repo:b/two"],"E7.1 first Right closes the auto-open row")
+            pressKey(Qt.Key_Right)
+            check(panel.expanded["repo:b/two"] && !panel.searchCollapsed["repo:b/two"],"E7.2 second Right opens explicitly")
+            pressKey(Qt.Key_Left)
+            check(!panel.expanded["repo:b/two"] && panel.searchCollapsed["repo:b/two"],"E7.3 Left collapses")
+            panel.adopt()
+            check(panel.searchCollapsed["repo:b/two"] && !panel.shown["repo:b/two"],"E7.3 still collapsed after adopt")
+            pressKey(Qt.Key_Right)
+            check(panel.expanded["repo:b/two"],"E7.4 Right opens explicitly again")
+            panel.searchItem.forceActiveFocus()
+        },
+        // E8: clear the filter
+        function() {
+            if (!panel.searchItem.activeFocus) return false
+            pressKey(Qt.Key_Escape)
+            eq(panel.filterText,"","E8 Esc clears the filter")
+            Object.keys(panel.shown).forEach(function(k) { check(panel.expanded[k],"E8 shown key is expanded: " + k) })
+            Object.keys(panel.expanded).forEach(function(k) { check(panel.shown[k],"E8 expanded key is shown: " + k) })
+            ;["repo:a/one","a/one:1","a/one:1:stage:build","a/one:1:11","a/one:1:12","repo:b/two","b/two:2","b/two:3"].forEach(function(k) { check(has(k),"E8 row restored: " + k) })
+            check(panel.expanded["b/two:3"],"E8 pipeline 3 still expanded")
+        },
+        // E9: key boundaries on restored rows
+        function() {
+            var n=Object.keys(panel.expanded).length
+            cursorTo("a/one:1:11")
+            pressKey(Qt.Key_Right)
+            eq(Object.keys(panel.expanded).length,n,"E9 Right on a job adds no key")
+            pressKey(Qt.Key_Left)
+            eq(panel.current.key,"a/one:1:stage:build","E9 Left moves to the stage")
+        },
+        // E10: +N more
+        function() {
+            panel.polling.repos[0].hidden={running:3}
+            panel.adopt()
+            panel.filterText="a/one"
+            var at=panel.entries.findIndex(function(r) { return r.kind==="more" && r.parent==="repo:a/one" })
+            check(at>=0,"E10 more row under a/one")
+            panel.cursor=at
+            var n=Object.keys(panel.expanded).length
+            pressKey(Qt.Key_Right)
+            eq(Object.keys(panel.expanded).length,n,"E10 Right on more adds no key")
+            pressKey(Qt.Key_Left)
+            eq(panel.current.key,"repo:a/one","E10 Left moves to the project")
+            panel.filterText="main"
+            check(has("repo:a/one"),"E10 a/one shown through pipeline 1")
+            check(!panel.entries.some(function(r) { return r.kind==="more" }),"E10 no more row")
+            panel.filterText=""
+            panel.searchCollapsed=({})
+        },
         function() {
             panel.workerBusy=false
             panel.close()
@@ -492,8 +628,9 @@ ShellRoot {
             panel.selectionChanged(false)
             panel.filterText="no-match"
             check(panel.entries.length===0,"filter")
+            panel.expanded=({})
             panel.filterText="repo"
-            check(panel.cursor===0 && panel.entries.length===2,"search resets collapsed results")
+            check(panel.cursor===0 && panel.entries.length===2,"name matches are not auto-opened")
             panel.expand(false)
             panel.move(1)
             panel.expand(false)
@@ -631,7 +768,7 @@ ShellRoot {
 }
 ''')
         try:
-            result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=60,
+            result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=75,
                                   env={**os.environ, 'HOME':str(home), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower()})
         except subprocess.TimeoutExpired as error:
             print(error.stdout, error.stderr)
