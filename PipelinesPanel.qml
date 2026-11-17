@@ -123,10 +123,16 @@ Item {
             var entry = (config.plugins || []).filter(function(p) { return p.id === "olafkfreund.gitlab-pipelines" })[0]
             var configured = entry && typeof entry.host === "string" ? entry.host : "gitlab.com"
             if (!/^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$/.test(configured)) throw new Error("invalid host " + configured)
+            if (configured !== host) {
+                polling = Polling.resetHost(polling)
+                expanded = ({}); details = ({}); updated = ""; error = ""; cursor = 0
+            }
             host = configured
             var names = entry && Array.isArray(entry.projects) ? entry.projects : []
-            if (!polling.repos.length && names.length)
+            if (!polling.repos.length && names.length) {
+                polling.wakeAt = 0
                 polling.repos = names.filter(function(name) { return typeof name === "string" && /^[A-Za-z0-9_.][A-Za-z0-9_.-]*(\/[A-Za-z0-9_.][A-Za-z0-9_.-]*)+$/.test(name) && !/(^|\/)\.\.?(\/|$)/.test(name) }).map(function(name) { return {repo:name} })
+            }
             adopt()
         } catch (e) { error = "Configuration: " + e.message }
     }
@@ -137,11 +143,11 @@ Item {
     function adopt() {
         repos = polling.repos.slice()
         details = Object.assign({}, polling.details)
-        error = polling.error
+        error = polling.error || polling.catalogueError
         // Reassign the state reference to notify bindings after pure-JS mutations.
         polling = Object.assign({}, polling)
         rebuild()
-        if (!polling.selected || !Polling.repoFor(polling, polling.selected)) selectionChanged(false)
+        if ((current && current.repo || "") !== polling.selected || (current && current.run || "") !== polling.inspected) selectionChanged(false)
     }
     function refresh(catalogue) {
         selectionChanged(true)
@@ -161,8 +167,11 @@ Item {
     }
     function failedToStart() {
         console.warn("GitLab Pipelines helper: python3 failed to start")
-        receivePage(Model.reply("", 127, requestInfo.requestId), requestInfo)
-        workerBusy = false
+        finishRequest("", 127)
+    }
+    function finishRequest(text, code) {
+        try { receivePage(Model.reply(text, code, requestInfo.requestId), requestInfo) }
+        finally { workerBusy = false }
     }
     function receivePage(text, request) {
         var reply
@@ -217,8 +226,7 @@ Item {
         stderr: StdioCollector { id: pageErrors }
         onExited: function(code) {
             if (pageErrors.text.trim()) console.warn("GitLab Pipelines helper (exit " + code + "): " + pageErrors.text.trim())
-            root.receivePage(Model.reply(pageOutput.text, code, root.requestInfo.requestId), root.requestInfo)
-            root.workerBusy = false
+            root.finishRequest(pageOutput.text, code)
         }
         onStarted: root.helperStarted = true
         // Quickshell 0.3.1: a failed start emits neither started nor exited, only running=false.

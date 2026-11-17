@@ -25,9 +25,10 @@ for scenario in ('fresh', 'managed'):
         (root / 'gitlab.py').write_text('''import json, sys, time
 request=json.loads(sys.argv[2]); kind=request['kind']
 time.sleep(0.1)
-assert request.get('host')=='gitlab.example.org', request
+host=request.get('host'); assert host in ('gitlab.example.org','gitlab.other.org'), request
 run={'id':7,'name':'CI','status':'in_progress','conclusion':'running','run_attempt':'active','head_branch':'main','run_number':1}
-if kind=='catalogue': data=[{'repo':'one/sub/repo','url':'https://gitlab.example.org/one/sub/repo'},{'repo':'two/repo'}]
+if host=='gitlab.other.org': data={} if kind=='run' else [{'repo':'three/repo'}] if kind=='catalogue' else []
+elif kind=='catalogue': data=[{'repo':'one/sub/repo','url':'https://gitlab.example.org/one/sub/repo'},{'repo':'two/repo'}]
 elif kind=='jobs': data=[{'id':8,'name':'compile','stage':'build','status':'in_progress','conclusion':'running'},{'id':9,'name':'unit','stage':'test','status':'queued','conclusion':'created'}]
 elif kind=='run': data=run
 else: data=[run] if request['repo']=='one/sub/repo' and request.get('status','running') in ('recent','running') else []
@@ -51,7 +52,7 @@ print(json.dumps({'requestId':request['requestId'],'data':data,'nextPage':0,'err
 import QtQuick
 import Quickshell
 import Quickshell.Io
-import qs.Commons
+import qs.Commons as Commons
 import "Polling.js" as Polling
 ShellRoot {
     PipelinesPanel { id: panel }
@@ -64,7 +65,7 @@ ShellRoot {
         onFileChanged: reload()
     }
     Timer {
-        interval: 18000; running: true
+        interval: 40000; running: true
         onTriggered: { console.error("CHECK FAILED: timeout stage=" + stage + " " + panel.status()); Qt.quit() }
     }
     property int stage: 0
@@ -75,7 +76,7 @@ ShellRoot {
     Timer {
         interval: 1000; running: true
         onTriggered: {
-            check(Color.background.toString()===Quickshell.env("EXPECTED_BACKGROUND"),"active Omarchy theme")
+            check(Commons.Color.background.toString()===Quickshell.env("EXPECTED_BACKGROUND"),"active Omarchy theme")
             menuFile.reload()
             check(!panel.opened && panel.polling.requests===0,"registration does not open or poll")
             if (Quickshell.env("MENU_SCENARIO") === "fresh")
@@ -95,6 +96,31 @@ ShellRoot {
             check(panel.entries[2].title==="Loading jobs…","expand run")
             panel.expand(true)
             check(panel.entries.length===3,"collapse run retains other repository")
+            // Selection sync: a row that drops from the filtered list must not leave a stale inspected run behind.
+            panel.polling.repos[0].runs.push({id:8,name:"CI",status:"in_progress",conclusion:"running",run_attempt:"active"})
+            panel.polling.wakeAt=0
+            panel.adopt()
+            panel.filterText="ci"
+            panel.expanded={"repo:one/sub/repo":true}
+            panel.rebuild()
+            for (var i=0;i<panel.entries.length;i++) if (panel.entries[i].run==="7") panel.cursor=i
+            panel.selectionChanged(false)
+            check(panel.polling.inspected==="7","run 7 inspected before it drops")
+            panel.polling.repos[0].runs[0].name="Zed"
+            panel.polling.wakeAt=0
+            panel.adopt()
+            check(!panel.entries.some(function(row) { return row.run==="7" }) && panel.entries.length>0,"filtered row dropped, project stays")
+            check(panel.polling.inspected===(panel.current && panel.current.run || ""),"selection follows the visible row")
+            var mark={}
+            panel.polling.expanded=mark
+            panel.adopt()
+            check(panel.polling.expanded===mark,"adopt does not reselect when selection is in sync")
+            panel.polling.repos[0].runs=[panel.polling.repos[0].runs[0]]
+            panel.polling.repos[0].runs[0].name="CI"
+            panel.polling.wakeAt=0
+            panel.filterText=""
+            panel.adopt()
+            panel.selectionChanged(false)
             panel.filterText="no-match"
             check(panel.entries.length===0,"filter")
             panel.filterText="repo"
@@ -129,17 +155,69 @@ ShellRoot {
                 panel.close()
                 stage=3
             } else if(stage===3 && !panel.workerBusy && Date.now()-(panel.polling.starts[panel.polling.starts.length-1] || 0)>1100) {
-                // Polling.next spaces request starts by at least 1s.
+                // Polling.next spaces request starts by at least 1s. open() already pumps, so refresh overlaps that flight and discards its reply.
                 panel.open("{}")
                 panel.refresh(false)
                 panel.pump()
-                check(panel.workerBusy && panel.polling.flight,"refresh starts a request")
+                check(panel.workerBusy && panel.polling.flight,"refresh overlaps a request")
+                // open() pumps whichever task is due first; refresh() only discards the reply when that flight is the selected summary.
+                var discarded=panel.polling.tasks[panel.polling.flight.key].restart===true
+                panel.failedToStart()
+                check(!panel.workerBusy,"failed start releases the worker")
+                if (discarded) check(panel.polling.error==="" && !panel.polling.auth,"refresh discards the overlapped reply")
+                else check(panel.polling.error==="python3 not found" && panel.polling.auth,"a reply refresh did not restart is delivered")
+                panel.close()
+                stage=4
+            } else if(stage===4 && !panel.workerBusy && Date.now()-(panel.polling.starts[panel.polling.starts.length-1] || 0)>1100) {
+                panel.open("{}")
+                panel.pump()
+                check(panel.workerBusy && panel.polling.flight,"open starts a request")
                 // Quickshell reports a start failure only as running=false; drive the handler it calls.
                 panel.failedToStart()
                 check(!panel.workerBusy && panel.polling.error==="python3 not found" && panel.polling.auth,"failed start stops with setup error")
                 panel.close()
                 stage=5
-            } else if(stage===5 && !panel.workerBusy) {
+            } else if(stage===5 && !panel.workerBusy && Date.now()-(panel.polling.starts[panel.polling.starts.length-1] || 0)>1100) {
+                panel.open("{}")
+                stage=6
+            } else if(stage===6 && !panel.workerBusy && !panel.polling.flight) {
+                // Worker release: create a flight without a process, then make the rebuild throw.
+                panel.polling.expanded={}
+                panel.polling.discover=true
+                panel.polling.wakeAt=0
+                var request=Polling.next(panel.polling, Date.now()+5000)
+                check(request,"flight created without a process")
+                panel.requestInfo=request
+                panel.workerBusy=true
+                panel.polling.details["one/sub/repo:7"]={jobs:{}}
+                panel.polling.wakeAt=0
+                panel.expanded={"repo:one/sub/repo":true,"one/sub/repo:7":true}
+                var caught=false
+                try {
+                    panel.finishRequest(JSON.stringify({requestId:request.requestId,data:request.kind==="catalogue" ? [{repo:"one/sub/repo"},{repo:"two/repo"}] : request.kind==="run" ? {id:7,status:"in_progress"} : [],nextPage:0,error:"",errorType:"",remaining:4000}),0)
+                } catch (e) { caught=true }
+                check(caught,"rebuild failure reached the caller")
+                check(!panel.workerBusy,"worker released after a throwing rebuild")
+                delete panel.polling.details["one/sub/repo:7"]
+                panel.polling.wakeAt=0
+                panel.expanded={}
+                panel.adopt()
+                stage=7
+            } else if(stage===7 && !panel.workerBusy && Date.now()-(panel.polling.starts[panel.polling.starts.length-1] || 0)>1100) {
+                // Host change during a real flight.
+                panel.refresh(true)
+                check(panel.workerBusy && panel.polling.flight,"catalogue refresh starts a real flight")
+                var before=panel.polling.generation
+                panel.configure('{"plugins":[{"id":"olafkfreund.gitlab-pipelines","host":"gitlab.other.org","projects":["three/repo"]}]}')
+                check(panel.entries.length===1 && panel.entries[0].repo==="three/repo","host change shows only the new host's projects")
+                check(Object.keys(panel.expanded).length===0,"host change clears expansion")
+                check(panel.polling.generation>before,"host change starts a new generation")
+                stage=8
+            } else if(stage===8 && panel.requestInfo.host==="gitlab.other.org") {
+                check(!panel.repos.some(function(r) { return r.repo==="one/sub/repo" }),"old host data did not reappear")
+                panel.configure('{"plugins":[{"id":"olafkfreund.gitlab-pipelines","host":"gitlab.example.org","projects":["one/sub/repo","two/repo"]}]}')
+                stage=9
+            } else if(stage===9 && !panel.workerBusy) {
                 console.log("QML_CHECKS_PASSED")
                 Qt.quit()
             }
@@ -148,7 +226,7 @@ ShellRoot {
 }
 ''')
         try:
-            result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=25,
+            result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=50,
                                   env={**os.environ, 'HOME':str(home), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower()})
         except subprocess.TimeoutExpired as error:
             print(error.stdout, error.stderr)
