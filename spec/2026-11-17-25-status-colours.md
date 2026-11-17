@@ -26,10 +26,16 @@ no second list of status names in QML.
 | `queued` | `created`, `pending`, `waiting_for_resource`, `preparing`, `waiting_for_callback`, `queued`, `awaiting final status` | `◌` | `menu.text` | 1 |
 | `skipped` | `skipped` | `−` | `muted` | 0.5 |
 | `canceled` | `canceled` | `⊘` | `menu.text` | 1 |
-| `neutral` | `neutral` | `−` | `menu.text` | 1 |
+| `neutral` | `neutral` | `·` | `menu.text` | 1 |
 | `unknown` | anything else | `○` | `menu.text` | 1 |
 
 **Icon choices:**
+- **Neutral repo rows change from `−` to `·`.** The approved intent says both
+  "neutral: unchanged" and "every group has a different icon", and with
+  skipped keeping `−` those two conflict. The icon guarantee is the stronger
+  requirement, so the neutral (idle) repo row gets a middle dot. This is the
+  one place the spec departs from the intent's table, and it needs the
+  owner's OK at spec approval.
 - `◷` moves from running to scheduled, where a clock fits.
 - Running gets `●`, solid for "active now".
 - Queued gets `◌`, a dotted, empty circle for "not started".
@@ -53,7 +59,7 @@ In `rows()` (`PipelinesModel.js:111-114`), a job whose `conclusion` is
 `"allowed to fail"` instead of `state(job)`. Other jobs are unchanged.
 
 The info column already shows `status + " · " + info`
-(`PipelinesPanel.qml:468`). So the row reads "allowed to fail · 1m 02s",
+(`PipelinesPanel.qml:468`). So the row reads "allowed to fail · 1m 2s",
 which keeps the duration as the intent requires. `gitlab.py` already sends
 `allow_failure` (`gitlab.py:161`).
 
@@ -70,8 +76,13 @@ Stage and pipeline statuses keep their rules (`stageStatus`,
 - The title and subtitle are not dimmed, so the name stays readable.
 - The selected-row colours (`menu.selectedText` for the title) do not change.
   The status icon and info keep their group colour on the selected
-  background (`menu.selectedBackground`, foreground at 8% alpha). The lowest
-  opacity, 0.5, still shows.
+  background, `menu.selectedBackground`.
+- **What "readable" means here:** the selected background is themeable
+  (`Commons/Color.qml:105`, foreground at 8% alpha by default). So the
+  guarantee is limited to this: no group's icon or info goes below 0.5
+  opacity, and selection never changes a row's status colour or opacity.
+  Contrast against a user's custom selected background is the theme's
+  responsibility, as it is for every other text in the panel.
 
 ## Alternatives rejected
 
@@ -104,12 +115,16 @@ Stage and pipeline statuses keep their rules (`stageStatus`,
 - `node tests/model.cjs`:
   - every status in the table maps to its group and icon;
   - an unlisted status (`"frobnicated"`) is `unknown` / `○`;
-  - all eleven groups have different icons, except `neutral` and `skipped`,
-    which share `−` and differ by opacity;
+  - all eleven groups have different icons;
   - `rows()` gives an allowed-failure job the status `allowed to fail`, and
     its info is still the duration;
   - a blocking failed job stays `failed`;
   - a stage whose only failure is allowed is still `success`.
+  - Existing assertions that change:
+    - `tests/model.cjs:45` (the allowed-failure job row "stays failed") now
+      expects `allowed to fail`;
+    - the old icon expectations at `tests/model.cjs:55-59` are replaced by
+      the table above.
 - `node tests/polling.cjs` and `python3 -m unittest discover -s tests`: pass,
   unchanged.
 - `tests/qml-smoke.py`, run in the `nixarchy-desktop` microVM only:
@@ -120,8 +135,22 @@ Stage and pipeline statuses keep their rules (`stageStatus`,
     `{'id':10,'name':'lint','stage':'test','status':'completed','conclusion':'failed','allow_failure':True}`.
     That keeps the two-stage count the existing check expects
     (`tests/qml-smoke.py:453`). The "jobs arrive" check
-    (`tests/qml-smoke.py:452`) changes from 2 to 3. With the `test` stage
-    expanded, the row titled `lint` has the status `allowed to fail`, and
-    its delegate's status icon text is `!`.
+    (`tests/qml-smoke.py:452`) changes from 2 to 3. The job gets
+    `started_at` and `completed_at`, so its duration shows. The steps:
+    1. Add `"one/sub/repo:7:stage:test": true` to the existing expansion map
+       (`tests/qml-smoke.py:438-440`) and rebuild.
+    2. Find the `lint` row and move the cursor onto it, which selects it and
+       scrolls it into view.
+    3. Wait for its delegate.
+    4. Check that the row's status is `allowed to fail`, its info contains a
+       duration, and the delegate's status icon text is `!`.
+    5. Check that the icon's `color` and `opacity`, and the info's, equal
+       `statusColor` / `statusOpacity` for that status while the row is
+       selected.
+  - **Selected rows of every group:** a fixture stage has one row per group:
+    repo rows for `neutral` and `error`, and run rows for every other group.
+    It moves the cursor onto each row in turn. On each selected row, the
+    delegate's icon and info `color` / `opacity` must match
+    `statusColor` / `statusOpacity`, and the opacity must be at least 0.5.
 - **Manual, in the microVM:** a screenshot of the panel with a fixture holding
   one row per group, to check the glyphs and columns by eye.
