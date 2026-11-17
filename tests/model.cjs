@@ -251,3 +251,14 @@ z = 75; const up = [];
 for (let i = 0; i < 14; i++) up.push(z = model.zoomStep(z, 1));
 assert.deepEqual(up, [80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 200]);
 console.log('Model: stage hierarchy, aggregation, filtering, progress, selection and duration passed');
+// A stored null that the ListModel hands back as undefined must not count as a change (#28 review).
+{
+  const rows = [{key:'n', title:'N', status:'queued', serverDuration:null, queued:null}];
+  model.syncRows(list, rows);
+  backing[0].rowData = {...backing[0].rowData, serverDuration:undefined, queued:undefined};
+  edits = 0;
+  model.syncRows(list, rows);
+  assert.equal(edits, 0, 'null and undefined compare equal in syncRows');
+  model.syncRows(list, [{...rows[0], serverDuration:0}]);
+  assert.equal(backing[0].rowData.serverDuration, 0, 'null to 0 is still a change');
+}

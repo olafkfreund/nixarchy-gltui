@@ -244,7 +244,8 @@ function syncRows(model, rows) {
             model.move(j, i, 1);
         }
         var old = model.get(i).rowData;
-        if (shownFields.some(function(field) { return old[field] !== rows[i][field]; }))
+        // null and undefined compare equal: a ListModel may hand a stored null back as undefined.
+        if (shownFields.some(function(field) { return old[field] !== rows[i][field] && !(old[field] == null && rows[i][field] == null); }))
             model.setProperty(i, "rowData", rows[i]);
     }
     return structureChanged;

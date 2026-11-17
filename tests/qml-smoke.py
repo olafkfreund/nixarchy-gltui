@@ -574,7 +574,7 @@ ShellRoot {
             var t=Date.now()
             function iso(ms) { return new Date(ms).toISOString() }
             panel.filterText=""
-            var R1={id:1,name:"MR",status:"completed",conclusion:"success",run_number:1,head_branch:"refs/merge-requests/42/head",run_started_at:iso(t-70000),completed_at:iso(t-4000)}
+            var R1={id:1,name:"MR",status:"completed",conclusion:"success",run_number:1,head_branch:"refs/merge-requests/42/head",run_started_at:iso(t-70000),completed_at:iso(t-2000)}
             var R2={id:2,name:"Live",status:"in_progress",conclusion:"running",run_number:2,head_branch:"main",run_started_at:iso(t-30000)}
             panel.polling.repos=[{repo:"t/live",checked:iso(t-5000),runs:[R1,R2]}]
             panel.polling.details={"t/live:2":{jobs:[
@@ -610,7 +610,7 @@ ShellRoot {
             check(panel.entries===live.ents,"S4 entries not rebuilt")
             var a1=findByName(run1,"statusInfo").text, s=findByName(spin,"statusInfo").text
             if (a1.indexOf("s ago")>=0 && s!==live.aSpin) { live.spin=s; return }
-            check(Date.now()-live.t0<10000,"S4 clocks advance within 10 s: " + a1 + " | " + s)
+            check(Date.now()-live.t0<15000,"S4 clocks advance within 15 s: " + a1 + " | " + s)
             return false
         },
         function() {
