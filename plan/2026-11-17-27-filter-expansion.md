@@ -69,6 +69,18 @@ the `collapsed` keys. It never mutates its inputs. It copies with
 `rebuild(true)` and `selectionChanged(false)`. It no longer clears
 `expanded`.
 
+## Corrections to the spec
+
+The plan's smoke sequence (step 3, E1–E10) is the reference. It corrects
+the spec's verification wording without changing any approved behaviour:
+- **Explicit project collapse (spec step 7):** with filter `fix`, `b/two` is
+  already auto-open, so the first Right closes it. The plan presses Right
+  twice to reach an explicit opening, as the toggle table requires.
+- **Key boundaries (spec step 8):** these run after the filter is cleared,
+  on the restored `build` job rows, and on a name-matched project with
+  hidden pipelines. With filter `fix` there is no job or `more` row to
+  select.
+
 ## Steps
 
 1. **`PipelinesModel.js` and `tests/model.cjs`: the helpers.**
@@ -146,29 +158,92 @@ the `collapsed` keys. It never mutates its inputs. It copies with
      `expand(false)` stay as they are.
    - **New `esteps`.** Insert them immediately before the final `estep`,
      the one that sets `panel.workerBusy=false`, closes the panel, builds
-     the zoom fixture and sets `stage=11`. They implement spec
-     verification steps 1–10:
-     - the fixture with `a/one` and `b/two`;
-     - typing `feature`;
-     - the auto-only collapse, surviving `adopt()`;
-     - the poll-arriving and disappearing match;
-     - changing the search to `fix` to clear the collapse, then Right on
-       pipeline 3;
-     - the explicit project collapse and reopen;
-     - key boundaries on `more` and `job` rows;
-     - clearing with Esc;
-     - "+N more", positive and negative.
+     the zoom fixture and sets `stage=11`. `workerBusy` is already true.
+     Use one function per numbered step below. Put each wait (`return false`
+     until a delegate or state exists, or `held()`) in its own function, as
+     #26 did.
 
-     Use:
-     - `tc.keyClick` with the search field focused
-       (`panel.searchItem.forceActiveFocus()`) to type;
-     - `listFocus()` before Left/Right. Send them with `pressKey`, the
-       existing helper, or `tc.keyClick(Qt.Key_Left)` once the list has
-       focus;
-     - `held()` or separate functions for waits, as #26 did.
+     **E1. Fixture.**
+     - Set `panel.polling.repos` to:
+       - `{repo:"a/one",checked:"x",runs:[{id:1,name:"CI",status:"completed",conclusion:"success",run_number:1,head_branch:"main"}]}`;
+       - `{repo:"b/two",checked:"x",runs:[{id:2,name:"CI",status:"completed",conclusion:"success",run_number:2,head_branch:"feature-x"},{id:3,name:"CI",status:"completed",conclusion:"success",run_number:3,head_branch:"fix-y"}]}`.
+     - Set `panel.polling.details={"a/one:1":{jobs:[...]}}` with two
+       completed jobs in stage `build` and one in stage `test`.
+     - Set `panel.filterText=""` and
+       `panel.expanded=({"repo:a/one":true,"a/one:1":true,"a/one:1:stage:build":true})`,
+       then `panel.adopt()`.
+     - Check that the rows include `a/one`, pipeline 1, stage `build`, its two
+       job rows, and stage `test`.
 
-     Seed the jobs for `a/one:1` in `panel.polling.details` (two stages),
-     so the stage rows exist.
+     **E2. Type `feature`.** `panel.searchItem.forceActiveFocus()`, then
+     `tc.keyClick` each character. Check:
+     - `panel.filterText==="feature"`;
+     - the rows are exactly `b/two` and pipeline 2;
+     - `panel.shown["repo:b/two"]` is true;
+     - the `b/two` row's arrow is open: its entry's key is in `panel.shown`,
+       and its delegate title starts with `▾`;
+     - `panel.expanded` still has all three `a/one` keys.
+
+     **E3. Auto-only collapse.**
+     - `listFocus()`, set the cursor to the `b/two` row, then press
+       `Qt.Key_Left`.
+     - Check that `searchCollapsed["repo:b/two"]` is set, the rows are only
+       `b/two`, and `expanded` has no `repo:b/two`.
+     - Then `panel.adopt()` and check that it is still collapsed.
+
+     **E4. A poll-arriving match.**
+     - Push
+       `{id:4,name:"CI",status:"completed",conclusion:"success",run_number:4,head_branch:"feature-z"}`
+       into `a/one`'s runs, then `panel.adopt()`.
+     - Check that `a/one` and pipeline 4 are in the rows and
+       `shown["repo:a/one"]` is true. It was already in `expanded`, so also
+       check that pipeline 1 is hidden: it does not match.
+
+     **E5. A disappearing match.** Remove pipeline 4 and `panel.adopt()`.
+     Check that `a/one` is not in the rows.
+
+     **E6. Change the search.**
+     - Focus the search field, set `panel.filterText=""`, then type `fix`.
+     - Check that `searchCollapsed` is empty, `b/two` and pipeline 3 are
+       shown, and `b/two` is auto-open.
+     - `listFocus()`, move the cursor to pipeline 3 and press Right. Check
+       that `expanded["b/two:3"]` is true.
+
+     **E7. Explicit project collapse.** Start with `b/two` auto-open. Put the
+     cursor on `b/two`, then:
+     1. Press Right. It closes: `searchCollapsed["repo:b/two"]` is set.
+     2. Press Right again. It opens explicitly: `expanded["repo:b/two"]` is
+        true and `searchCollapsed` has no `repo:b/two`.
+     3. Press Left. `expanded` has no `repo:b/two`, and
+        `searchCollapsed["repo:b/two"]` is set. Run `panel.adopt()` and check
+        that it is still collapsed.
+     4. Press Right. `expanded["repo:b/two"]` is true again; leave it open.
+
+     **E8. Clear the filter.**
+     - Focus the search field and press `Qt.Key_Escape` once.
+     - Check that `filterText` is empty.
+     - Check that every key in `panel.shown` is in `panel.expanded`, and the
+       other way round.
+     - Check that the rows include `a/one`, pipeline 1, stage `build` and its
+       two job rows; `b/two` with pipelines 2 and 3; and pipeline 3 still
+       expanded (`expanded["b/two:3"]`).
+
+     **E9. Key boundaries, on the restored rows.**
+     - Put the cursor on a job row under stage `build` and press Right.
+       `expanded` gains no key.
+     - Press Left. The cursor moves to stage `build`, its parent.
+
+     **E10. "+N more".**
+     - Set `panel.polling.repos[0].hidden={running:3}` (`a/one`) and
+       `panel.adopt()`.
+     - Set `panel.filterText="a/one"`, a name match. The rows include a
+       `kind==="more"` row under `a/one`, because `a/one` is still in
+       `expanded`.
+     - Put the cursor on it, press Right (`expanded` gains no key), then
+       press Left (the cursor moves to `a/one`).
+     - Set `panel.filterText="main"`, which matches only through pipeline 1.
+       The rows include `a/one`, and no `more` row.
+     - Set `panel.filterText=""` to finish.
 
    Check: the microVM smoke run passes, with `passed=2 rc=0 binding_loop=0`.
 
