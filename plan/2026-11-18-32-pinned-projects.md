@@ -506,4 +506,25 @@ state-file steps. Its findings, which I checked and folded in above:
 
 ## Deviations
 
-None yet.
+- **Step 4, lead fix:** `finishPinsLoad`'s host-mismatch reload and
+  `finishPinsSave`'s `nextSave()` run through `Qt.callLater`, so a new
+  start never happens inside the old Process's exit handler while it may
+  still report `running`.
+- **Step 6, smoke delay on saves only:** the fake sleeps for `save`
+  requests, not loads. A delayed load would let the save finish first, and
+  P11 would prove nothing.
+- **Step 6, P8 gets two extra steps:** the failed save leaves `o/beta`
+  pinned in memory only; after `chmod 700` it is unpinned again before P9
+  pins it.
+- **Step 6, P12 clears `sessionPins` first,** or P11's session list would
+  override the injected load; P12 and P13 also restore
+  `catalogueComplete` and the project fixture.
+- **Step 6, startup check:** the first `savedPins` loaded while the host is
+  still `gitlab.com` is recorded by a `Connections` handler and asserted in
+  P1, because the 1 s startup timer changes the host before a step could
+  wait on it.
+- **Step 6, watchdog message:** the timeout line now also prints the
+  current `ei` step index, to find a stuck step.
+- **Tests, VM:** a VM left idle locks its screen (DPMS off, then a
+  password prompt), and every `keyClick` then fails, on `main` too. The
+  VM was recreated and the smoke run started right after boot.
