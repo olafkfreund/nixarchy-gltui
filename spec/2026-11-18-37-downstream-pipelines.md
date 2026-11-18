@@ -48,12 +48,15 @@ self-managed servers have no `trigger_jobs`.
   `bridgesUnavailable`. Whole-entry deletions (rerun via `invalidateJobs`,
   trim, dropped runs, removed projects, host reset) clear them too. Every
   write merges instead of replacing: jobs success (`Polling.js:398`) and
-  jobs permission error (`:331`) keep the four bridge fields; bridge success
+  jobs permission error (`:331`) keep the four bridge fields, and jobs
+  success still clears its own `error` and `unavailable`; bridge success
   and errors keep every jobs field.
 - **Route:** `s.bridgeRoute` (initially `"bridges"`, reset with the host in
-  `resetHost`). A `route` error on `bridges` switches it to `"trigger_jobs"`
-  and restarts the task as a new, counted request. A `route` error on
-  `trigger_jobs` is handled as `permission`.
+  `resetHost`). A `route` error on a `bridges` request restarts that task
+  with `route: "trigger_jobs"` as a new, counted request; only the task
+  changes. If that request succeeds, `s.bridgeRoute` becomes
+  `"trigger_jobs"` for later tasks; if it fails with `route` too, it is
+  handled as `permission` for that pipeline and the host preference stays.
 - **Seeding**, in `seed()` (`Polling.js:177-184`): the jobs part and the
   bridges part are guarded separately (the existing `return` on
   `detail.unavailable` becomes a guard around the jobs part only). For the
@@ -90,9 +93,9 @@ self-managed servers have no `trigger_jobs`.
 - A bridge (an item with a `downstream` key) becomes a row of
   `kind: "trigger"` at depth 3 under its stage:
   - `title`: `"» " + bridge name`;
-  - `subtitle`: downstream ? (`project_id` and `parent_project_id` equal →
-    `"child"`; else the parsed `project`, or `"another project"` when it is
-    `""`) + `" · #" + (iid || id)` + `" · " + shortRef(ref)` :
+  - `subtitle`: downstream ? (both `project_id` and `parent_project_id`
+    valid and equal → `"child"`; else the parsed `project`, or
+    `"another project"` when it is `""`) + `" · #" + (iid || id)` + `" · " + shortRef(ref)` :
     `"downstream not created or unavailable"`;
   - `status`: downstream ? `state(downstream)` : the bridge's status
     (allowed-to-fail rule as for jobs);
@@ -162,8 +165,11 @@ refreshing until `r`. Help text lists `»`. `manifest.json` → 1.12.0.
   going while a downstream runs after the parent finished; manual
   downstream stops; jobs unavailable but bridges still seeded; permission
   error leaves jobs and `blocked` alone; network error sets `bridgesError`,
-  success clears it; route error switches to `trigger_jobs` as a counted
-  request, then a second route error is a permission error; navigation or
+  success clears it; route error retries that task with `trigger_jobs` as a
+  counted request and sets the host route only on success; a second route
+  error is a permission error for that pipeline only, and a readable
+  pipeline afterwards still uses `/bridges`; jobs permission error →
+  `r` → jobs success clears the jobs error and keeps bridge fields; navigation or
   collapse during pagination drops the task; rerun between pages restarts
   it; both arrival orders keep jobs and bridges fields; jobs completion
   after a bridges permission error keeps `bridgesUnavailable`; `r`
@@ -171,7 +177,7 @@ refreshing until `r`. Help text lists `»`. `manifest.json` → 1.12.0.
   inspecting a parent with a running child counts about 120 bridge
   requests; existing scenarios unchanged (471).
 - `tests/model.cjs`: trigger row fields for child, multi-project, unknown
-  project, null downstream; stage order and counts with bridges
+  project, both project ids missing (not "child"), null downstream; stage order and counts with bridges
   interleaved by id; bridges-only details still say "Loading jobs…"; error
   row; key uniqueness; `nextFailure` reaches a failed trigger row under a
   successful stage.
