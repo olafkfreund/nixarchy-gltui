@@ -16,7 +16,9 @@ reviewers:
 Self-contained. Branch `perf/35-fewer-requests`, based on `3510922`
 (v1.9.0). Line numbers are for that commit; match on the quoted code.
 Only `Polling.js`, `tests/polling.cjs`, `README.md` and `manifest.json`
-change. No QML, model or helper change.
+change. No QML, model or helper change. The spec names only the first
+three. `manifest.json`'s version bump (1.10.0) is added here because every
+release carries one, as in #32 to #34. It changes no behaviour.
 
 ## Approved decisions (from the spec)
 
@@ -56,8 +58,12 @@ change. No QML, model or helper change.
       declared at `:108`, before this point.
 - **During a scan,** no extra wake is added. The catalogue task's due time
   is folded in by the existing loop at `:160`.
-- **`open()`** (`:63-69`): set `s.periodic=false` always. Any scan after
-  a reopen is a full one.
+- **`open()`** (`:63-69`): replace the condition at `:67` with
+  `if (!s.catalogueError) s.discover=true;` and set `s.periodic=false`.
+  Every reopen is then a full refresh that clears `blocked`, as the spec
+  says, including within 5 minutes of the last scan. This costs one scan
+  (2 pages for 137 projects) per opening. A catalogue permission error
+  still stops discovery until `R`.
 - **`manual(s,now,true)`:** set `s.periodic=false`. If
   `s.tasks[key("catalogue")]` exists, `restart(s,thatTask,now)`, so the
   upgraded scan starts again from page 1. `restart` already handles a
@@ -96,15 +102,19 @@ change. No QML, model or helper change.
   - `!s.watches[r.repo+":"+run.id]`.
 
   Otherwise it returns `15000`.
-- **Using it** (`Polling.js:147-148`): replace both
-  `age(run.followupAt,15000)` with `age(run.followupAt,queuedDelay(s,r,run))`.
+- **Using it** (`Polling.js:147-148`): `age(run.followupAt,15000)`
+  appears **three** times: the condition, the task's due time and the
+  wake. Compute `var due=age(run.followupAt,queuedDelay(s,r,run));` once
+  and use it in all three.
 - **Raised:** in `complete()`'s run branch (`:313-318`), after
   `mergeRuns`. If `resolved.status==="queued"`, set
   `s.queued[id]=Math.min(5,(s.queued[id]||0)+1)`; otherwise
   `delete s.queued[id]`. Here `id=t.repo+":"+t.run`.
 - **Cleared:**
-  - in `activity()`, for every item (those are running) and for every
-    dropped id (`:255`);
+  - in `mergeRuns()` (`Polling.js:218-229`), for every incoming run whose
+    `status!=="queued"`. This covers summary pages (`:332`), activity
+    results and lookups through one path;
+  - in `activity()`, for every dropped id (`:255`);
   - in `trimRuns` next to `delete s.details[…]` (`:234`);
   - in the catalogue completion, for ids whose repo is in `gone`, next to
     the details loop (`:337`);
@@ -170,7 +180,7 @@ change. No QML, model or helper change.
      `r.active>0`;
    - selecting then deselecting before the 250 ms debounce resets to 0;
    - `r` resets the selected repo, `R` resets all;
-   - `resetHost` drops `idle`.
+   - `resetHost` drops `idle` and `hinted`.
 
    → verify with `node tests/polling.cjs`.
    Traps:
@@ -178,12 +188,15 @@ change. No QML, model or helper change.
    - ES5 only (no arrow functions, `let` or template strings in
      `Polling.js`);
    - the existing `simulation()` assertions (`tests/polling.cjs:136-150`)
-     must still pass. The repos there have no `lastActivity`, so they start
-     at 0.
+     must still pass (their assertions are at `tests/polling.cjs:136-143`).
+     The repos there have no `lastActivity`, so they start at 0.
 2. **Periodic catalogue and hints (decisions B).** Tests:
    - the periodic scan starts at `catalogueAt+300000` and `wakeAt` equals
      that before;
-   - no periodic scan after a catalogue permission error;
+   - no periodic scan after a catalogue permission error, and no reopen
+     scan either;
+   - a reopen within 5 minutes of a complete scan (not overdue) starts a
+     full scan that clears `blocked`;
    - the periodic merge keeps `blocked`; `open()` and `R` clear it,
      including an overdue `R`, an overdue reopen, and `R` mid-pagination
      (restarted at page 1);
@@ -206,7 +219,14 @@ change. No QML, model or helper change.
    - the level clears when the lookup returns a running run, on trim, on
      catalogue removal (then the reintroduced run starts at 15 s), and on
      selection;
-   - a watch added during a lookup's error retry waits for the retry;
+   - a completed run from a summary page that stays cached (not trimmed)
+     clears its level, including after a lookup in flight during
+     selection returned queued;
+   - with a queued run backing off at 5 minutes, `s.seeds` stays bounded
+     over the wait, and the lookup fires at the backed-off time, not 15 s;
+   - a watch added during a lookup's error retry waits for the retry. A
+     watch added during an ordinary queued back-off wait is looked up on
+     its own 30 s schedule;
    - `resetHost` drops `s.queued`.
 
    → verify with `node tests/polling.cjs`.
@@ -232,21 +252,48 @@ After each step the lead reviews the diff, reruns the check, and commits.
   unchanged and passing.
 - `nix flake check`, or at least
   `nix build .#checks.x86_64-linux.plugin`.
-- **Mutation checks by the lead:** revert each of these one at a time and
+- **Mutation checks by the lead:** revert each new rule one at a time and
   confirm a test fails:
-  - the `select()` reset;
-  - the periodic `blocked` guard;
-  - the hint bypass;
+  - the start level, the `activity()` level step, and the run-lookup reset;
+  - the `select()` reset, and the `r` and `R` resets;
+  - the scan type chosen at start, the periodic `blocked` guard, the
+    reopen full scan, and `R` restarting a scan;
+  - the hint flag, the hint ordering, the hint bypass, and the hint clear;
   - the wake guard;
-  - the catalogue-removal clear of `s.queued`;
-  - the queued delay.
+  - the queued delay in each of its three uses, the raise, and each of
+    the four clears (`mergeRuns`, dropped, trim, catalogue removal) plus
+    the selection clear.
 - **No microVM smoke test:** no QML changes. If one becomes necessary, it
   runs in a fresh microVM only.
-- **Review:** Codex review `--base` the plan-approve commit, then a fresh
-  Opus review given only this plan and the diff.
+- **Review:** a fresh Codex review (`codex review --base` the
+  plan-approve commit, outside the warm review member, so its context is
+  independent), then a fresh Opus review given only this plan and the diff.
 
 ## Rollback
 
 Revert the PR, or pin nixarchy and nixos_config back to v1.9.0
 (`35109222`). No state or config migrates. The new fields live only in
 memory.
+
+## Review notes
+
+Codex reviewed the draft read-only; agy is out of use (#2748). It
+confirmed that the six spec review fixes are carried over, the ES5 and
+`wakeAt` rules fit, and closed mode is untouched. Its findings, all
+confirmed and folded in:
+1. **Reopen within 5 minutes (confirmed, reproduced by Codex):** this
+   left projects blocked, because `open()` starts a scan only when it is
+   overdue. Every reopen now scans unless a catalogue permission error
+   stopped discovery.
+2. **Completed summary runs kept queued counters (confirmed):** they are
+   now cleared in `mergeRuns()`, the shared path.
+3. **Three delay expressions, not two (confirmed):** the plan now
+   computes the due time once and uses it for all three.
+4. **Version bump outside the spec's file list:** kept and called out
+   above as a release step with no behaviour change. It needs your
+   explicit OK through plan approval.
+5. **Missing checks (confirmed):** host reset of `hinted`, a mutation check
+   for every new rule, and a watch added during a queued back-off wait.
+
+It also corrected the simulation assertion range (`:136-143`) and asked
+for a fresh-context Codex review of the code.
