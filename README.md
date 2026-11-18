@@ -210,6 +210,22 @@ Stage status follows GitLab's rules, in this order:
 
 Stage rows show completed/total jobs. Open GitLab for logs.
 
+## Open on the current repository
+
+Add an alias to your shell:
+
+```bash
+alias glp='python3 ~/.config/omarchy/plugins/olafkfreund.gitlab-pipelines/menu.py open'
+```
+
+`glp` in a checkout opens the panel on its `origin` project, and `glp group/project` opens it filtered on any text. For scripts:
+
+```bash
+omarchy-shell shell summon olafkfreund.gitlab-pipelines '{"filter":"group/project"}'
+```
+
+A remote on a different host than the panel's shows a notice instead of filtering. Only `origin` is read.
+
 ## Refresh and errors
 
 While open, one scheduler fetches a single API page at a time. Selecting a project waits 250 ms before fetching its missing or stale data, so rapid navigation does not trigger requests for every project you pass.
