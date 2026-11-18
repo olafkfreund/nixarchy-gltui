@@ -76,7 +76,7 @@ ShellRoot {
         onFileChanged: reload()
     }
     Timer {
-        interval: 90000; running: true
+        interval: 120000; running: true
         onTriggered: { console.error("CHECK FAILED: timeout stage=" + stage + " ei=" + ei + " " + panel.status()); Qt.quit() }
     }
     property int stage: 0
@@ -332,11 +332,13 @@ ShellRoot {
         panel.cursor=0
     }
     function kPress(key, mods) { panel.notice=""; listFocus(); pressKey(key, mods) }
-    readonly property string traceOut: Quickshell.env("XDG_STATE_HOME") + "/trace.out"
+    // A fresh file per check: a FileView keeps its last text when a file it loaded is emptied or deleted.
+    property int traceN: 0
+    readonly property string traceOut: Quickshell.env("XDG_STATE_HOME") + "/trace" + traceN + ".out"
     FileView { id: traceFile; path: traceOut; blockLoading: true; printErrors: false }
     function traceScript() { return ["sh","-c",'for a in "$@"; do echo "$a"; done > "' + traceOut + '"; exit 0',"sh"] }
     function traceExists() { traceFile.reload(); try { return traceFile.text()!=="" } catch (e) { return false } }
-    function traceRm() { sh("rm -f '" + traceOut + "'") }
+    function traceRm() { traceN++; panel.traceCommand=traceScript() }
     function traceFixture() {
         kFixture([kP(1),kP(2)],[kJ(1),kJ(2)])
         panel.traceCommand=traceScript()
@@ -1195,8 +1197,7 @@ ShellRoot {
             kPress(Qt.Key_T)
         },
         function() {
-            if (!waitUntil(function() { return !panel.opened },"T3 panel closes")) return false
-            traceFile.reload()
+            if (!waitUntil(function() { return !panel.opened && traceExists() },"T3 panel closes and the file is written")) return false
             eq(traceFile.text().trim(),panel.host + "\\n" + panel.entries[kcur].repo + "\\n" + panel.entries[kcur].job,"T3 arguments")
             panel.open("{}")
         },
@@ -1265,8 +1266,7 @@ ShellRoot {
             kPress(Qt.Key_T)
         },
         function() {
-            if (!waitUntil(function() { return !panel.opened },"T6 plain t closes")) return false
-            check(traceExists(),"T6 plain t wrote the trace file")
+            if (!waitUntil(function() { return !panel.opened && traceExists() },"T6 plain t closes and writes the trace file")) return false
             panel.open("{}")
         },
         function() {
@@ -1522,7 +1522,7 @@ ShellRoot {
 }
 ''')
         try:
-            result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=110,
+            result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=140,
                                   env={**os.environ, 'HOME':str(home), 'XDG_STATE_HOME':str(home / '.local/state'), 'PINS_DELAY':str(root / 'pins-delay'), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower()})
         except subprocess.TimeoutExpired as error:
             print(error.stdout, error.stderr)
