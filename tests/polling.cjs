@@ -1035,3 +1035,33 @@ test('a matching reply that is no longer wanted still clears the flight', () => 
   assert.equal(s.flight,null);
 });
 
+
+// Measurement (#35): 137 projects (5 active within a day, 15 within a week, 117 older), org/r0 selected, 1s responses.
+// Baseline before #35: realistic 30 min 713 requests (idle 408); realistic 2 h 2830 (idle 1632); queued 30 min 1800 (lookups 1413).
+function scenario({duration, queued=0}) {
+  const DAY=86400000, age=i=>i<5?DAY/4:i<20?3*DAY:60*DAY;
+  const s=polling.create(), repos=Array.from({length:137},(_,i)=>({repo:`org/r${i}`,lastActivity:new Date(-age(i)).toISOString()}));
+  polling.open(s,0); polling.select(s,'org/r0','',{},0,false);
+  let flight=null, seeded=false; const counts={total:0};
+  for(let now=0;now<duration;now+=250) {
+    if(flight && now>=flight.end) {
+      const q=flight.req; let data=[],next=0;
+      if(q.kind==='catalogue') { data=q.page===1?repos.slice(0,100):repos.slice(100); next=q.page===1?2:0; }
+      if(q.kind==='run') data={id:Number(q.run),status:'queued',conclusion:'pending',run_attempt:1,name:'CI'};
+      polling.complete(s,response(q,data,next),now); flight=null;
+      if(queued && !seeded && q.kind==='catalogue' && s.catalogueComplete) {
+        seeded=true;
+        for(let i=0;i<queued;i++) s.repos.find(r=>r.repo===`org/r${i+1}`).runs=[{id:1000+i,status:'queued',conclusion:'pending',run_attempt:1}];
+        s.wakeAt=0;
+      }
+    }
+    const q=polling.next(s,now);
+    if(q) { counts.total++; const k=q.kind==='activity'?'activity/'+s.tasks[s.flight.key].group:q.kind; counts[k]=(counts[k]||0)+1; flight={req:q,end:now+1000}; }
+  }
+  return counts;
+}
+const realistic30=scenario({duration:1800000}), realistic2h=scenario({duration:7200000}), queued30=scenario({duration:1800000,queued:30});
+console.log('realistic 30 min', realistic30); console.log('realistic 2 h', realistic2h); console.log('queued 30 min', queued30);
+assert.ok(realistic30.total<500,`realistic 30 min ${realistic30.total}`);
+assert.ok(realistic2h['activity/background']<653,`realistic 2 h background activity ${realistic2h['activity/background']}`);
+assert.ok(queued30.run<707,`queued 30 min lookups ${queued30.run}`);

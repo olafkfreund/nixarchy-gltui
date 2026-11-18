@@ -122,7 +122,7 @@ python3 ~/.config/omarchy/plugins/olafkfreund.gitlab-pipelines/menu.py register
 
 ## Projects
 
-No project list is needed. Opening the popup fetches every page of `GET /projects?membership=true`: the projects you are a direct or inherited member of, including nested groups. Projects are scanned in order of most recent activity. Archived projects, and projects with CI/CD disabled, stay searchable but are not polled.
+No project list is needed. Opening the popup fetches every page of `GET /projects?membership=true`: the projects you are a direct or inherited member of, including nested groups. Projects are scanned in order of most recent activity. The list is refreshed every 5 minutes while the panel is open. Archived projects, and projects with CI/CD disabled, stay searchable but are not polled.
 
 Press **/** and type a project path, description, pipeline name, branch or status. Use **↑ / ↓** while typing to select a result, then **Enter** to expand it. **Tab** finishes editing without expanding. Projects with running pipelines move to the top as activity is discovered. Projects not yet checked say **not checked**, and the header shows scan progress.
 
@@ -274,8 +274,13 @@ While open, one scheduler fetches a single API page at a time. Selecting a proje
 | Other projects with running pipelines, pinned or not | 15 seconds |
 | Selected full pipeline summary | 60 seconds |
 | Idle pinned projects | 60 seconds |
-| Previously checked idle projects | 10 minutes |
+| Idle projects | 10 minutes, backing off to 60 while nothing runs (projects inactive for a week start at 60) |
+| Project list | 5 minutes while open |
 | Watched pipelines | 30 seconds, also while the panel is closed |
+
+A project whose last activity changes in the project list is checked next. GitLab updates that time at most once an hour, and scheduled pipelines may not change it, so a short pipeline on an idle project can start and finish without being shown as running. Pin a project to check it every minute.
+
+A queued pipeline on a project you are not viewing is looked up every 15 seconds at first, backing off to every 5 minutes while it stays queued.
 
 Request slots are shared as follows:
 
@@ -286,7 +291,7 @@ Request slots are shared as follows:
 
 When a running pipeline disappears from the running list, the panel fetches its final status rather than assuming success. A finished pipeline's jobs are fetched once and reused until you refresh, or until the pipeline is retried: GitLab updates a retried pipeline's `updated_at`, and that triggers a new fetch.
 
-GitLab's `Retry-After` and `RateLimit-Reset` headers pause all work. A rate limit without a deadline starts with a one-minute wait and backs off up to fifteen minutes. Network and server errors back off the affected resource from five seconds up to five minutes. Permission failures leave that project unavailable until the next catalogue or manual refresh. Authentication failures pause polling until you retry or reopen. Manual refresh never bypasses a server cooldown.
+GitLab's `Retry-After` and `RateLimit-Reset` headers pause all work. A rate limit without a deadline starts with a one-minute wait and backs off up to fifteen minutes. Network and server errors back off the affected resource from five seconds up to five minutes. Permission failures leave that project unavailable until the panel reopens or you refresh (`r` or `R`). Authentication failures pause polling until you retry or reopen. Manual refresh never bypasses a server cooldown.
 
 Errors and pauses show in a line under the search box, with the key that fixes them: `r` after a login or setup stop, `R` after a project-list failure (press Esc first if the search box has focus).
 
