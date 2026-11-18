@@ -40,7 +40,7 @@ Self-contained. Branch `feat/34-watch-pipeline`, based on `fe0d6d0`
   - `now>=w.until` → push `{type:"expired", watch:w}` and delete;
   - else `!repoFor(s,w.repo)` → push `{type:"unavailable", watch:w}` and
     delete;
-  - else `finished(runFor(s,w.repo,w.run))` → push
+  - else `var run=runFor(s,w.repo,w.run)`; if `finished(run)` → push
     `{type:"finished", watch:w, conclusion:run.conclusion}` and delete;
   - otherwise keep.
 
@@ -110,16 +110,27 @@ Self-contained. Branch `feat/34-watch-pipeline`, based on `fe0d6d0`
   - `watched` missing means `{}`;
   - run rows gain `watched: !!watched[repo.repo + ":" + run.id]`;
   - `"watched"` joins `shownFields`.
-- `watchNotice(code, repo, number)`: the strings in the spec (part 2).
-- `watchMessage(event, oldHost, newHost)` → `{summary, body}`.
-  - Summaries: `Pipeline passed`, `Pipeline failed`, `Pipeline canceled`,
-    `Pipeline skipped`, `Stopped watching a pipeline`,
-    `Pipeline unavailable`, `GitLab sign-in needed`, and
-    `Stopped watching N pipeline(s)` for `host`.
-  - Bodies: as in the spec. `pipeline(s)` reads `pipeline` when the count
-    is 1.
-  - A `host` event is `{type:"host", count}`, with the hosts passed as
-    arguments.
+- `watchNotice(code, repo, number)` returns exactly:
+  - `watching` → `Watching #<number> in <repo>`;
+  - `unwatched` → `Stopped watching #<number>`;
+  - `finished` → `Pipeline already finished`;
+  - `cap` → `At most 5 watched pipelines`;
+  - `missing` → `Select a pipeline to watch`.
+- `watchMessage(event, oldHost, newHost)` → `{summary, body}`, with
+  `w = event.watch` and `n = event.count`. `pipelines` reads `pipeline`
+  when `n === 1`. A `host` event is `{type:"host", count}`, with the hosts
+  passed as arguments.
+
+  | `event.type` | summary | body |
+  |---|---|---|
+  | `finished`, conclusion `success` | `Pipeline passed` | `<w.repo> #<w.number> · <w.ref>` |
+  | `finished`, `failed` / `canceled` / `skipped` | `Pipeline failed` / `Pipeline canceled` / `Pipeline skipped` | same |
+  | `expired` | `Stopped watching a pipeline` | `<w.repo> #<w.number>: still running after 6 hours` |
+  | `unavailable` | `Pipeline unavailable` | `<w.repo> #<w.number>` |
+  | `auth` | `GitLab sign-in needed` | `Stopped watching <n> pipelines. Run glab auth login.` |
+  | `host` | `Stopped watching <n> pipelines` | `The panel now uses <newHost>, not <oldHost>.` |
+
+  When `w.ref` is empty, the body drops ` · <ref>`.
 
 ### Panel (`PipelinesPanel.qml`)
 
@@ -196,7 +207,26 @@ Self-contained. Branch `feat/34-watch-pipeline`, based on `fe0d6d0`
   - `:50`: `pkgs.libnotify pkgs.wl-clipboard` joins `home.packages`;
   - Keyboard table: `| w | Watch or stop watching the selected pipeline |`
     after `t`;
-  - a new section "Watching a pipeline", after "Pinned projects";
+  - a new section "Watching a pipeline", after "Pinned projects", saying:
+    - **w** watches or stops watching the selected pipeline (its row, or
+      any stage or job row inside it); watched pipelines show `◉`;
+    - a pipeline counts as finished when GitLab reports `success`,
+      `failed`, `canceled` or `skipped`; `manual` and `scheduled` ones can
+      be watched;
+    - a desktop notification (`notify-send`) is sent when it finishes,
+      naming the project, number, ref and result; the watch then ends;
+    - at most 5 watches; a watch ends 6 hours after **w**, with a
+      notification;
+    - while the panel is closed, only watched pipelines are checked, about
+      every 30 seconds on a healthy server, within the same request
+      limits; nothing is checked once the last watch ends;
+    - a permission error or a deleted pipeline ends that watch; a sign-in
+      problem while closed ends all watches with one notification; network
+      errors are retried;
+    - changing `host`, restarting the shell or logging out ends all
+      watches (the last two silently);
+    - a notification that cannot be sent shows in the footer the next time
+      the panel opens;
   - `:280`: the sentence about polling while closed, replaced;
   - the refresh table: the `Watched pipelines` row.
 - `keybindings.sh`: `w → Watch or stop watching the selected pipeline`
@@ -206,9 +236,52 @@ Self-contained. Branch `feat/34-watch-pipeline`, based on `fe0d6d0`
 ## Steps
 
 1. **`Polling.js`, `tests/polling.cjs`: the scheduler.** Per "Scheduler".
-   Tests: every case in the spec's Verification for `polling.cjs`. Use the
-   existing `response()` helper and drive `next()` / `complete()` with
-   fake clocks.
+   Tests (use the existing `response()` helper; drive `next()` and
+   `complete()` with fake clocks):
+   - `watch()` returns each code: `watching`, `unwatched`, `missing`,
+     `finished` for each of the four conclusions, and `cap` at 5. A
+     `manual` and a `scheduled` run can be watched.
+   - Closed with no watches: `next()` returns `null`.
+   - Closed with two watches: `next()` returns only `run` requests, each
+     for a watched id (assert `repo` and `run`). They come about every
+     30 s per watch, and never as a catalogue, activity, summary or jobs
+     request, even with an expanded selection.
+   - **Closed-mode filter (mutation c):** with two watches, close, then put
+     an unrelated due task (`ensure(s,"activity","x/y","","active",0)`)
+     into `s.tasks`, and a `run` task for a third, unwatched run. Over the
+     next requests, only the two watched ids are requested.
+   - A `run` reply while closed, with an expanded selected run, queues no
+     jobs task.
+   - A finish seen in an activity list, then in a lookup, gives one event.
+   - **Trim (mutation a):** a watched run sits behind ten newer completed
+     runs on the same project, and its lookup returns `failed`: one
+     `finished` event.
+   - **Wake (mutation b):** open, with only idle, discovered projects whose
+     activity was just checked. After a watched lookup completes at `t`, a
+     request for it is returned at `t+30000`, and `s.wakeAt` is at most
+     `t+30000`.
+   - Expiry at `until`, with `s.cooldown` in the future and with
+     `s.auth=true`: `next()` queues the `expired` event. Closing and
+     opening before `until` does not move it.
+   - Errors on a watched lookup:
+     - `permission` → one `unavailable` event, and only that watch is
+       gone;
+     - `auth` while closed → one `auth` event with `count` 2, and all are
+       gone;
+     - `auth` while open → the watches stay;
+     - `network` → the watch stays, and the task keeps its `failures`.
+   - `close()` with `s.auth` and one watch gives one `auth` event.
+   - Open during a closed-mode flight: `complete()` accepts the reply, and
+     `s.flight` is null afterwards. Close during an open-mode flight: the
+     reply returns `false`.
+   - The catalogue drops a watched project → `unavailable`.
+   - A blocked project with a watched lookup in network backoff: after
+     `seed()`, the task still has its `due` and `failures`.
+   - A finish seen on an intermediate summary phase gives one event.
+   - `resetHost()` drops watches.
+   - A watched run whose job is retried (still `running`) stays watched.
+   - Once the last watch ends while closed, every later `next()` returns
+     `null`.
 
    Check: `node tests/polling.cjs >/dev/null && node tests/model.cjs >/dev/null`.
 
@@ -244,10 +317,10 @@ Self-contained. Branch `feat/34-watch-pipeline`, based on `fe0d6d0`
 5. **`tests/qml-smoke.py`:** new `esteps` immediately before the
    `// Restore: no pins, empty state file.` step (`:1307`). `workerBusy`
    is true there, so the real pump does nothing.
-   - Drive the scheduler directly: get a request with
+   - W1-W8 drive the scheduler directly: get a request with
      `Polling.next(panel.polling, Date.now())`, then feed a reply with
-     `panel.receivePage(JSON.stringify(reply), request)`. Set
-     `panel.polling.flight=null` and the clock as needed.
+     `panel.receivePage(JSON.stringify(reply), request)`. W10 goes through
+     the real pump.
    - `notifyCommand` = `["sh","-c",'for a in "$@"; do echo "$a"; done >> "' + notifyOut + '"; exit 0',"sh"]`,
      where `notifyOut = Quickshell.env("XDG_STATE_HOME") + "/notify" + n + ".out"`
      is a fresh file per check. A `FileView` keeps old text otherwise:
@@ -271,16 +344,29 @@ Self-contained. Branch `feat/34-watch-pipeline`, based on `fe0d6d0`
        `status:"completed"`.
      - Wait until the notify file holds `Pipeline passed`, and until
        `!panel.watching`.
-   - **W5:** a failing `notifyCommand` (`["sh","-c","exit 1","sh"]`).
-     - Watch, close, and feed a finished reply.
-     - Then `panel.open('{"filter":"x"}')`: `notice` contains
-       `Pipeline passed`.
-     - Clear the filter.
-   - **W6:** expiry. Watch, set the watch's `until` to
-     `Date.now()-1`, close, and call `panel.pump()` with
-     `workerBusy=false` and `panel.polling.cooldown` far in the future.
-     The notify file holds `Stopped watching a pipeline`, and `watching`
-     is false. Set `workerBusy=true` again.
+   - **W5:** missed notifications.
+     - With a failing `notifyCommand` (`["sh","-c","exit 1","sh"]`):
+       - watch, close, and feed a finished reply;
+       - **wait until `panel.missedNotices.length === 1`** and the notify
+         process is idle;
+       - then `panel.open('{"filter":"x"}')`: `notice` contains
+         `Pipeline passed`;
+       - clear the filter.
+     - With a missing command (`["gltui-no-such-binary"]`): two watches
+       finish. Wait until `missedNotices.length === 2`: each failed start
+       is recorded once, and the queue goes on to the second.
+     - Before every change of `notifyCommand` or the output file, wait
+       until the notify process is idle and `notifyQueue` is empty.
+   - **W6:** expiry.
+     - Watch a run on a visible row, set the watch's `until` to
+       `Date.now()-1`, and close.
+     - Call `panel.pump()` with `workerBusy=false` and
+       `panel.polling.cooldown` far in the future.
+     - The notify file holds `Stopped watching a pipeline`, and `watching`
+       is false.
+     - Reopen: that run row's `watched` is false. Calling `pump()` again
+       while closed does not change `panel.polling.requests`.
+     - Set `workerBusy=true` again.
    - **W7:** auth on close.
      - Watch, then set `panel.polling.auth=true` and call `panel.close()`.
      - The notify file holds `GitLab sign-in needed`.
@@ -288,10 +374,30 @@ Self-contained. Branch `feat/34-watch-pipeline`, based on `fe0d6d0`
    - **W8:** host change. Watch, then `cfg("gitlab.other.org")`: the notify
      file holds `Stopped watching 1 pipeline`. Restore
      `cfg("gitlab.example.org")`.
+   - **W10:** through the real pump and fake helper.
+     - **Harness:** the fake `gitlab.py`'s `run` branch:
+       - returns the run with `status:"completed"` and
+         `conclusion:"success"` when `root / 'run-done'` exists;
+       - sleeps 1.5 s first when `root / 'run-delay'` exists.
+     - Pass both paths as the environment variables `RUN_DONE` and
+       `RUN_DELAY`, and toggle them with the existing `sh()` helper.
+     - Restore the real polling: `panel.polling=Polling.create()`, repos
+       `zRepos()` with the fake's run on `one/sub/repo`,
+       `catalogueComplete=true`, `discover=false`.
+     - Set `workerBusy=false`, watch run 7, and close. Create `run-done`
+       and set the watch's `checkedAt` to 0.
+     - Wait until the notify file holds `Pipeline passed`, `!watching`,
+       `!workerBusy` and `polling.flight===null`.
+     - Then a second watch with `run-delay`: open the panel while the
+       delayed lookup is in flight. The reply is still accepted and the
+       flight clears. No request starts while closed afterwards.
+     - Never clear `flight` by hand.
+     - Set `workerBusy=true` at the end.
    - **W9:** Ctrl/Alt/Meta/Shift + W change nothing. `w` in the search box
      types into the filter. The footer hint holds `w watch`, and
      `helpText` holds `Watch or stop`.
-   - **Restore:** default `notifyCommand`, `polling.watches={}`, `events=[]`,
+   - **Restore**, after waiting for an idle notify process and an empty
+     queue: default `notifyCommand`, `polling.watches={}`, `events=[]`,
      `filterText=""`, `adopt()`.
 
    Check: the microVM smoke run gives `passed=2 rc=0 binding_loop=0`.
@@ -348,7 +454,7 @@ Expected: `passed=2 rc=0 binding_loop=0`.
   - (b) drop the `seedWatches` term from `seed()`'s wake: the `wakeAt` test
     fails;
   - (c) remove the closed-mode task filter in `next()`: the closed-mode
-    test fails.
+    filter test fails.
 - **In the VM:** (d) remove `drainEvents()` from `close()`: W7 fails.
 
 **Acceptance in the microVM (lead):**
@@ -377,6 +483,26 @@ Codex's read-only review of the diff.
 
 Revert the merge commit and release a patch, or pin the previous tag in
 nixarchy. Nothing persists: watches are memory only.
+
+## Review notes
+
+Codex reviewed the draft read-only; agy is out of use (#2748). It
+confirmed the `next()` rewrite, the seeding order, the flight re-tag, the
+completion guard, the permission ordering and the notify callback
+pattern. Its findings, which I checked and folded in above:
+- `settle()` read an unbound `run`: it is now assigned first;
+- W5 could reopen before the failure was recorded: it now waits for
+  `missedNotices`, and every command change waits for an idle queue;
+- the smoke test only fed replies by hand: W10 goes through the real pump
+  and fake helper with a finished and a delayed reply, and never clears
+  the flight by hand;
+- mutation (c) had no trigger: the closed-mode filter test injects an
+  unrelated task and an unwatched lookup, and asserts request identity;
+- the plan pointed to the spec for texts and tests: the notice and
+  notification tables, the README section and the scheduler checklist are
+  now copied in;
+- W6 checks the row mark and that no request starts afterwards; W5 covers
+  failed starts for two queued notifications.
 
 ## Deviations
 
