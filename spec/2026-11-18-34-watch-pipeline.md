@@ -69,7 +69,7 @@ whose `now >= checkedAt + 30000`:
 
 It runs open or closed, as its own loop over the watches, not inside the
 project loop. So the archived, disabled and blocked skips
-(`Polling.js:93`) do not apply. While open, `seed()` calls it after its
+(`Polling.js:90`) do not apply. While open, `seed()` calls it after its
 project loop. The task's group is set to `active` last, so it wins over
 an ordinary follow-up group. Each watch's next check time,
 `checkedAt + 30000`, joins `seed()`'s `wake` minimum. Otherwise, with only
