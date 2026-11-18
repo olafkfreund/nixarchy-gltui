@@ -37,6 +37,7 @@ run={'id':7,'name':'CI','status':'in_progress','conclusion':'running','run_attem
 if host=='gitlab.other.org': data={} if kind=='run' else [{'repo':'three/repo'}] if kind=='catalogue' else []
 elif kind=='catalogue': data=[{'repo':'one/sub/repo','url':'https://gitlab.example.org/one/sub/repo'},{'repo':'two/repo'}]
 elif kind=='jobs': data=[{'id':8,'name':'compile','stage':'build','status':'in_progress','conclusion':'running'},{'id':9,'name':'unit','stage':'test','status':'queued','conclusion':'created'},{'id':10,'name':'lint','stage':'test','status':'completed','conclusion':'failed','allow_failure':True,'started_at':'2026-01-01T00:00:00Z','completed_at':'2026-01-01T00:01:02Z'}]
+elif kind=='bridges': data=[{'id':11,'name':'deploy','stage':'test','status':'in_progress','conclusion':'running','downstream':{'id':501,'iid':5,'project_id':2,'parent_project_id':1,'status':'in_progress','conclusion':'running','ref':'main','sha':'','url':'https://gitlab.example.org/two/repo/-/pipelines/501','project':'two/repo'}}]
 elif kind=='run':
     if os.path.exists(os.environ['RUN_DELAY']): time.sleep(1.5)
     data=dict(run,status='completed',conclusion='success') if os.path.exists(os.environ['RUN_DONE']) else run
@@ -1673,7 +1674,7 @@ ShellRoot {
     Timer {
         interval: 250; running: true; repeat: true
         onTriggered: {
-            if(stage===1 && panel.polling.requests>=6 && panel.details["one/sub/repo:7"] && panel.polling.catalogueComplete) {
+            if(stage===1 && panel.polling.requests>=6 && panel.details["one/sub/repo:7"] && panel.details["one/sub/repo:7"].jobs && panel.details["one/sub/repo:7"].bridges && panel.polling.catalogueComplete) {
                 check(panel.error==="","async API has no error")
                 check(panel.current.key===selected && panel.filterText==="repo","poll preserves searched selection")
                 check(panel.details["one/sub/repo:7"].jobs.length===3,"jobs arrive")
@@ -1696,6 +1697,14 @@ ShellRoot {
                 var lintItem=panel.listItem.itemAtIndex(lintIndex)
                 if (!lintItem) return
                 selCheck(lintItem,"allowed to fail","!")
+                var trigIndex=panel.entries.findIndex(function(row) { return row.kind==="trigger" })
+                check(trigIndex>=0,"trigger row exists")
+                panel.cursor=trigIndex
+                panel.selectionChanged(true)
+                kPress(Qt.Key_T)
+                eq(panel.notice,"Job logs are not available for a trigger row","trigger row has no log")
+                kPress(Qt.Key_W)
+                eq(panel.notice,"Watch the parent pipeline row instead","trigger row cannot be watched")
                 delete panel.expanded["one/sub/repo:7:stage:test"]
                 panel.rebuild()
                 panel.close()

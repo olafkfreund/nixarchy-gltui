@@ -174,6 +174,7 @@ Item {
     }
     function toggleWatch() {
         if (!current || current.kind === "repo") { notify("Select a pipeline to watch"); return }
+        if (current.kind === "trigger") { notify("Watch the parent pipeline row instead"); return }
         var code = Polling.watch(polling, current.repo, current.run, Date.now())
         var r = (polling.repos.filter(function(x) { return x.repo === current.repo })[0] || {}).runs || []
         var run = r.filter(function(x) { return String(x.id) === current.run })[0]
@@ -250,6 +251,7 @@ Item {
         copyProc.running = true
     }
     function trace() {
+        if (current && current.kind === "trigger") { notify("Job logs are not available for a trigger row"); return }
         if (!current || current.kind !== "job" || !current.job) { notify("Select a job to open its log"); return }
         if (traceProc.running) return
         traceStarted = false
