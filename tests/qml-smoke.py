@@ -1079,6 +1079,24 @@ ShellRoot {
         },
         function() {
             if (!waitUntil(function() { return panel.pinsLoaded && panel.pinsError.indexOf("Pins not loaded:")===0 },"P13 failed load")) return false
+            panel.sessionPins=({})
+            pinFixture()
+            cursorTo("repo:o/beta")
+            var before=panel.savedPins.slice()
+            kPress(Qt.Key_P)
+            // After a failed load, p reloads instead of saving over the file.
+            eq(panel.notice,"Pins not loaded; trying again","P13 p after failed load")
+            eq(JSON.stringify(panel.savedPins),JSON.stringify(before),"P13 nothing pinned after failed load")
+        },
+        function() {
+            if (!waitUntil(function() { return panel.pinsLoaded },"P13 reload done")) return false
+            panel.pinsCommand=["python3"]
+            panel.pinsLoaded=false
+            panel.loadPins()
+        },
+        function() {
+            if (!waitUntil(function() { return panel.pinsLoaded && !panel.pinsLoadFailed },"P13 good load")) return false
+            panel.pinsCommand=["/nonexistent-python"]
             pinFixture()
             cursorTo("repo:o/beta")
             kPress(Qt.Key_P)

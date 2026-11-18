@@ -525,6 +525,27 @@ state-file steps. Its findings, which I checked and folded in above:
   wait on it.
 - **Step 6, watchdog message:** the timeout line now also prints the
   current `ei` step index, to find a stuck step.
+- **Review fixes (Opus and Codex reviews of the diff):**
+  - after a failed load, `p` no longer saves: a save would replace the
+    host's file list with only the new pin. `pinsLoadFailed` makes `p`
+    say `Pins not loaded; trying again` and reload (P13 extended; a VM
+    mutation removing the guard fails it);
+  - `configure()` calls `loadPins()` after `projects`, `configPins` and
+    `applyPins()`, so a synchronous failed start cannot apply the old
+    host's pins to the new host;
+  - `sessionPins` and `pinsQueue` keys are lower-cased, as the helper's
+    file keys are, so `GitLab.com` and `gitlab.com` share one session list;
+  - a `polling.cjs` test pins the fallback order (a spare slot serves a
+    due pin before background work); swapping the order fails it;
+  - `markConfigured()` calls `applyPins()` after the queued `applyOpen`
+    calls, not right after `configured = true`: same result, one extra
+    rebuild.
+- **Accepted, not changed:** a failed save keeps the pin for the session
+  (the notice says so); `pin()` does not remove a seeded row when it is
+  unpinned before the catalogue completes, and such rows stay if the
+  catalogue fails; the saturation test builds its tasks by hand; no
+  directory `fsync` after `os.replace` (the old file survives a crash);
+  `read_state` accepts `"version": true` or `1.0`.
 - **Tests, flake:** this repo's flake has only the `plugin` check, and it
   builds. `menu-verbs` is a nixarchy check; it is built in the pin bump.
 - **Tests, VM:** a VM left idle locks its screen (DPMS off, then a

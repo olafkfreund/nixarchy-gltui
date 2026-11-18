@@ -32,6 +32,7 @@ Item {
     property var configPins: []
     property var savedPins: []
     property bool pinsLoaded: false
+    property bool pinsLoadFailed: false
     property string pinsError: ""
     property var pinned: ({})
     property string pinsLoadHost: ""
@@ -258,24 +259,28 @@ Item {
         if (pinsLoadHost !== host) { Qt.callLater(loadPins); return }
         var reply = null
         try { reply = JSON.parse(text) } catch (e) {}
-        if (code === 0 && reply && Array.isArray(reply.pins)) savedPins = reply.pins
+        pinsLoadFailed = !(code === 0 && reply && Array.isArray(reply.pins))
+        if (!pinsLoadFailed) savedPins = reply.pins
         else {
             savedPins = []
             pinsError = "Pins not loaded: " + (reply && reply.error || "helper failed")
         }
-        if (sessionPins[host]) savedPins = sessionPins[host]
+        var own = sessionPins[host.toLowerCase()]
+        if (own) { savedPins = own; pinsLoadFailed = false }
         pinsLoaded = true
         applyPins()
     }
     function togglePin() {
         if (!current) return
         if (!pinsLoaded) { notify("Pins are still loading"); return }
+        // A save after a failed load would replace this host's saved pins with only the new one.
+        if (pinsLoadFailed) { notify("Pins not loaded; trying again"); pinsLoaded = false; loadPins(); return }
         var r = Model.togglePin(current.repo, configPins, savedPins)
         notify(r.notice)
         if (r.saved) {
             savedPins = r.saved
             var s = Object.assign({}, sessionPins)
-            s[host] = r.saved
+            s[host.toLowerCase()] = r.saved
             sessionPins = s
             applyPins()
             savePins(host, r.saved)
@@ -284,7 +289,7 @@ Item {
     }
     function savePins(h, names) {
         var q = Object.assign({}, pinsQueue)
-        q[h] = names
+        q[h.toLowerCase()] = names
         pinsQueue = q
         nextSave()
     }
@@ -320,7 +325,6 @@ Item {
                 expanded = ({}); searchCollapsed = ({}); details = ({}); updated = ""; error = ""; cursor = 0
             }
             host = configuredHost
-            if (hostChanged) loadPins()
             var names = entry && Array.isArray(entry.projects) ? entry.projects : []
             if (!polling.repos.length && names.length) {
                 polling.wakeAt = 0
@@ -330,6 +334,8 @@ Item {
             if (configPins.filter(function(name) { return Model.validProject(name) }).length > 10) console.warn("GitLab Pipelines: only the first 10 pins apply")
             adopt()
             applyPins()
+            // After configPins and projects are set, so even a synchronous failed start sees this host's config.
+            if (hostChanged) loadPins()
         } catch (e) { error = "Configuration: " + e.message }
         markConfigured()
     }

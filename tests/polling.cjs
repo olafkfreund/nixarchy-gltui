@@ -77,6 +77,15 @@ test('busy slots preserve background capacity and delay idle pins', () => {
   s.slot=3;
   const req=polling.next(s,100000); assert.ok(req.repo.startsWith('pin/'));
 });
+test('a spare slot serves a due pin before background work', () => {
+  const s=polling.create(); polling.open(s,0); s.catalogueComplete=true; s.discover=false;
+  s.repos=[{repo:'pin/p'},{repo:'idle/p'}];
+  polling.pin(s,['pin/p']);
+  polling.ensure(s,'activity','idle/p','','background',0);
+  polling.ensure(s,'activity','pin/p','','pinned',0);
+  s.wakeAt=Infinity; s.slot=0; // an interactive slot with nothing interactive or active due
+  assert.equal(polling.next(s,0).repo,'pin/p');
+});
 test('completed catalogue removes an orphan retry but keeps its flight until completion', () => {
   const s=polling.create(); polling.open(s,0); s.discover=false;
   polling.pin(s,['old/p']); polling.ensure(s,'activity','old/p','','pinned',0).failures=1;
