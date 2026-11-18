@@ -17,6 +17,78 @@ if (!fs.existsSync('Polling.js')) process.exit(0);
 const polling = {};
 vm.createContext(polling);
 vm.runInContext(fs.readFileSync('Polling.js', 'utf8'), polling);
+test('pins use a minute interval and separate queue group', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  s.repos=['pin/one','pin/two','idle/one','idle/two'].map(repo=>({repo,activityAt:0}));
+  polling.pin(s,['pin/one','pin/two']); polling.seed(s,59999);
+  assert.equal(Object.keys(s.tasks).length,0);
+  polling.seed(s,60000);
+  assert.deepEqual(Object.values(s.tasks).map(t=>t.repo).sort(),['pin/one','pin/two']);
+  polling.seed(s,600000);
+  assert.equal(Object.values(s.tasks).filter(t=>t.group==='pinned').length,2);
+  assert.equal(Object.values(s.tasks).filter(t=>t.group==='background').length,1);
+  s.repos.push({repo:'run/one',active:1,activityAt:0}); s.slot=3; polling.seed(s,601000);
+  const request=polling.next(s,601000); assert.equal(request.repo,'run/one');
+});
+test('pin seeds incomplete catalogue, replaces map, and clears orphan retry', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false;
+  polling.pin(s,['g/old']); assert.equal(s.repos[0].repo,'g/old');
+  polling.pin(s,['g/new']); assert.equal(s.pinned['g/old'],undefined);
+  polling.seed(s,0); const task=s.tasks['activity:g/old:'];
+  if (task) task.failures=1;
+  s.repos=s.repos.filter(r=>r.repo!=='g/old'); s.catalogueComplete=true;
+  polling.pin(s,['g/later']); assert.equal(s.repos.some(r=>r.repo==='g/later'),false);
+  polling.seed(s,0); assert.equal(s.tasks['activity:g/old:'],undefined);
+  polling.ensure(s,'activity','g/orphan','','pinned',0);
+  s.flight={key:'activity:g/orphan:'}; polling.seed(s,0);
+  assert.ok(s.tasks['activity:g/orphan:']);
+});
+test('selected pins use summary and reopen respects last check', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  s.repos=[{repo:'g/p',activityAt:0,summaryAt:0}]; polling.pin(s,['g/p']);
+  polling.select(s,'g/p','',{},60000,true); polling.seed(s,60000);
+  assert.ok(s.tasks['summary:g/p:']); assert.equal(s.tasks['activity:g/p:'],undefined);
+  polling.select(s,'','',{},60000,true); s.repos[0].activityAt=60000;
+  polling.close(s); polling.open(s,90000); s.discover=false; polling.seed(s,90000);
+  assert.equal(s.tasks['activity:g/p:'],undefined);
+  polling.seed(s,121000); assert.ok(s.tasks['activity:g/p:']);
+});
+test('busy slots preserve background capacity and delay idle pins', () => {
+  const s=polling.create(); polling.open(s,0); s.catalogueComplete=true;
+  s.repos=[{repo:'selected/p'}, ...Array.from({length:10},(_,i)=>({repo:`pin/p${i}`})),
+    ...Array.from({length:3},(_,i)=>({repo:`running/p${i}`,active:1}))];
+  polling.pin(s,s.repos.slice(1,11).map(r=>r.repo));
+  polling.select(s,'selected/p','1',{'selected/p:1':true},0,true);
+  polling.ensure(s,'jobs','selected/p','1','interactive',0);
+  for(const repo of s.repos.slice(1,11)) polling.ensure(s,'activity',repo.repo,'','pinned',0);
+  for(const repo of s.repos.slice(11)) polling.ensure(s,'activity',repo.repo,'','active',0);
+  polling.ensure(s,'catalogue','','','background',0);
+  s.wakeAt=Infinity;
+  const served=[];
+  for(let now=0;now<100000;now+=1000) {
+    const req=polling.next(s,now); assert.ok(req);
+    const task=s.tasks[s.flight.key]; served.push(task.group);
+    s.flight=null; task.due=now; task.order=++s.order;
+  }
+  assert.equal(served.filter(group=>group==='background').length,20);
+  assert.equal(served.filter(group=>group==='pinned').length,0);
+  assert.equal(s.starts.length,60);
+  for(const id of Object.keys(s.tasks)) if(s.tasks[id].group==='active') delete s.tasks[id];
+  s.slot=3;
+  const req=polling.next(s,100000); assert.ok(req.repo.startsWith('pin/'));
+});
+test('completed catalogue removes an orphan retry but keeps its flight until completion', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false;
+  polling.pin(s,['old/p']); polling.ensure(s,'activity','old/p','','pinned',0).failures=1;
+  s.discover=true; s.slot=4;
+  const req=polling.next(s,0); assert.equal(req.kind,'catalogue');
+  polling.complete(s,response(req,[{repo:'new/p'}]),1000);
+  polling.seed(s,1000);
+  assert.equal(s.tasks['activity:old/p:'],undefined);
+  polling.ensure(s,'activity','old/p','','pinned',0);
+  s.flight={key:'activity:old/p:'}; polling.seed(s,1000);
+  assert.ok(s.tasks['activity:old/p:']);
+});
 function response(request, data=[], nextPage=0) { return {requestId:request.requestId,data,nextPage,error:'',errorType:'',remaining:4000}; }
 function simulation(activeCount=0, duration=1800000) {
   const s=polling.create(), repos=Array.from({length:137},(_,i)=>({repo:`org/r${i}`}));
@@ -64,6 +136,7 @@ console.log('Candidate:', {idleRequests:idle.history.length,coldScanMs:idle.cold
 
 // Continuous work in all classes, including page continuations, cannot starve either reserved class.
 const fair=polling.create(); polling.open(fair,0); fair.discover=false; fair.catalogueComplete=true;
+fair.repos=[{repo:'a/b'}];
 for(const [group,kind] of [['interactive','jobs'],['active','run'],['background','catalogue']])
   polling.ensure(fair,kind,'a/b','1',group,0);
 fair.selected='a/b'; fair.inspected='1'; fair.expanded={'a/b:1':true};
@@ -121,6 +194,7 @@ assert.equal(capped.cooldown,3601000);
 // Replies with the wrong data shape stop polling with a setup error until a manual refresh, never an exception.
 for (const [kind,data] of [['catalogue',null],['run',[]],['jobs',{}],['catalogue',[1]],['jobs',[null]]]) {
   const bad=polling.create(); polling.open(bad,0); bad.discover=false; bad.catalogueComplete=true;
+  bad.repos=[{repo:'a/b'}];
   polling.ensure(bad,kind,'a/b','1','interactive',0);
   bad.selected='a/b'; bad.inspected='1'; bad.expanded={'a/b:1':true};
   const badReq=polling.next(bad,0); assert.equal(badReq.kind,kind);

@@ -32,6 +32,33 @@ function openFilter(payload, panelHost) {
     }
 }
 
+function validProject(name) {
+    return typeof name === "string" && /^[A-Za-z0-9_.][A-Za-z0-9_.-]*(\/[A-Za-z0-9_.][A-Za-z0-9_.-]*)+$/.test(name) &&
+        !/(^|\/)\.\.?(\/|$)/.test(name);
+}
+
+function pins(config, saved) {
+    var names = [], configured = Object.create(null), seen = Object.create(null);
+    (Array.isArray(config) ? config : []).forEach(function(name) {
+        if (validProject(name)) configured[name] = true;
+    });
+    (Array.isArray(config) ? config : []).concat(Array.isArray(saved) ? saved : []).forEach(function(name) {
+        if (validProject(name) && !seen[name]) {
+            seen[name] = true;
+            if (names.length < 10) names.push(name);
+        }
+    });
+    return {names:names, config:configured};
+}
+
+function togglePin(repo, config, saved) {
+    var p = pins(config, saved), current = Array.isArray(saved) ? saved : [];
+    if (p.config[repo]) return {saved:null, notice:"Pinned in shell.json"};
+    if (p.names.indexOf(repo) >= 0) return {saved:current.filter(function(name) { return name !== repo; }), notice:"Unpinned " + repo};
+    if (p.names.length >= 10) return {saved:null, notice:"At most 10 pins"};
+    return {saved:current.filter(function(name) { return name !== repo; }).concat([repo]), notice:"Pinned " + repo};
+}
+
 function state(item) {
     return item.awaitingFinal ? "awaiting final status" : item.lookupError ? "unavailable" : item.conclusion || item.status || "unknown";
 }
@@ -175,10 +202,11 @@ function merge(expanded, auto, collapsed) {
     return result;
 }
 
-function rows(repos, expanded, details, filter, now) {
+function rows(repos, expanded, details, filter, now, pinned) {
     var result = [];
     var query = filter.toLowerCase();
-    repos.slice().sort(function(a, b) { return (b.active || 0) - (a.active || 0); }).forEach(function(repo) {
+    pinned = pinned || {};
+    repos.slice().sort(function(a, b) { return (!!pinned[b.repo]) - (!!pinned[a.repo]) || (b.active || 0) - (a.active || 0); }).forEach(function(repo) {
         var repoMatch = repoMatches(repo, query);
         var runs = (repo.runs || []).filter(function(run) {
             return repoMatch || runMatches(run, query);
@@ -186,7 +214,7 @@ function rows(repos, expanded, details, filter, now) {
         if (query && !repoMatch && !runs.length) return;
         var active = repo.active === undefined ? (repo.runs || []).filter(function(run) { return run.status === "in_progress"; }).length : repo.active;
         var repoKey = "repo:" + repo.repo;
-        result.push({key: repoKey, parent: "", kind: "repo", depth: 0, title: repo.repo,
+        result.push({key: repoKey, parent: "", kind: "repo", depth: 0, title: repo.repo, pinned: !!pinned[repo.repo],
             subtitle: repo.error || repo.description || "", status: repo.error ? "error" : (active ? "running" : "neutral"),
             info: repo.archived ? "archived" : repo.disabled ? "disabled" : repo.error ? "unavailable" : repo.checked || repo.runs ? active + " running" : "not checked",
             checked: repo.checked || "", repo: repo.repo, url: repo.url ? repo.url + "/-/pipelines" : ""});
@@ -260,7 +288,7 @@ function copyText(row, what) {
 
 // ponytail: the fields the delegate reads that can change for a key; add any new one the delegate reads.
 var shownFields = ["title", "subtitle", "status", "info", "checked", "started", "ended", "finished",
-    "fetched", "done", "total", "complete", "serverDuration", "queued", "reason", "sha"];
+    "fetched", "done", "total", "complete", "serverDuration", "queued", "reason", "sha", "pinned"];
 
 // Keep delegates alive when polling changes a status or inserts a running repo.
 // Removing gone rows first keeps one removal from cascading into a move per later row.
