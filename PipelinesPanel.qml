@@ -48,7 +48,7 @@ Item {
     property bool copyStarted: false
     property string copyLabel: ""
     readonly property string searchHint: "↑↓ select  Enter open  Tab navigate  Esc clear"
-    readonly property string listHint: "↑↓ move  ←→ expand  g/G ends  / search  e failure  y/Y copy  p pin  t log  o GitLab  ? help  q close"
+    readonly property string listHint: "↑↓ move  ←→ expand  g/G ends  / search  e failure  y/Y copy  p pin  t log  w watch  o GitLab  ? help  q close"
     readonly property real borderWidth: Math.max(1, Style.space(2))
     property alias filterText: searchField.text
     readonly property bool filtering: searchField.activeFocus
@@ -56,6 +56,12 @@ Item {
     property string host: "gitlab.com"
     property string updated: ""
     property var polling: Polling.create()
+    readonly property bool watching: Object.keys(polling.watches || {}).length > 0
+    property var notifyCommand: ["notify-send", "--app-name=GitLab Pipelines"]
+    property var notifyQueue: []
+    property var missedNotices: []
+    property bool notifyStarted: false
+    property var watched: ({})
     property var requestInfo: null
     property bool workerBusy: false
     property bool helperStarted: false
@@ -97,6 +103,7 @@ Item {
     readonly property Item cardItem: card
     readonly property Item listItem: list
     readonly property Item searchItem: searchField
+    readonly property bool notifyBusy: notifyProc.running
     readonly property Item hintItem: hint
     readonly property Item zoomItem: zoomLabel
     readonly property Item hairlineItem: hairline
@@ -118,6 +125,7 @@ Item {
         if (configured) applyOpen(payload)
         else pendingOpen = pendingOpen.concat([payload])
         if (pinsError) { notify(pinsError); pinsError = "" }
+        showMissed()
         selectionChanged(true)
         pump()
         Qt.callLater(function() { keys.forceActiveFocus() })
@@ -139,6 +147,38 @@ Item {
         pendingOpen = []
         for (var i = 0; i < queued.length; i++) applyOpen(queued[i])
         applyPins()
+        showMissed()
+    }
+    function showMissed() {
+        if (!missedNotices.length) return
+        notify(missedNotices.join(" · "))
+        missedNotices = []
+    }
+    function missed(m) { missedNotices = missedNotices.concat([m.summary + ": " + m.body]) }
+    function drainEvents() {
+        var queue = notifyQueue.slice()
+        polling.events.forEach(function(e) { queue.push(Model.watchMessage(e, host, host)) })
+        notifyQueue = queue
+        polling.events = []
+        sendNext()
+    }
+    function sendNext() {
+        if (notifyProc.running || !notifyQueue.length) return
+        var queue = notifyQueue.slice()
+        var m = queue.shift()
+        notifyQueue = queue
+        notifyProc.message = m
+        notifyStarted = false
+        notifyProc.command = notifyCommand.concat([m.summary, m.body])
+        notifyProc.running = true
+    }
+    function toggleWatch() {
+        if (!current || current.kind === "repo") { notify("Select a pipeline to watch"); return }
+        var code = Polling.watch(polling, current.repo, current.run, Date.now())
+        var r = (polling.repos.filter(function(x) { return x.repo === current.repo })[0] || {}).runs || []
+        var run = r.filter(function(x) { return String(x.id) === current.run })[0]
+        notify(Model.watchNotice(code, current.repo, run ? run.run_number : current.run))
+        adopt()
     }
     function close() {
         opened = false
@@ -148,6 +188,7 @@ Item {
         copySerial++
         traceSerial++
         Polling.close(polling)
+        if (polling.events.length) { drainEvents(); adopt() }
         requestProc.running = false
     }
     function toggle() { opened ? close() : open("{}") }
@@ -166,7 +207,7 @@ Item {
         var topItem = list.itemAtIndex(topIndex)
         var topKey = entries[topIndex] ? entries[topIndex].key : ""
         var topOffset = topItem ? topItem.y - list.contentY : 0
-        var next = Model.rows(repos, shown, details, filterText, now, pinned)
+        var next = Model.rows(repos, shown, details, filterText, now, pinned, watched)
         var structureChanged = Model.syncRows(visibleRows, next)
         entries = next
         cursor = resetSelection ? 0 : Model.selection(entries, key, cursor)
@@ -333,6 +374,11 @@ Item {
             var hostChanged = configuredHost !== host
             if (hostChanged) {
                 savedPins = []; pinsLoaded = false
+                var n = Object.keys(polling.watches || {}).length
+                if (n) {
+                    notifyQueue = notifyQueue.concat([Model.watchMessage({type: "host", count: n}, host, configuredHost)])
+                    sendNext()
+                }
                 polling = Polling.resetHost(polling)
                 expanded = ({}); searchCollapsed = ({}); details = ({}); updated = ""; error = ""; cursor = 0
             }
@@ -358,6 +404,9 @@ Item {
     function adopt() {
         repos = polling.repos.slice()
         details = Object.assign({}, polling.details)
+        var map = {}
+        Object.keys(polling.watches || {}).forEach(function(id) { map[id] = true })
+        watched = map
         error = polling.error || polling.catalogueError
         // Reassign the state reference to notify bindings after pure-JS mutations.
         polling = Object.assign({}, polling)
@@ -370,8 +419,9 @@ Item {
         pump()
     }
     function pump() {
-        if (!opened || workerBusy) return
+        if (workerBusy || (!opened && !watching)) return
         var request = Polling.next(polling, Date.now())
+        if (polling.events.length) { drainEvents(); adopt() }
         if (!request) return
         request.host = host
         requestInfo = request
@@ -398,10 +448,12 @@ Item {
             console.warn("GitLab Pipelines helper reply rejected: " + String(text).slice(0, 300))
             reply = {requestId:request.requestId, error:"GitLab helper returned invalid data; see the shell log", errorType:"setup"}
         }
-        if (Polling.complete(polling, reply, Date.now())) {
+        var accepted = Polling.complete(polling, reply, Date.now())
+        drainEvents()
+        if (accepted) {
             if (!reply.error) updated = new Date().toISOString()
-            adopt()
         }
+        adopt()
     }
     function statusColor(status) {
         switch (Model.group(status)) {
@@ -465,6 +517,17 @@ Item {
     }
     Timer { id: noticeTimer; interval: 2000; onTriggered: root.notice = "" }
     Process {
+        id: notifyProc
+        property var message
+        onStarted: root.notifyStarted = true
+        onExited: function(code) {
+            if (code !== 0) root.missed(message)
+            Qt.callLater(root.sendNext)
+        }
+        // Quickshell 0.3.1: a missing binary emits neither started nor exited, only running=false.
+        onRunningChanged: if (!running && !root.notifyStarted) { root.missed(message); Qt.callLater(root.sendNext) }
+    }
+    Process {
         id: copyProc
         property int serial: 0
         onStarted: root.copyStarted = true
@@ -501,7 +564,7 @@ Item {
         onLoadFailed: root.markConfigured()
         onFileChanged: reload()
     }
-    Timer { interval: 100; running: root.opened; repeat: true; onTriggered: root.pump() }
+    Timer { interval: root.opened ? 100 : 1000; running: root.opened || root.watching; repeat: true; onTriggered: root.pump() }
     Timer { interval: 1000; running: root.opened; repeat: true; onTriggered: root.now = Date.now() }
     Process {
         id: requestProc
@@ -567,6 +630,7 @@ Item {
                     else if (plain && event.key === Qt.Key_E && !shift) root.nextFailure()
                     else if (plain && event.key === Qt.Key_P && !shift) root.togglePin()
                     else if (plain && event.key === Qt.Key_T && !shift) root.trace()
+                    else if (plain && event.key === Qt.Key_W && !shift) root.toggleWatch()
                     else if (event.key === Qt.Key_Escape) {
                         if (root.filterText) root.filterText = ""
                         else root.close()
@@ -699,7 +763,7 @@ Item {
                                     anchors.verticalCenter: parent.verticalCenter
                                     Text {
                                         width: parent.width
-                                        text: (["repo", "run", "stage"].indexOf(modelData.kind) >= 0 ? (root.shown[modelData.key] ? "▾ " : "▸ ") : "") + (modelData.kind === "repo" && modelData.pinned ? "★ " : "") + modelData.title
+                                        text: (["repo", "run", "stage"].indexOf(modelData.kind) >= 0 ? (root.shown[modelData.key] ? "▾ " : "▸ ") : "") + (modelData.kind === "repo" && modelData.pinned ? "★ " : "") + (modelData.kind === "run" && modelData.watched ? "◉ " : "") + modelData.title
                                         color: index === root.cursor ? Commons.Color.menu.selectedText : Commons.Color.menu.text
                                         font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.body); bold: modelData.kind === "repo" }
                                         elide: Text.ElideRight

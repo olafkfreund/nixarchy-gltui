@@ -8,7 +8,7 @@ It is the GitLab sibling of [nixarchy-ghtui](https://github.com/olafkfreund/nixa
 
 - Omarchy shell with the panel plugin contract and `qs.Commons` / `qs.Ui` components.
 - [`glab`](https://gitlab.com/gitlab-org/cli), authenticated with `glab auth login` for every host you use, or with an environment token (see [Authentication](#authentication)). The token needs the `read_api` scope.
-- Python 3, `xdg-open` for the browser shortcut, `wl-copy` (wl-clipboard) for the copy keys, and a terminal that `xdg-terminal-exec` can start with a command (Omarchy's terminals can) for the log key.
+- Python 3, `xdg-open` for the browser shortcut, `wl-copy` (wl-clipboard) for the copy keys, and a terminal that `xdg-terminal-exec` can start with a command (Omarchy's terminals can) for the log key. `notify-send` (libnotify) for watch notifications.
 
 On NixOS, missing dependencies belong in your declarative configuration. Do not install them with pacman or an imperative Nix profile.
 
@@ -47,7 +47,7 @@ Import a NixOS module like this one, replacing `YOUR_USER`:
   home-manager.users.YOUR_USER = { pkgs, ... }: {
     programs.nixarchy.plugins."olafkfreund.gitlab-pipelines".src =
       inputs.gitlab-pipelines.packages.${pkgs.stdenv.hostPlatform.system}.default;
-    home.packages = [ pkgs.glab pkgs.python3 pkgs.xdg-utils pkgs.bash ];
+    home.packages = [ pkgs.glab pkgs.python3 pkgs.xdg-utils pkgs.bash pkgs.libnotify pkgs.wl-clipboard ];
   };
 }
 ```
@@ -183,6 +183,7 @@ If that works, the stale token is in the session's environment. `omarchy-restart
 | Shift + Y | Copy the pipeline's commit SHA |
 | p | Pin or unpin the selected project |
 | t | Open the selected job's log in a terminal |
+| w | Watch or stop watching the selected pipeline |
 | g / G | First or last row |
 | e | Next failed pipeline, stage or job |
 | ? | Show or hide this help in the panel |
@@ -251,6 +252,17 @@ A remote on a different host than the panel's shows a notice instead of filterin
 - A pin only shows when the account can see the project.
 - An unreadable or invalid `pinned.json` is never overwritten; the panel says `Pins not saved: …`. Fix or delete the file.
 
+## Watching a pipeline
+
+- **w** watches or stops watching the selected pipeline (its row, or any stage or job row inside it). Watched pipelines show `◉`.
+- A pipeline counts as finished when GitLab reports `success`, `failed`, `canceled` or `skipped`; `manual` and `scheduled` ones can be watched. A pipeline that stops at a manual job is not finished: its watch stays until the job runs or the 6 hours pass.
+- A desktop notification (`notify-send`) is sent when it finishes, naming the project, number, ref and result. The watch then ends. Notifications follow the desktop's do-not-disturb setting: while notifications are silenced, they are not shown.
+- At most 5 watches. A watch ends 6 hours after **w**, with a notification.
+- While the panel is closed, only watched pipelines are checked, about every 30 seconds on a healthy server, within the same request limits. Nothing is checked once the last watch ends.
+- A permission error or a deleted pipeline ends that watch. A sign-in problem while closed ends all watches with one notification. Network errors are retried.
+- Changing `host`, restarting the shell or logging out ends all watches (the last two silently).
+- A notification that cannot be sent shows in the footer the next time the panel opens.
+
 ## Refresh and errors
 
 While open, one scheduler fetches a single API page at a time. Selecting a project waits 250 ms before fetching its missing or stale data, so rapid navigation does not trigger requests for every project you pass.
@@ -263,6 +275,7 @@ While open, one scheduler fetches a single API page at a time. Selecting a proje
 | Selected full pipeline summary | 60 seconds |
 | Idle pinned projects | 60 seconds |
 | Previously checked idle projects | 10 minutes |
+| Watched pipelines | 30 seconds, also while the panel is closed |
 
 Request slots are shared as follows:
 
@@ -277,7 +290,7 @@ GitLab's `Retry-After` and `RateLimit-Reset` headers pause all work. A rate limi
 
 Errors and pauses show in a line under the search box, with the key that fixes them: `r` after a login or setup stop, `R` after a project-list failure (press Esc first if the search box has focus).
 
-Closing the panel cancels the helper and its `glab` child. Nothing is polled while the panel is closed. Each request times out after 25 seconds and shares your account's GitLab API quota with other tools.
+Closing the panel cancels the helper and its `glab` child. While the panel is closed, only watched pipelines are polled (see [Watching a pipeline](#watching-a-pipeline)). Each request times out after 25 seconds and shares your account's GitLab API quota with other tools.
 
 ## Known limits
 

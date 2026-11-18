@@ -256,7 +256,7 @@ model.syncRows(list, [first[0]]);
 assert.equal(list.count, 1);
 assert.equal(backing[0].rowKey, 'a');
 for (const field of ['checked','started','ended','finished','fetched','done','total','complete',
-  'serverDuration','queued','reason','pinned']) {
+  'serverDuration','queued','reason','pinned','watched']) {
   const value = field === 'serverDuration' ? 0 : field === 'complete' ? false : 'value';
   model.syncRows(list, [{...first[0], [field]:value}]);
   assert.equal(backing[0].rowData[field], value, field + ' appeared');
@@ -327,4 +327,30 @@ console.log('Model: stage hierarchy, aggregation, filtering, progress, selection
   assert.equal(edits, 0, 'null and undefined compare equal in syncRows');
   model.syncRows(list, [{...rows[0], serverDuration:0}]);
   assert.equal(backing[0].rowData.serverDuration, 0, 'null to 0 is still a change');
+}
+// Watching a pipeline (#34).
+{
+  const repo = {repo:'g/p', runs:[{id:7, status:'in_progress', name:'CI', run_number:3}]};
+  const open = {'repo:g/p': true};
+  assert.equal(model.rows([repo], open, {}, '', 0)[1].watched, false);
+  assert.equal(model.rows([repo], open, {}, '', 0, {}, {'g/p:7': true})[1].watched, true);
+  assert.equal(model.rows([repo], open, {}, '', 0, {}, {'g/p:8': true})[1].watched, false);
+  assert.equal(model.syncRows(list, [{key:'w', title:'W', status:'queued', watched:false}]), true);
+  model.syncRows(list, [{key:'w', title:'W', status:'queued', watched:true}]);
+  assert.equal(backing[0].rowData.watched, true, 'watched updates the row');
+  assert.deepEqual(['watching','unwatched','finished','cap','missing'].map(c => model.watchNotice(c, 'g/p', 3)),
+    ['Watching #3 in g/p', 'Stopped watching #3', 'Pipeline already finished', 'At most 5 watched pipelines', 'Select a pipeline to watch']);
+  const w = {repo:'g/p', number:3, ref:'main'};
+  const msg = (event, a, b) => plain(model.watchMessage(event, a, b));
+  assert.deepEqual(msg({type:'finished', watch:w, conclusion:'success'}), {summary:'Pipeline passed', body:'g/p #3 · main'});
+  for (const c of ['failed','canceled','skipped'])
+    assert.deepEqual(msg({type:'finished', watch:w, conclusion:c}), {summary:'Pipeline ' + c, body:'g/p #3 · main'});
+  assert.equal(msg({type:'finished', watch:{...w, ref:''}, conclusion:'failed'}).body, 'g/p #3');
+  assert.deepEqual(msg({type:'expired', watch:w}), {summary:'Stopped watching a pipeline', body:'g/p #3: still running after 6 hours'});
+  assert.deepEqual(msg({type:'unavailable', watch:w}), {summary:'Pipeline unavailable', body:'g/p #3'});
+  assert.deepEqual(msg({type:'auth', count:1}), {summary:'GitLab sign-in needed', body:'Stopped watching 1 pipeline. Run glab auth login.'});
+  assert.deepEqual(msg({type:'auth', count:2}), {summary:'GitLab sign-in needed', body:'Stopped watching 2 pipelines. Run glab auth login.'});
+  assert.deepEqual(msg({type:'host', count:1}, 'a.org', 'b.org'), {summary:'Stopped watching 1 pipeline', body:'The panel now uses b.org, not a.org.'});
+  assert.equal(msg({type:'host', count:3}, 'a.org', 'b.org').summary, 'Stopped watching 3 pipelines');
+  assert.equal(msg({type:'finished', watch:{...w, ref:'a&b<c>'}, conclusion:'failed'}).body, 'g/p #3 · a&amp;b&lt;c&gt;', 'markup characters are escaped');
 }
