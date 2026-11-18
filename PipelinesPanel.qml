@@ -14,6 +14,8 @@ Item {
     property var shell: null
     property var manifest: null
     property bool opened: false
+    property bool configured: false
+    property var pendingOpen: []
     property var targetScreen: null
     property var repos: []
     property var details: ({})
@@ -98,9 +100,28 @@ Item {
             if (monitor && Quickshell.screens[i].name === monitor.name) targetScreen = Quickshell.screens[i]
         if (!opened) Polling.open(polling, Date.now())
         opened = true
+        if (configured) applyOpen(payload)
+        else pendingOpen = pendingOpen.concat([payload])
         selectionChanged(true)
         pump()
         Qt.callLater(function() { keys.forceActiveFocus() })
+    }
+    function applyOpen(payload) {
+        var request = Model.openFilter(payload, host)
+        if (request.filter !== null) {
+            helpOpen = false
+            notice = ""; noticeTimer.stop()
+            if (filterText === request.filter) { rebuild(true); selectionChanged(false) }
+            else filterText = request.filter
+        }
+        if (request.notice) notify(request.notice)
+    }
+    function markConfigured() {
+        if (configured) return
+        configured = true
+        var queued = pendingOpen
+        pendingOpen = []
+        for (var i = 0; i < queued.length; i++) applyOpen(queued[i])
     }
     function close() {
         opened = false
@@ -222,6 +243,7 @@ Item {
             }
             adopt()
         } catch (e) { error = "Configuration: " + e.message }
+        markConfigured()
     }
     function selectionChanged(immediate) {
         if (!polling) return
@@ -342,6 +364,7 @@ Item {
         watchChanges: true
         printErrors: false
         onLoaded: root.configure(text())
+        onLoadFailed: root.markConfigured()
         onFileChanged: reload()
     }
     Timer { interval: 100; running: root.opened; repeat: true; onTriggered: root.pump() }
