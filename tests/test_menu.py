@@ -79,7 +79,8 @@ class MenuTest(unittest.TestCase):
     def test_open_without_remote(self):
         cases = [
             (Mock(returncode=2, stdout=''), 'no Git origin remote here'),
-            (Mock(returncode=0, stdout='file:///x/y'), 'unsupported Git remote: file:///x/y'),
+            (Mock(returncode=0, stdout='file:///x/y'), 'unsupported Git origin remote'),
+            (Mock(returncode=0, stdout='https://oauth2:glpat-SECRET@host/p'), 'unsupported Git origin remote'),
             (OSError('missing git'), 'no Git origin remote here'),
             (subprocess.TimeoutExpired(['git'], 5), 'no Git origin remote here'),
         ]

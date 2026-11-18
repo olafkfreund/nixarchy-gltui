@@ -229,13 +229,13 @@ Item {
         try {
             var config = JSON.parse(text)
             var entry = (config.plugins || []).filter(function(p) { return p.id === "olafkfreund.gitlab-pipelines" })[0]
-            var configured = entry && typeof entry.host === "string" ? entry.host : "gitlab.com"
-            if (!/^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$/.test(configured)) throw new Error("invalid host " + configured)
-            if (configured !== host) {
+            var configuredHost = entry && typeof entry.host === "string" ? entry.host : "gitlab.com"
+            if (!/^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$/.test(configuredHost)) throw new Error("invalid host " + configuredHost)
+            if (configuredHost !== host) {
                 polling = Polling.resetHost(polling)
                 expanded = ({}); searchCollapsed = ({}); details = ({}); updated = ""; error = ""; cursor = 0
             }
-            host = configured
+            host = configuredHost
             var names = entry && Array.isArray(entry.projects) ? entry.projects : []
             if (!polling.repos.length && names.length) {
                 polling.wakeAt = 0

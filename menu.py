@@ -155,7 +155,8 @@ def main():
                     url = result.stdout.strip()
                     parsed = remote(url)
                     if parsed is None:
-                        print(f"GitLab Pipelines: unsupported Git remote: {url}", file=sys.stderr)
+                        # The URL is not echoed: it may carry a token (https://oauth2:TOKEN@host/…).
+                        print("GitLab Pipelines: unsupported Git origin remote", file=sys.stderr)
                     else:
                         payload = {"filter": parsed[1], "host": parsed[0]}
         instances = json.loads(subprocess.check_output(

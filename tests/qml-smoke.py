@@ -825,6 +825,7 @@ ShellRoot {
             panel.searchItem.forceActiveFocus()
         },
         function() {
+            check(panel.filtering,"O4 search focused before the open")
             panel.open('{"filter":"o/alpha"}')
             eq(panel.filterText,"o/alpha","O4 filter applied")
         },
