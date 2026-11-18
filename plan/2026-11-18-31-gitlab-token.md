@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 31
 spec: spec/2026-11-18-31-gitlab-token.md
 coders:
