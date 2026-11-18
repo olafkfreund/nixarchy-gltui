@@ -809,6 +809,81 @@ ShellRoot {
             panel.adopt()
         },
         function() {
+            panel.filterText=""
+            panel.polling.repos=[{repo:"o/alpha",checked:"x",runs:[]},{repo:"o/beta",checked:"x",runs:[]},{repo:"x/gamma",checked:"x",runs:[]}]
+            panel.expanded=({})
+            panel.adopt()
+            listFocus()
+            panel.cursor=2
+            panel.open('{"filter":"o/beta"}')
+            eq(panel.filterText,"o/beta","O3 filter applied")
+            eq(panel.cursor,0,"O3 cursor reset")
+            eq(panel.entries[0].key,"repo:o/beta","O3 first row")
+        },
+        function() {
+            if (!waitUntil(function() { return panel.searchItem.parent.parent.activeFocus },"O4 list focus")) return false
+            panel.searchItem.forceActiveFocus()
+        },
+        function() {
+            panel.open('{"filter":"o/alpha"}')
+            eq(panel.filterText,"o/alpha","O4 filter applied")
+        },
+        function() {
+            if (!waitUntil(function() { return panel.searchItem.parent.parent.activeFocus },"O4 list focus again")) return false
+            panel.filterText="o"
+            panel.adopt()
+            panel.cursor=1
+            panel.helpOpen=true
+            panel.open('{"filter":"o"}')
+            check(!panel.helpOpen,"O5 help closed")
+            eq(panel.cursor,0,"O5 cursor reset on same filter")
+            panel.filterText="o"
+            panel.cursor=1
+            panel.open("{}")
+            panel.open("{bad")
+            panel.open('{"filter":"' + "x".repeat(201) + '"}')
+            panel.open('[]')
+            eq(panel.filterText,"o","O6 filter unchanged")
+            eq(panel.cursor,1,"O6 cursor unchanged")
+            panel.open('{"filter":"o/alpha"}')
+            panel.open('{"filter":"o/beta"}')
+            panel.open("{bad")
+            eq(panel.filterText,"o/beta","O7 last valid wins")
+            panel.open(JSON.stringify({filter:"o/alpha",host:"elsewhere.example"}))
+            eq(panel.filterText,"o/beta","O8 mismatch keeps filter")
+            check(panel.notice.indexOf("Repository is on elsewhere.example")===0,"O8 mismatch notice")
+            panel.open(JSON.stringify({filter:"o/alpha",host:panel.host.toUpperCase()}))
+            eq(panel.filterText,"o/alpha","O8 host match filters")
+            eq(panel.notice,"","O8 no notice on match")
+        },
+        function() {
+            function cfg(h) { panel.configure('{"plugins":[{"id":"olafkfreund.gitlab-pipelines","host":"' + h + '"}]}') }
+            panel.configured=false
+            panel.filterText="o"
+            panel.open('{"filter":"o/beta"}')
+            eq(panel.filterText,"o","O9 queued, filter unchanged")
+            eq(panel.pendingOpen.length,1,"O9 queued length")
+            cfg("gitlab.example.org")
+            check(panel.configured,"O9 configured after configure")
+            eq(panel.pendingOpen.length,0,"O9 queue drained")
+            eq(panel.filterText,"o/beta","O9 queued filter applied")
+            panel.configured=false
+            panel.filterText="o"
+            panel.open(JSON.stringify({filter:"o/alpha",host:"gitlab.example.org"}))
+            cfg("gitlab.other.org")
+            eq(panel.host,"gitlab.other.org","O9 host changed")
+            eq(panel.filterText,"o","O9 old host rejected")
+            check(panel.notice.indexOf("Repository is on gitlab.example.org")===0,"O9 old host notice")
+            panel.configured=false
+            panel.open(JSON.stringify({filter:"o/beta",host:"gitlab.other.org"}))
+            cfg("gitlab.other.org")
+            eq(panel.filterText,"o/beta","O9 new host accepted")
+            eq(panel.notice,"","O9 no notice on accepted host")
+            cfg("gitlab.example.org")
+            panel.filterText=""
+            panel.adopt()
+        },
+        function() {
             panel.workerBusy=false
             panel.close()
             panel.polling=Polling.create()
@@ -828,6 +903,7 @@ ShellRoot {
     Timer {
         interval: 1000; running: true
         onTriggered: {
+            check(panel.configured,"configured without shell.json")
             check(Commons.Color.background.toString()===Quickshell.env("EXPECTED_BACKGROUND"),"active Omarchy theme")
             menuFile.reload()
             check(!panel.opened && panel.polling.requests===0,"registration does not open or poll")
