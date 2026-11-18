@@ -190,7 +190,7 @@ function rows(repos, expanded, details, filter, now) {
                 status: state(run), info: duration(run, now), started: run.started_at || run.run_started_at || "",
                 ended: run.completed_at || (run.status === "completed" ? run.updated_at : "") || "",
                 finished: run.completed_at || "", fetched: detail && detail.updated || "",
-                repo: repo.repo, run: String(run.id), url: run.html_url});
+                repo: repo.repo, run: String(run.id), url: run.html_url, sha: run.sha || ""});
             if (!expanded[runKey]) return;
             if (!detail || detail.error) result.push({key: runKey + ":message", parent: runKey, kind: "message", depth: 2,
                 title: detail ? detail.error : "Loading jobs…", subtitle: "", status: detail ? "error" : "queued", info: "", repo: repo.repo, run: String(run.id)});
@@ -200,7 +200,7 @@ function rows(repos, expanded, details, filter, now) {
                 result.push({key: stageKey, parent: runKey, kind: "stage", depth: 2, title: stage.name, subtitle: "",
                     status: stage.status, info: done + "/" + stage.jobs.length + " jobs · " + duration(stage.span, now),
                     started: stage.span.started_at || "", ended: stage.span.completed_at || "", done: done, total: stage.jobs.length,
-                    repo: repo.repo, run: String(run.id), url: run.html_url});
+                    repo: repo.repo, run: String(run.id), url: run.html_url, sha: run.sha || ""});
                 if (!expanded[stageKey]) return;
                 stage.jobs.forEach(function(job) {
                     result.push({key: runKey + ":" + job.id, parent: stageKey, kind: "job", depth: 3, title: job.name, subtitle: "",
@@ -209,7 +209,8 @@ function rows(repos, expanded, details, filter, now) {
                         finished: job.completed_at || "", complete: job.status === "completed",
                         serverDuration: job.duration == null ? null : job.duration,
                         queued: job.queued_duration == null ? null : job.queued_duration,
-                        reason: job.failure_reason || "", repo: repo.repo, run: String(run.id), url: job.html_url});
+                        reason: job.failure_reason || "", repo: repo.repo, run: String(run.id), url: job.html_url,
+                        sha: run.sha || ""});
                 });
             });
         });
@@ -223,9 +224,23 @@ function selection(rows, key, previous) {
     return Math.max(0, Math.min(previous, rows.length - 1));
 }
 
+function nextFailure(rows, cursor) {
+    for (var offset = 1; offset <= rows.length; offset++) {
+        var i = (cursor + offset) % rows.length;
+        if (rows[i].status === "failed" && ["run", "stage", "job"].indexOf(rows[i].kind) >= 0) return i;
+    }
+    return -1;
+}
+
+function copyText(row, what) {
+    if (!row) return {text: "", label: "Nothing to copy"};
+    if (what === "url") return row.url ? {text: row.url, label: "Copied URL"} : {text: "", label: "Nothing to copy"};
+    return row.sha ? {text: row.sha, label: "Copied " + row.sha.slice(0, 8)} : {text: "", label: "No commit for this row"};
+}
+
 // ponytail: the fields the delegate reads that can change for a key; add any new one the delegate reads.
 var shownFields = ["title", "subtitle", "status", "info", "checked", "started", "ended", "finished",
-    "fetched", "done", "total", "complete", "serverDuration", "queued", "reason"];
+    "fetched", "done", "total", "complete", "serverDuration", "queued", "reason", "sha"];
 
 // Keep delegates alive when polling changes a status or inserts a running repo.
 // Removing gone rows first keeps one removal from cascading into a move per later row.

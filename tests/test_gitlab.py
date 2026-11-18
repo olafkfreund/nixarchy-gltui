@@ -90,7 +90,7 @@ class NormaliseTest(unittest.TestCase):
 
     def test_pipeline_fields_and_attempt(self):
         running = gitlab.pipeline(PIPELINE)
-        self.assertEqual(running, {"id": 7, "run_number": 3, "name": "merge request event", "display_title": "01234567",
+        self.assertEqual(running, {"id": 7, "run_number": 3, "name": "merge request event", "display_title": "01234567", "sha": "",
                                    "head_branch": "main", "html_url": PIPELINE["web_url"],
                                    "run_started_at": "2026-01-01T00:00:00Z", "completed_at": None,
                                    "updated_at": "2026-01-01T00:05:00Z", "status": "in_progress",
@@ -103,6 +103,17 @@ class NormaliseTest(unittest.TestCase):
         for bad in [{"id": "7", "status": "running"}, {"id": 0, "status": "running"}, {"id": 1}, []]:
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 gitlab.pipeline(bad)
+
+    def test_pipeline_sha(self):
+        for sha in ("a" * 40, "0" * 64):
+            with self.subTest(sha=sha):
+                result = gitlab.pipeline({**PIPELINE, "sha": sha})
+                self.assertEqual(result["sha"], sha)
+                self.assertEqual(result["display_title"], sha[:8])
+        for sha in (None, 123, "a" * 7, "a" * 8, "A" * 40, "g" * 40):
+            with self.subTest(sha=sha):
+                self.assertEqual(gitlab.pipeline({**PIPELINE, "sha": sha})["sha"], "")
+        self.assertEqual(gitlab.pipeline({key: value for key, value in PIPELINE.items() if key != "sha"})["sha"], "")
 
 
 class PageTest(unittest.TestCase):
