@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 35
 intent: intent/2026-11-18-35-fewer-requests.md
 ---
