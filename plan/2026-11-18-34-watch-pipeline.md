@@ -506,4 +506,21 @@ pattern. Its findings, which I checked and folded in above:
 
 ## Deviations
 
-None yet.
+- **Step 3, test hook:** `readonly property bool notifyBusy: notifyProc.running`
+  was added, so the smoke test can wait for an idle notify process.
+- **Step 3, `receivePage()`:** it now drains events and calls `adopt()`
+  whether or not `complete()` accepts the reply, the plan's "handle a
+  `false` return the same way". A rejected reply costs one extra rebuild.
+- **Step 5:** W9 runs right after W3, against the key fixture. The fake
+  helper reads `RUN_DONE` and `RUN_DELAY` from its environment. W4-W8
+  feed replies with a clock 31 s later each time, to clear the 30 s and
+  1 s limits.
+- **Results:** the smoke test passed on the first VM run
+  (`passed=2 rc=0 binding_loop=0`). Codex reported that mutations (a)-(c)
+  each fail `polling.cjs`. Mutation (d), removing the drain from
+  `close()`, fails W7 in the VM.
+- **Acceptance:** in the VM, `notify-send --app-name="GitLab Pipelines"`
+  returned 0 but showed nothing at first, because notification silencing
+  (do not disturb) was on. After `omarchy-toggle-notification-silencing`,
+  the notification "Pipeline passed / g/p #1 · main" appeared. The README
+  now says notifications follow the do-not-disturb setting.

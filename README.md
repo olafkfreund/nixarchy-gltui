@@ -256,7 +256,7 @@ A remote on a different host than the panel's shows a notice instead of filterin
 
 - **w** watches or stops watching the selected pipeline (its row, or any stage or job row inside it). Watched pipelines show `◉`.
 - A pipeline counts as finished when GitLab reports `success`, `failed`, `canceled` or `skipped`; `manual` and `scheduled` ones can be watched.
-- A desktop notification (`notify-send`) is sent when it finishes, naming the project, number, ref and result. The watch then ends.
+- A desktop notification (`notify-send`) is sent when it finishes, naming the project, number, ref and result. The watch then ends. Notifications follow the desktop's do-not-disturb setting: while notifications are silenced, they are not shown.
 - At most 5 watches. A watch ends 6 hours after **w**, with a notification.
 - While the panel is closed, only watched pipelines are checked, about every 30 seconds on a healthy server, within the same request limits. Nothing is checked once the last watch ends.
 - A permission error or a deleted pipeline ends that watch. A sign-in problem while closed ends all watches with one notification. Network errors are retried.
