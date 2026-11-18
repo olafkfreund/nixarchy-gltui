@@ -261,7 +261,9 @@ function activity(s,r,items,now,total) {
 }
 function complete(s,reply,now) {
     var flight=s.flight;
-    if ((!s.opened && !Object.keys(s.watches).length) || !flight || flight.generation!==s.generation || reply.requestId!==flight.request.requestId) return false;
+    if (!flight || reply.requestId!==flight.request.requestId) return false;
+    // A matching reply that is no longer wanted still ends its flight, or the scheduler would wait on it forever.
+    if ((!s.opened && !Object.keys(s.watches).length) || flight.generation!==s.generation) { s.flight=null; return false; }
     var t=s.tasks[flight.key]; s.flight=null;
     if (!t) return false;
     s.wakeAt=0;
@@ -281,6 +283,8 @@ function complete(s,reply,now) {
         if (watched) watched.checkedAt=now;
         s.error=reply.error || "Invalid GitLab response";
         // ponytail: s.auth now means "stopped until manual refresh"; rename if a third stop reason appears
+        // A setup error while closed (a crashed or missing helper) is retried like a network error: only a sign-in problem ends the watches.
+        if (reply.errorType==="setup" && !s.opened) reply=Object.assign({},reply,{errorType:"network"});
         if (reply.errorType==="auth" || reply.errorType==="setup") {
             s.auth=true;
             if (!s.opened && Object.keys(s.watches).length) {

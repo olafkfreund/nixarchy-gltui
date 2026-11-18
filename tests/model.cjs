@@ -352,4 +352,5 @@ console.log('Model: stage hierarchy, aggregation, filtering, progress, selection
   assert.deepEqual(msg({type:'auth', count:2}), {summary:'GitLab sign-in needed', body:'Stopped watching 2 pipelines. Run glab auth login.'});
   assert.deepEqual(msg({type:'host', count:1}, 'a.org', 'b.org'), {summary:'Stopped watching 1 pipeline', body:'The panel now uses b.org, not a.org.'});
   assert.equal(msg({type:'host', count:3}, 'a.org', 'b.org').summary, 'Stopped watching 3 pipelines');
+  assert.equal(msg({type:'finished', watch:{...w, ref:'a&b<c>'}, conclusion:'failed'}).body, 'g/p #3 · a&amp;b&lt;c&gt;', 'markup characters are escaped');
 }

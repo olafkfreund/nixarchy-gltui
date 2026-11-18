@@ -300,7 +300,15 @@ function watchNotice(code, repo, number) {
     return "Select a pipeline to watch";
 }
 
+// Notification daemons may read the body as markup; a branch name can contain & or <.
+function bodyText(text) { return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
 function watchMessage(event, oldHost, newHost) {
+    var m = watchText(event, oldHost, newHost);
+    return {summary: m.summary, body: bodyText(m.body)};
+}
+
+function watchText(event, oldHost, newHost) {
     var w = event.watch || {}, n = event.count;
     var label = (w.repo + " #" + w.number) + (w.ref ? " · " + w.ref : "");
     var many = n + " " + (n === 1 ? "pipeline" : "pipelines");

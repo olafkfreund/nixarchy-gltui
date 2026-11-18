@@ -752,8 +752,26 @@ test('catalogue removal settles unavailable, blocked retry survives seed, reset 
 });
 test('a retried watched run remains watched', () => {
   const s=watchFixture(1); polling.close(s);
-  const req=polling.next(s,30000);
-  polling.complete(s,response(req,{id:1,status:'running'}),30000);
+  // A failed job was retried: GitLab reports the pipeline as running (then pending), which is not finished.
+  let req=polling.next(s,30000);
+  polling.complete(s,response(req,{id:1,status:'in_progress',conclusion:'running'}),30000);
+  req=polling.next(s,61000);
+  polling.complete(s,response(req,{id:1,status:'queued',conclusion:'pending'}),61000);
   assert.equal(Object.keys(s.watches).length,1); assert.equal(s.events.length,0);
+  assert.equal(s.repos[0].runs[0].conclusion,'pending');
+});
+test('a setup error while closed retries instead of ending the watches', () => {
+  const s=watchFixture(2); polling.close(s);
+  const req=polling.next(s,30000);
+  assert.ok(polling.complete(s,{requestId:req.requestId,error:'GitLab helper returned invalid data',errorType:'setup'},30000));
+  assert.equal(Object.keys(s.watches).length,2); assert.equal(s.events.length,0); assert.equal(s.auth,false);
+  assert.equal(s.tasks[s.flight ? '' : 'run:x/y:'+req.run].failures,1);
+});
+test('a matching reply that is no longer wanted still clears the flight', () => {
+  const s=watchFixture(1); polling.close(s);
+  const req=polling.next(s,30000); assert.ok(req);
+  s.watches['x/y:1'].until=30000; polling.next(s,31000); // expires the last watch while in flight
+  assert.equal(polling.complete(s,response(req,{id:1,status:'in_progress',conclusion:'running'}),31000),false);
+  assert.equal(s.flight,null);
 });
 

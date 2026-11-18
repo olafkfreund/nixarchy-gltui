@@ -519,6 +519,26 @@ pattern. Its findings, which I checked and folded in above:
   (`passed=2 rc=0 binding_loop=0`). Codex reported that mutations (a)-(c)
   each fail `polling.cjs`. Mutation (d), removing the drain from
   `close()`, fails W7 in the VM.
+- **Review fixes (Opus; Codex found nothing):**
+  - a `setup` error while closed (a crashed helper, invalid output) is now
+    retried like a network error. Before, it ended every watch with a
+    misleading "sign in" notification. Only `auth` ends all watches. This
+    narrows the plan's "auth / setup while closed" rule;
+  - a reply whose request id matches but that is no longer wanted (no
+    watches left, or another generation) now clears `s.flight`; before, the
+    scheduler could wait on it forever;
+  - the retry test now feeds GitLab's raw `running` and `pending`
+    statuses. As written it passed whatever `finished()` did;
+  - notification bodies escape `&`, `<` and `>`, since daemons may read
+    markup and git allows those characters in branch names;
+  - the README says a pipeline stopped at a manual job keeps its watch
+    until the job runs or the 6 hours pass;
+  - both new scheduler tests fail when their fix is removed, and the smoke
+    test passed again in a fresh VM;
+  - accepted, not changed: closing resets a watched lookup's network
+    backoff; a notification that fails while open is shown at the next
+    opening; open-mode seeding moves a selected project's watched lookup
+    to the `active` group.
 - **Acceptance:** in the VM, `notify-send --app-name="GitLab Pipelines"`
   returned 0 but showed nothing at first, because notification silencing
   (do not disturb) was on. After `omarchy-toggle-notification-silencing`,
