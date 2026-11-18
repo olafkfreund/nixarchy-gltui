@@ -41,13 +41,22 @@ starts from `create()`, so it drops them (see the host change in part 3).
 - otherwise add it with `until = now + WATCH_TTL` and `checkedAt = 0`,
   and return `"watching"`.
 
-**`settle(s, now)`** runs at the end of every successful `complete()` and
-at the start of `next()`. For each watch, in key order:
+**Watched runs are kept.** `kept(s, r, run)` (`Polling.js:183-184`)
+also returns true for a watched run. So `trimRuns()` never drops it, even
+behind ten newer completed pipelines, and a partial activity page never
+drops it either (`Polling.js:194-201`). That way `settle()` always finds
+the finished result that a merge just stored.
+
+**`settle(s, now)`** runs on every successful return path of `complete()`
+(intermediate summary pages and phases included, `Polling.js:267,282`)
+and at the start of `next()`. For each watch, in key order:
 - `now >= until` → event `{type:"expired", watch}`, delete it;
 - no `repoFor(s, repo)` (the catalogue dropped the project) → event
   `{type:"unavailable", watch}`, delete it;
 - `runFor` exists and `finished(run)` → event
-  `{type:"finished", watch, conclusion}`, delete it.
+  `{type:"finished", watch, conclusion}`, delete it;
+- `runFor` missing while the project exists: the watch stays, and its next
+  lookup restores the run.
 
 The watch is deleted when its event is queued, so a finish seen both in a
 list and in a lookup gives one event.
@@ -58,9 +67,20 @@ whose `now >= checkedAt + 30000`:
 - `ensure()` keeps an existing task, so a task in network backoff keeps
   its `due` and `failures`.
 
-It runs open or closed. While open it runs inside `seed()`. The watched
-pipeline is thus looked up directly every 30 s, whether or not the
-fetched rows still show it. That covers the partial-page and snapshot
+It runs open or closed, as its own loop over the watches, not inside the
+project loop. So the archived, disabled and blocked skips
+(`Polling.js:93`) do not apply. While open, `seed()` calls it after its
+project loop. The task's group is set to `active` last, so it wins over
+an ordinary follow-up group. Each watch's next check time,
+`checkedAt + 30000`, joins `seed()`'s `wake` minimum. Otherwise, with only
+idle projects, `wakeAt` could sit ten minutes away and the next watch
+check would wait for it. The watched pipeline is thus looked up directly
+every 30 s, whether or not the fetched rows still show it.
+
+`seed()`'s cleanup of blocked projects (`Polling.js:79-81`) skips a
+watched `run` task, so a task in network backoff keeps its retry state
+there too. Orphan removal for a missing project still applies after
+`settle()` has ended its watch. That covers the partial-page and snapshot
 cases from the intent, at the cost of a lookup that is sometimes
 redundant (at most 10 a minute).
 
@@ -103,7 +123,9 @@ calls in `mergeRuns()` (`Polling.js:166-167`) and in the `run` branch
 | `rate` | cooldown | watch stays |
 
 `close()` with `s.auth` set and watches present also emits the `auth`
-event and drops them: a closed panel cannot clear the stop.
+event and drops them: a closed panel cannot clear the stop. The panel
+drains events right after `Polling.close()` (part 3), so this event is
+delivered even though the pump then stops.
 
 ### 2. Model (`PipelinesModel.js`)
 
@@ -136,8 +158,11 @@ event and drops them: a closed panel cannot clear the stop.
     of 100 ms when open and 1000 ms when closed.
   - `pump()` returns early only when `workerBusy`, or when neither
     `opened` nor `watching`.
-  - After each `Polling.next()` and `Polling.complete()`, it calls
-    `drainEvents()`.
+  - After each `Polling.next()`, `Polling.complete()` and `Polling.close()`,
+    the panel calls `drainEvents()`. When it finds events, it also calls
+    `adopt()`. That reassigns `polling`, so `watching`, the pump timer and
+    the row marks update even when `next()` expired the last watch and
+    started no request.
 - **`w`:** a plain, unshifted key in the list.
   - On a run, stage or job row (they all carry `repo` and `run`), call
     `Polling.watch(polling, current.repo, current.run, Date.now())`, then
@@ -153,8 +178,13 @@ event and drops them: a closed panel cannot clear the stop.
     test hook.
   - Each argument is a separate element, never shell text.
   - A non-zero exit or a failed start (the `copyProc` pattern) adds the
-    message to `missedNotices`. The next `open()` shows them in the
-    footer notice, joined by ` · `, and clears the list.
+    message to `missedNotices`. They are shown in the footer notice, joined
+    by ` · `, and the list is cleared:
+    - at the end of `open()`, after `applyOpen()` (which clears the
+      notice for a filter payload, `PipelinesPanel.qml:125-133`) and after
+      the pins error notice;
+    - when the panel is not configured yet, at the end of
+      `markConfigured()`, after the queued `applyOpen()` calls.
   - Nothing is resent.
 - **Host change.** In `configure()`, before `Polling.resetHost()`, a
   host change with watches queues a `host` notification with the count,
@@ -223,6 +253,13 @@ event and drops them: a closed panel cannot clear the stop.
     request, even with an expanded selection;
   - a `run` reply while closed queues no jobs task;
   - finish observed in a list and then in a lookup: one event;
+  - a watched pipeline behind ten newer completed pipelines: its `failed`
+    lookup is kept by `trimRuns()` and gives a `finished` event;
+  - open with only idle, discovered projects: a watched pipeline is looked
+    up again 30 s after each lookup (`wakeAt` includes it);
+  - a blocked project with a watched lookup in network backoff: the task
+    keeps its `due` and `failures`;
+  - a finish seen on an intermediate summary page gives the event;
   - expiry fires at `until` during a cooldown and during an auth stop, and
     is not extended by close and open;
   - errors: a 403 or 404 gives `unavailable` and drops one watch; auth
@@ -249,8 +286,35 @@ event and drops them: a closed panel cannot clear the stop.
   - close the panel with one watch. Feed a finished `run` reply through
     the fake helper. The notification file holds `Pipeline passed` and the
     body, and the pump timer stops once no watch is left;
-  - a failing `notifyCommand`: the next `open()` shows the missed notice;
+  - a failing `notifyCommand`: the next `open()` shows the missed notice,
+    also when opened with a filter payload;
+  - expiry with no reply (set `until` in the past while closed): the
+    notification is sent, the run mark goes, and the pump timer stops;
+  - `close()` with an auth stop and a watch, with no request in flight:
+    the `auth` notification is sent;
   - a host change with watches: the `host` notification;
   - Ctrl/Alt/Meta/Shift + W do nothing; `w` in the search box types;
   - footer and help text include `w`.
 - All existing tests pass, and the flake's `plugin` check builds.
+
+## Review notes
+
+Codex reviewed the draft read-only; agy is out of use (#2748). It
+confirmed that closed mode starts only watched lookups, that guarding
+both jobs `ensure()` calls covers closed-mode side effects, that
+re-tagging the flight on `open()` works, that `ensure()` keeps retry
+state, and the explicit terminal statuses. Its findings, which I checked
+in the code and folded in above (two it confirmed with read-only scheduler
+probes):
+- `trimRuns()` could drop a watched run's terminal result before
+  `settle()` saw it: watched runs are now kept;
+- watch checks were missing from `wakeAt`, so with idle projects the next
+  check could wait ten minutes: they now join it;
+- the `auth` event from `close()` was never drained: the panel drains
+  after `close()`;
+- an expiry inside `next()` did not refresh QML bindings: events trigger
+  `adopt()`;
+- the blocked-project cleanup could delete a watched task: watches seed in
+  their own loop and are exempt from that cleanup;
+- missed notices could be cleared while opening: they are shown after
+  `applyOpen()` and after the queued opens in `markConfigured()`.
