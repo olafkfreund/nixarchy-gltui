@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 34
 spec: spec/2026-11-18-34-watch-pipeline.md
 coders:
