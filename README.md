@@ -124,7 +124,7 @@ python3 ~/.config/omarchy/plugins/olafkfreund.gitlab-pipelines/menu.py register
 
 No project list is needed. Opening the popup fetches every page of `GET /projects?membership=true`: the projects you are a direct or inherited member of, including nested groups. Projects are scanned in order of most recent activity. The list is refreshed every 5 minutes while the panel is open. Archived projects, and projects with CI/CD disabled, stay searchable but are not polled.
 
-Press **/** and type a project path, description, pipeline name, branch or status. Use **↑ / ↓** while typing to select a result, then **Enter** to expand it. **Tab** finishes editing without expanding. Projects with running pipelines move to the top as activity is discovered. Projects not yet checked say **not checked**, and the header shows scan progress.
+Press **/** and type a project path, description, pipeline name, branch or status. Use **↑ / ↓** while typing to select a result, then **Enter** to expand it. **Tab** finishes editing without expanding. Projects with running pipelines move to the top as activity is discovered. Projects not yet checked say **not checked**, and the header shows scan progress. A project row's icon is the latest finished pipeline the panel has seen for it, on any branch, from selecting the project or from a pipeline seen running or queued, and the row says `last <status> <age>`, for example `0 running · last failed 2h ago · checked 3m ago`. Running pipelines and errors take precedence. Projects never selected and never seen running stay `·`, and a project with no pipelines says **no pipelines**. A newer pipeline that starts and finishes between idle checks is not seen until you select the project.
 
 The catalogue and known activity stay in memory between openings. After five minutes, reopening refreshes the catalogue. **Shift + R** refreshes it immediately.
 
@@ -214,7 +214,7 @@ Icons accompany the GitLab status:
 | · | neutral |
 | ○ | anything else |
 
-Merge-request pipelines show `!N` for their branch. Times count up live, and finished rows say how long ago they ended. Failed jobs show the failure reason and the queue time, and project rows say when they were last checked.
+Merge-request pipelines show `!N` for their branch. Times count up live, and finished rows say how long ago they ended. Failed jobs show the failure reason and the queue time, and project rows say when they were last checked and show the latest known pipeline as `last <status> <age>`.
 
 Running is now `●` and scheduled is `◷`. A failed job that is allowed to fail shows `!` with "allowed to fail", and skipped jobs are dimmed.
 

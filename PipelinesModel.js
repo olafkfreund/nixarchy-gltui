@@ -63,6 +63,15 @@ function state(item) {
     return item.awaitingFinal ? "awaiting final status" : item.lookupError ? "unavailable" : item.conclusion || item.status || "unknown";
 }
 
+function latest(runs) {
+    var found = null;
+    runs.forEach(function(run) {
+        if (run.status === "completed" && !run.awaitingFinal && !run.lookupError &&
+            isFinite(Number(run.id)) && (!found || Number(run.id) > Number(found.id))) found = run;
+    });
+    return found;
+}
+
 function group(status) {
     switch (status) {
     case "running": case "canceling": return "running";
@@ -153,8 +162,10 @@ function reasonText(code) {
 
 function infoText(row, now) {
     if (row.kind === "repo") {
+        var age = row.lastStatus ? ago(row.lastAt, now) : "";
         var checked = row.info && /running$/.test(row.info) ? ago(row.checked, now) : "";
-        return row.info + (checked ? " · checked " + checked : "");
+        return row.info + (row.lastStatus ? " · last " + row.lastStatus + (age ? " " + age : "") : "") +
+            (checked ? " · checked " + checked : "");
     }
     var live = duration({started_at: row.started, completed_at: row.ended,
         status: row.ended ? "completed" : ""}, now);
@@ -214,10 +225,13 @@ function rows(repos, expanded, details, filter, now, pinned, watched) {
         });
         if (query && !repoMatch && !runs.length) return;
         var active = repo.active === undefined ? (repo.runs || []).filter(function(run) { return run.status === "in_progress"; }).length : repo.active;
+        var last = repo.error ? null : latest(repo.runs || []);
         var repoKey = "repo:" + repo.repo;
         result.push({key: repoKey, parent: "", kind: "repo", depth: 0, title: repo.repo, pinned: !!pinned[repo.repo],
-            subtitle: repo.error || repo.description || "", status: repo.error ? "error" : (active ? "running" : "neutral"),
-            info: repo.archived ? "archived" : repo.disabled ? "disabled" : repo.error ? "unavailable" : repo.checked || repo.runs ? active + " running" : "not checked",
+            subtitle: repo.error || repo.description || "", status: repo.error ? "error" : (active ? "running" : (last ? state(last) : "neutral")),
+            info: repo.archived ? "archived" : repo.disabled ? "disabled" : repo.error ? "unavailable" :
+                !active && repo.summaryAt !== undefined && !(repo.runs || []).length ? "no pipelines" : repo.checked || repo.runs ? active + " running" : "not checked",
+            lastStatus: last ? state(last) : "", lastAt: last ? last.completed_at || last.updated_at || "" : "",
             checked: repo.checked || "", repo: repo.repo, url: repo.url ? repo.url + "/-/pipelines" : ""});
         if (!expanded[repoKey]) return;
         // Pipelines past the first page of each unfinished status are counted, not fetched (#15).
@@ -290,7 +304,7 @@ function copyText(row, what) {
 
 // ponytail: the fields the delegate reads that can change for a key; add any new one the delegate reads.
 var shownFields = ["title", "subtitle", "status", "info", "checked", "started", "ended", "finished",
-    "fetched", "done", "total", "complete", "serverDuration", "queued", "reason", "sha", "pinned", "watched"];
+    "fetched", "done", "total", "complete", "serverDuration", "queued", "reason", "sha", "pinned", "watched", "lastStatus", "lastAt"];
 
 function watchNotice(code, repo, number) {
     if (code === "watching") return "Watching #" + number + " in " + repo;
