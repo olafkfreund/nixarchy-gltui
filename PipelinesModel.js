@@ -12,6 +12,26 @@ function browsable(url, host) {
     return new RegExp("^https://" + pinned + "/[^\\s\\x00-\\x1f\\x7f-\\x9f]+$").test(url);
 }
 
+function openFilter(payload, panelHost) {
+    var empty = {filter: null, notice: ""};
+    try {
+        var value = typeof payload === "string" ? JSON.parse(payload) : payload;
+        if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.filter !== "string") return empty;
+        var filter = value.filter.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim();
+        if (!filter || filter.length > 200) return empty;
+        if ("host" in value) {
+            if (typeof value.host !== "string" || !value.host) return empty;
+            if (value.host.toLowerCase() !== panelHost.replace(/:[0-9]+$/, "").toLowerCase()) {
+                var shown = value.host.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").slice(0, 100);
+                return {filter: null, notice: "Repository is on " + shown + "; this panel shows " + panelHost};
+            }
+        }
+        return {filter: filter, notice: ""};
+    } catch (error) {
+        return empty;
+    }
+}
+
 function state(item) {
     return item.awaitingFinal ? "awaiting final status" : item.lookupError ? "unavailable" : item.conclusion || item.status || "unknown";
 }

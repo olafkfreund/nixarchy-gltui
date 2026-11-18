@@ -4,6 +4,22 @@ const vm = require('node:vm');
 const model = {};
 vm.createContext(model);
 vm.runInContext(fs.readFileSync('PipelinesModel.js', 'utf8'), model);
+const open = (payload, host = 'gitlab.example.org') => JSON.parse(JSON.stringify(model.openFilter(payload, host)));
+const empty = {filter: null, notice: ''};
+for (const payload of ['{}', '', 'null', '[]', '3', '{bad', {filter: 3}, {filter: '  '}])
+  assert.deepEqual(open(payload), empty);
+assert.deepEqual(open('{"filter":" group/p "}'), {filter: 'group/p', notice: ''});
+assert.deepEqual(open({filter: ' a\n\u0007\u0085b '}), {filter: 'ab', notice: ''});
+assert.deepEqual(open({filter: 'x'.repeat(200)}), {filter: 'x'.repeat(200), notice: ''});
+assert.deepEqual(open({filter: 'x'.repeat(201)}), empty);
+assert.deepEqual(open({filter: 'group/p'}), {filter: 'group/p', notice: ''});
+assert.deepEqual(open({filter: 'g/p', host: 'GITLAB.EXAMPLE.ORG'}), {filter: 'g/p', notice: ''});
+assert.deepEqual(open({filter: 'g/p', host: 'gitlab.example.org'}, 'gitlab.example.org:8443'), {filter: 'g/p', notice: ''});
+assert.deepEqual(open({filter: 'g/p', host: 'elsewhere.example'}),
+  {filter: null, notice: 'Repository is on elsewhere.example; this panel shows gitlab.example.org'});
+assert.deepEqual(open({filter: 'g/p', host: 'x\u0007' + 'y'.repeat(120)}),
+  {filter: null, notice: 'Repository is on x' + 'y'.repeat(99) + '; this panel shows gitlab.example.org'});
+for (const host of [5, '']) assert.deepEqual(open({filter: 'g/p', host}), empty);
 const repos = [{repo: 'group/sub/project', url: 'https://gitlab.com/group/sub/project', runs: [{id: 7, status: 'in_progress', conclusion: 'running', name: 'CI', head_branch: 'main', run_number: 3, sha: 'a'.repeat(40), html_url: 'https://gitlab.com/p/-/pipelines/7'}]}];
 const runKey = 'group/sub/project:7';
 const expanded = {'repo:group/sub/project': true, [runKey]: true, [runKey + ':stage:build']: true};
