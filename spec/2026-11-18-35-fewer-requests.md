@@ -45,10 +45,12 @@ change to `gitlab.py`, the model or the panel.
   A missing or unparsable `lastActivity` gives 0, today's behaviour.
 - **What resets the level to 0:**
   - **finding a running pipeline:** `activity()` above, and the run lookup
-    path at `Polling.js:316-318` when it leaves `r.active>0`;
-  - **selecting the project:** the `activity()` rule above. Deselecting
-    leaves it at 0, so the next background check is 10 minutes after the
-    last one;
+    path at `Polling.js:316-319` when it leaves `r.active>0`;
+  - **selecting the project:** `select()` sets `r.idle=0` on the newly
+    selected repo, even if no request completes before it is deselected.
+    The `activity()` rule above keeps it at 0 while selected. After
+    deselection the next background check is 10 minutes after the last
+    one;
   - **manual refresh `r`:** sets `r.idle=0` on the selected project in
     `manual()`;
   - **`R` (catalogue refresh):** sets `r.idle=0` on every repo;
@@ -57,12 +59,21 @@ change to `gitlab.py`, the model or the panel.
 ### 2. Catalogue refresh while open, with a change hint
 
 - **Periodic refresh.** In `seed()`, before the catalogue `ensure` at
-  `Polling.js:120`: if `s.catalogueComplete`, `!s.catalogueError` and
-  `now>=s.catalogueAt+300000`, then set `s.discover=true` and
-  `s.periodic=true`. `seed()` also folds `s.catalogueAt+300000` into its
-  `wake`, so a sleeping scheduler wakes for it.
-  - `open()` and `manual(…, catalogue)` set `s.periodic=false`. Those keep
-    their current meaning: a full refresh that clears `blocked`.
+  `Polling.js:120`: if `!s.discover`, `s.catalogueComplete`,
+  `!s.catalogueError` and `now>=s.catalogueAt+300000`, then set
+  `s.discover=true` and `s.periodic=true`. The refresh type is chosen only
+  when a scan starts, and it holds through pagination and retries.
+  - **Wake:** while `!s.discover`, `seed()` folds `s.catalogueAt+300000`
+    into its `wake`, so a sleeping scheduler wakes for the next scan. Once a
+    scan is under way, only the catalogue task's own due time counts, so a
+    page retry does not keep `wakeAt` in the past.
+  - **`open()` and `R`:** they set `s.discover=true` and `s.periodic=false`,
+    as a full refresh that clears `blocked`. An overdue reopen is therefore
+    a full refresh: `discover` is already set, so `seed()` does not mark it
+    periodic.
+  - **`R` during a periodic scan:** it also restarts the catalogue task from
+    page 1 (`restart()`), so every page of the upgraded scan clears
+    `blocked`.
 - **Pagination and errors:** unchanged. The catalogue task keeps its own
   pages, and `ensure` is keyed, so no second task starts mid-scan.
   - Network and server errors retry with the task's back-off
@@ -83,10 +94,11 @@ change to `gitlab.py`, the model or the panel.
     orders by `activityAt` as today;
   - a hinted background repo's check is due now, not at
     `activityAt+interval`;
-  - the one-background-task rule (`:122`, `:134`) stays. A background
-    task already queued or in flight keeps its place, and the hinted repo
-    is admitted next. With the background slot at 1 in 5 starts, that is
-    a few seconds.
+  - **Hinted repos bypass the one-background-task rule** (`:122`, `:134`).
+    A queued background task may be waiting out an error retry
+    (`:139-140`, `:302`), and a hint must not wait behind it. That task
+    keeps its own retry deadline. Hints are bounded by the projects whose
+    `lastActivity` changed in one scan.
   - `activity()` clears `r.hinted`. A failed hinted check keeps the hint,
     and the task's own error back-off applies.
 - **Hints for pinned, running or selected repos:** their intervals are
@@ -108,14 +120,23 @@ change to `gitlab.py`, the model or the panel.
   - the run is not watched.
 
   Every other follow-up keeps 15 s at `Polling.js:147-148`. Watched runs
-  keep their own 30 s timer (`seedWatches`, `:163-170`). Both share the
-  task key, and the earliest due time wins as today.
+  keep their own 30 s timer (`seedWatches`, `:163-170`).
+  - **Shared task key:** both paths share the `run` task key. `ensure()`
+    on an existing task changes only its group and keeps its due time
+    (`Polling.js:48-55`), as today.
+  - **Watched during a retry wait:** if a watch is added while that task
+    is waiting out an error retry, the watch waits for the retry. The
+    network back-off is not bypassed.
+  - **Watched during a queued back-off wait:** if no task exists yet,
+    `seedWatches` creates one on its 30 s schedule.
 - **Raised:** in `complete()`'s run branch, when the lookup returns a run
   that is still `queued`: `s.queued[id]=Math.min(5,(s.queued[id]||0)+1)`.
 - **Cleared:**
   - when a lookup or a list shows the run is not queued;
   - when the run is dropped in `trimRuns` (next to the `s.details`
-    cleanup at `:234`);
+    cleanup at `:234`), or in `activity()`'s dropped runs (`:255`);
+  - when the catalogue scan removes its project (next to the details
+    cleanup at `:335-338`);
   - when the project becomes selected (the selected summary covers it).
 - **Errors** keep the task's own error back-off (`:302`). An error does not
   raise the level.
@@ -200,18 +221,28 @@ counted.
 
 - `node tests/polling.cjs`: all existing tests pass, plus new cases:
   1. back-off progression 10 → 20 → 40 → 60 for a recent project; an old
-     project starts at 60; a week-old one at 20;
+     project starts at 60; a three-day-old one at 20;
   2. a running result resets to 0; selection resets; `r` resets the
      selected project; `R` resets all;
   3. the periodic catalogue refresh starts 5 minutes after the last
      complete scan, wakes the scheduler, and does not start after a
      permission error;
-  4. a changed `lastActivity` sets `hinted`, puts the repo first while a
-     background task is already queued, and is cleared by the next check;
-  5. a periodic refresh keeps `blocked`; an open or `R` refresh clears it;
+  4. a changed `lastActivity` sets `hinted` and puts the repo first. A
+     hinted repo is admitted while another background task waits out an
+     error retry, and that task keeps its deadline. The hint is cleared by
+     the next check;
+  5. a periodic refresh keeps `blocked`. An open or `R` refresh clears it,
+     including an overdue `R`, an overdue reopen, and `R` during a
+     periodic scan's pagination;
+  5a. `seed()` runs a bounded number of times during a catalogue page
+     retry (the wake is not stuck in the past);
+  5b. selecting a backed-off project and deselecting it before the
+     debounce resets its level to 0;
   6. queued back-off: 15 s, 30 s … 5 minutes; not applied to watched,
      selected or `awaitingFinal` runs; reset when the run starts running;
-     cleared on trim;
+     cleared on trim and on project removal (remove, then reintroduce: the
+     lookup starts again at 15 s). A watch added during a lookup's error
+     retry waits for the retry;
   7. host reset clears `idle`, `hinted` and `s.queued`;
   8. the scenario targets above.
 - `python3 -m unittest discover tests` and `node tests/model.cjs`
@@ -221,3 +252,37 @@ counted.
   touched after all, the smoke test runs in a fresh microVM.
 - Each new rule has a mutation check: revert the rule and confirm that a
   test fails.
+
+## Review notes
+
+Codex reviewed the draft read-only; agy is out of use (#2748). It
+reproduced the baseline tables. Its model of the design estimates:
+
+| Scenario | Total | Idle checks | Queued lookups |
+| --- | --- | --- | --- |
+| Realistic, 30 min | 471 | 155 | 0 |
+| Realistic, 2 h | 1542 | 295 | 0 |
+| 30 queued, 30 min | 737 | 155 | 270 |
+
+All three targets are within reach. Its findings, all confirmed against
+the code and folded in above:
+1. **Refresh type (confirmed, reproduced by Codex):** `seed()`
+   re-marked a scan as periodic after `R` or an overdue reopen. The type is
+   now chosen only when a scan starts, and `R` restarts a periodic scan.
+2. **Selection reset (confirmed):** it lived in `activity()`, so a quick
+   select and deselect left a 60-minute level. It now happens in
+   `select()`.
+3. **Hint behind a failed task (confirmed):** a hint could wait behind
+   another task's error retry. Hints now bypass the one-background rule.
+4. **Wake stuck in the past (confirmed):** the wake during a scan kept
+   `wakeAt` expired. It now counts only before a scan starts.
+5. **Queued counters on removed projects (confirmed):** they survived
+   catalogue removal. They are now cleared there and in `activity()`'s
+   dropped runs.
+6. **"Earliest due wins" was wrong (confirmed, reproduced by Codex):**
+   `ensure()` keeps an existing task's due time. The text now says so, and
+   a test covers a watch added during a retry.
+
+It also corrected two references (`:316-319`, "three-day-old"). It did
+not check the README references; I checked them (`README.md:125`, `:277`,
+`:289`).
