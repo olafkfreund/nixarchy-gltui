@@ -171,6 +171,7 @@ Item {
     }
     function toggleHelp() {
         helpOpen = !helpOpen
+        if (helpOpen) helpFlickable.contentY = 0
         if (helpOpen && !helpText && !helpProc.running) helpProc.running = true
     }
     function scrollHelp(delta) {
@@ -392,7 +393,8 @@ Item {
                     event.accepted = true
                     if (root.helpOpen) {
                         var line = root.zf(Style.font.body) * 1.4
-                        if (event.text === "?" || event.key === Qt.Key_Escape || event.key === Qt.Key_Q) root.helpOpen = false
+                        var bare = !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier | Qt.ShiftModifier))
+                        if (event.text === "?" || event.key === Qt.Key_Escape || (bare && event.key === Qt.Key_Q)) root.helpOpen = false
                         else if (event.key === Qt.Key_Down || event.key === Qt.Key_J) root.scrollHelp(line)
                         else if (event.key === Qt.Key_Up || event.key === Qt.Key_K) root.scrollHelp(-line)
                         else if (event.key === Qt.Key_PageDown) root.scrollHelp(helpFlickable.height)

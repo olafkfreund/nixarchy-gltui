@@ -171,7 +171,7 @@ The plugin uses your existing `glab` login and never reads, extracts or stores a
 | g / G | First or last row |
 | e | Next failed pipeline, stage or job |
 | ? | Show or hide this help in the panel |
-| q | Close the panel |
+| q | Close the panel, or the help |
 | Ctrl + = / Ctrl + + | Make the panel larger |
 | Ctrl + - | Make it smaller |
 | Ctrl + 0 | Reset the size |

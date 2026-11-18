@@ -712,6 +712,7 @@ ShellRoot {
         },
         function() {
             if (!waitUntil(function() { return pasteCode>=0 },"K4 second paste")) return false
+            eq(pasteCode,0,"K4 second wl-paste exit")
             eq(pasteOut.text,"b".repeat(40),"K4 clipboard unchanged")
         },
         function() {
@@ -767,13 +768,27 @@ ShellRoot {
             pressKey(Qt.Key_E); eq(panel.cursor,kcur,"K7 e ignored in help")
             pressKey(Qt.Key_Escape)
             check(!panel.helpOpen,"K7 Esc closes help")
+            check(panel.opened,"K7 Esc keeps the panel open")
             eq(panel.cursor,kcur,"K7 cursor unchanged")
             resetZoom()
+            tc.keyClick("?"); check(panel.helpOpen,"K7 ? reopens help")
+            check(panel.helpFlick.contentY===0,"K7 help reopens at the top")
+            tc.keyClick("?"); check(!panel.helpOpen && panel.opened,"K7 ? closes help only")
+            tc.keyClick("?"); pressKey(Qt.Key_Q); check(!panel.helpOpen && panel.opened,"K7 q closes help only")
+            // close() itself must reset help and the notice.
+            tc.keyClick("?"); panel.notify("x")
+            panel.close()
+            panel.open("{}")
+            check(!panel.helpOpen,"K7 close() resets help")
+            eq(panel.notice,"","K7 close() clears the notice")
+            panel.adopt()
+            listFocus()
         },
         function() {
             // K8: q with a filter closes; q ? g y e type into search.
             panel.filterText="k"
             listFocus()
+            panel.notify("x")
             pressKey(Qt.Key_Q)
             check(!panel.opened,"K8 q closes with a filter")
             panel.open("{}")
