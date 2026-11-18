@@ -17,8 +17,49 @@ if (!fs.existsSync('Polling.js')) process.exit(0);
 const polling = {};
 vm.createContext(polling);
 vm.runInContext(fs.readFileSync('Polling.js', 'utf8'), polling);
-test('pins use a minute interval and separate queue group', () => {
+test('recent idle projects back off from 10 to 20, 40, then 60 minutes', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true; s.catalogueAt=12000000;
+  const r={repo:'a/b',lastActivity:new Date(0).toISOString()}; s.repos=[r];
+  for(const [now,level,wake] of [[0,0,600000],[600000,1,1800000],[1800000,2,4200000],[4200000,3,7800000],[7800000,3,11400000]]) {
+    polling.activity(s,r,[],now,0);
+    polling.seed(s,now);
+    assert.equal(r.idle,level);
+    assert.equal(s.wakeAt,wake);
+  }
+});
+test('last activity sets the first idle level and running activity resets it', () => {
   const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  const old={repo:'old/p',lastActivity:new Date(-60*86400000).toISOString()};
+  const threeDays={repo:'three/p',lastActivity:new Date(-3*86400000).toISOString()};
+  const unknown={repo:'unknown/p'};
+  s.repos=[old,threeDays,unknown];
+  for(const r of s.repos) polling.activity(s,r,[],0,0);
+  assert.deepEqual(s.repos.map(r=>r.idle),[3,1,0]);
+  polling.activity(s,old,[{id:7,status:'in_progress'}],1000,1);
+  assert.equal(old.idle,0);
+});
+test('a run lookup that finds a running pipeline resets idle back-off', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  const r={repo:'a/b',idle:3,active:0,activityAt:0}; s.repos=[r];
+  polling.ensure(s,'run','a/b','7','active',1000);
+  const request=polling.next(s,1000); assert.equal(request.kind,'run');
+  polling.complete(s,response(request,{id:7,status:'in_progress'}),1100);
+  assert.equal(r.active,1); assert.equal(r.idle,0);
+});
+test('selection and manual refresh reset idle back-off', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  const a={repo:'a/b',idle:3}, b={repo:'c/d',idle:3}; s.repos=[a,b];
+  polling.select(s,'a/b','',{},1000,false);
+  polling.select(s,'','',{},1100,false);
+  assert.equal(a.idle,0,'selection resets before debounce completes');
+  a.idle=3; polling.select(s,'a/b','',{},2000,true);
+  a.idle=3; polling.manual(s,2100,false);
+  assert.equal(a.idle,0); assert.equal(b.idle,3);
+  a.idle=3; polling.manual(s,2200,true);
+  assert.equal(a.idle,0); assert.equal(b.idle,0);
+});
+test('pins use a minute interval and separate queue group', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true; s.catalogueAt=1000000;
   s.repos=['pin/one','pin/two','idle/one','idle/two'].map(repo=>({repo,activityAt:0}));
   polling.pin(s,['pin/one','pin/two']); polling.seed(s,59999);
   assert.equal(Object.keys(s.tasks).length,0);
@@ -176,7 +217,7 @@ assert.equal(limited.catalogueComplete,true); assert.equal(polling.next(limited,
 
 // Debounce, same-run navigation, completion reconciliation, final cache and rerun invalidation.
 const s=polling.create(); s.repos=[{repo:'a/b',runs:[{id:7,status:'in_progress',run_attempt:1}],activityAt:0,summaryAt:0,active:1}];
-s.catalogueComplete=true; s.discover=false; polling.open(s,0);
+s.catalogueComplete=true; polling.open(s,0); s.discover=false;
 polling.select(s,'a/b','7',{'a/b:7':true},0,false);
 assert.equal(polling.next(s,200),null);
 req=polling.next(s,250); assert.equal(req.kind,'jobs');
@@ -401,6 +442,134 @@ test('catalogue permission error stops discovery until manual catalogue refresh'
   request=polling.next(x,31000); assert.equal(request.kind,'catalogue');
 });
 
+test('the completed catalogue wakes and refreshes every five minutes', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true; s.catalogueAt=1000;
+  assert.equal(polling.next(s,1000),null);
+  assert.equal(s.wakeAt,301000);
+  assert.equal(polling.next(s,300999),null);
+  const request=polling.next(s,301000); assert.equal(request.kind,'catalogue');
+  assert.equal(s.periodic,true);
+  polling.complete(s,response(request,[]),301100);
+  assert.equal(s.periodic,false); assert.equal(s.catalogueAt,301100);
+});
+
+test('catalogue permission errors prevent periodic scans and reopen scans', () => {
+  const s=polling.create(); polling.open(s,0); s.catalogueComplete=true;
+  const request=polling.next(s,0); assert.equal(request.kind,'catalogue');
+  polling.complete(s,{...response(request),error:'forbidden',errorType:'permission'},100);
+  assert.equal(polling.next(s,300000),null);
+  assert.equal(s.discover,false); assert.equal(s.periodic,false);
+  polling.close(s); polling.open(s,400000);
+  assert.equal(polling.next(s,400000),null); assert.equal(s.discover,false);
+});
+
+test('a periodic merge keeps blocked projects; full refreshes clear them', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  const r={repo:'a/b',blocked:true,error:'forbidden',activityAt:0,lastActivity:'old'}; s.repos=[r];
+  let request=polling.next(s,300000); assert.equal(request.kind,'catalogue'); assert.equal(s.periodic,true);
+  polling.complete(s,response(request,[{repo:'a/b',lastActivity:'old'}]),300100);
+  assert.equal(r.blocked,true); assert.equal(r.error,'forbidden');
+  polling.manual(s,300200,true);
+  request=polling.next(s,301000); assert.equal(request.kind,'catalogue'); assert.equal(s.periodic,false);
+  polling.complete(s,response(request,[{repo:'a/b',lastActivity:'old'}]),301100);
+  assert.equal(r.blocked,false); assert.equal(r.error,'');
+  r.blocked=true; r.error='forbidden';
+  polling.close(s); polling.open(s,302000);
+  request=polling.next(s,302000); assert.equal(request.kind,'catalogue'); assert.equal(s.periodic,false);
+  polling.complete(s,response(request,[{repo:'a/b',lastActivity:'old'}]),302100);
+  assert.equal(r.blocked,false); assert.equal(r.error,'');
+});
+
+test('closing during a periodic scan makes the reopen scan a full one', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  const r={repo:'a/b',blocked:true,error:'forbidden',activityAt:0}; s.repos=[r];
+  let request=polling.next(s,300000); assert.equal(request.kind,'catalogue'); assert.equal(s.periodic,true);
+  polling.close(s); polling.open(s,301000); assert.equal(s.periodic,false);
+  request=polling.next(s,301000); assert.equal(request.kind,'catalogue');
+  polling.complete(s,response(request,[{repo:'a/b'}]),301100);
+  assert.equal(r.blocked,false);
+});
+test('a changed activity time on a never-checked project is not a hint', () => {
+  const s=polling.create(); polling.open(s,0); s.catalogueComplete=true;
+  const r={repo:'new/p',lastActivity:'old'}; s.repos=[r];
+  const request=polling.next(s,0); assert.equal(request.kind,'catalogue');
+  polling.complete(s,response(request,[{repo:'new/p',lastActivity:'new'}]),1000);
+  assert.equal(r.hinted,undefined);
+});
+test('overdue reopen and R use full scans, including R during page two', () => {
+  for(const mode of ['reopen','R']) {
+    const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+    const r={repo:'a/b',blocked:true,error:'forbidden',activityAt:0}; s.repos=[r];
+    if(mode==='reopen') { polling.close(s); polling.open(s,400000); }
+    else polling.manual(s,400000,true);
+    let request=polling.next(s,400000); assert.equal(request.kind,'catalogue'); assert.equal(s.periodic,false);
+    polling.complete(s,response(request,[{repo:'a/b'}],2),400100);
+    request=polling.next(s,401000); assert.equal(request.page,2);
+    polling.manual(s,401100,true);
+    assert.equal(polling.complete(s,response(request,[]),401200),true);
+    request=polling.next(s,402000); assert.equal(request.page,1); assert.equal(s.periodic,false);
+    polling.complete(s,response(request,[{repo:'a/b'}]),402100);
+    assert.equal(r.blocked,false); assert.equal(r.error,'');
+  }
+});
+
+test('R upgrades a periodic scan after page one and clears blocked projects', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  const blocked={repo:'a/b',blocked:true,error:'forbidden',activityAt:0,idle:3};
+  s.repos=[blocked,{repo:'c/d',activityAt:0,idle:3}];
+  let request=polling.next(s,300000); assert.equal(request.kind,'catalogue'); assert.equal(s.periodic,true);
+  polling.complete(s,response(request,[{repo:'c/d'}],2),300100);
+  assert.equal(s.tasks['catalogue::'].page,2);
+  polling.manual(s,300200,true);
+  request=polling.next(s,301000); assert.equal(request.page,1);
+  polling.complete(s,response(request,[{repo:'c/d'}],2),301100);
+  request=polling.next(s,302000); assert.equal(request.page,2);
+  polling.complete(s,response(request,[{repo:'a/b'}]),302100);
+  assert.equal(blocked.blocked,false); assert.equal(blocked.error,'');
+});
+
+test('changed catalogue activity hints a background check and preserves a retry deadline', () => {
+  const s=polling.create(); polling.open(s,0); s.catalogueComplete=true;
+  const r={repo:'hint/p',lastActivity:'old',activityAt:0,idle:3};
+  const other={repo:'other/p',activityAt:0,idle:3}; s.repos=[r,other];
+  const request=polling.next(s,0); assert.equal(request.kind,'catalogue');
+  polling.complete(s,response(request,[{repo:'hint/p',lastActivity:'new'},{repo:'other/p'}]),1000);
+  assert.equal(r.hinted,true); assert.equal(r.idle,0);
+  const retry=polling.ensure(s,'activity','other/p','','background',20000); retry.failures=1;
+  polling.seed(s,2000);
+  assert.equal(s.tasks['activity:hint/p:'].due,2000);
+  assert.equal(retry.due,20000);
+  const hint=polling.next(s,2000); assert.equal(hint.repo,'hint/p');
+  polling.complete(s,response(hint,[]),2100);
+  assert.equal(r.hinted,undefined);
+});
+
+test('hint ordering admits the hinted repo before an ordinary background repo', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  s.repos=[{repo:'ordinary/p'},{repo:'hint/p',activityAt:0,hinted:true,idle:3}];
+  polling.seed(s,1000);
+  assert.ok(s.tasks['activity:hint/p:']);
+  assert.equal(s.tasks['activity:ordinary/p:'],undefined);
+});
+
+test('a hint keeps its own activity error retry deadline', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  s.repos=[{repo:'hint/p',activityAt:0,hinted:true,idle:3}];
+  const retry=polling.ensure(s,'activity','hint/p','','background',20000); retry.failures=1;
+  assert.equal(polling.next(s,1000),null);
+  assert.equal(retry.due,20000); assert.equal(s.wakeAt,20000);
+});
+
+test('catalogue page retries do not repeatedly seed while waiting', () => {
+  const s=polling.create(); polling.open(s,0);
+  const request=polling.next(s,0); assert.equal(request.kind,'catalogue');
+  polling.complete(s,{...response(request),error:'offline',errorType:'network'},1000);
+  const before=s.seeds;
+  for(let now=1250;now<6000;now+=250) assert.equal(polling.next(s,now),null);
+  assert.ok(s.seeds-before<10,`seeded ${s.seeds-before} times during retry`);
+  assert.equal(s.wakeAt,6000);
+});
+
 test('background queued run is looked up after 15 seconds', () => {
   const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
   x.repos=[{repo:'a/b',active:0,activityAt:0,runs:[{id:7,status:'queued'}]}];
@@ -409,6 +578,122 @@ test('background queued run is looked up after 15 seconds', () => {
   const request=polling.next(x,15000);
   assert.equal(request.kind,'run'); assert.equal(request.run,'7');
   assert.equal(x.tasks[x.flight.key].group,'background');
+});
+
+function queuedFixture() {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true; s.catalogueAt=1000000000;
+  s.repos=[{repo:'a/b',activityAt:0,idle:3,runs:[{id:7,status:'queued',followupAt:0}]}];
+  return s;
+}
+test('queued lookups back off through 15, 30, 60, 120, 240 and 300 seconds', () => {
+  const s=queuedFixture(); let at=0;
+  for(const [level,delay] of [[0,15000],[1,30000],[2,60000],[3,120000],[4,240000],[5,300000],[5,300000]]) {
+    assert.equal(polling.next(s,at+delay-1),null);
+    assert.equal(s.wakeAt,at+delay);
+    const request=polling.next(s,at+delay); assert.equal(request.kind,'run');
+    at+=delay+1000;
+    polling.complete(s,response(request,{id:7,status:'queued'}),at);
+    assert.equal(s.queued['a/b:7'],Math.min(5,level+1));
+  }
+});
+test('a backed-off queued task is created only at its full delay with that due time', () => {
+  const s=queuedFixture(); s.queued['a/b:7']=3; s.repos[0].runs[0].followupAt=5000;
+  polling.seed(s,20000);
+  assert.equal(s.tasks['run:a/b:7'],undefined);
+  polling.seed(s,125000);
+  assert.equal(s.tasks['run:a/b:7'].due,125000);
+});
+test('watched, selected and awaiting-final queued runs keep the 15-second delay', () => {
+  for(const mode of ['watched','selected','awaitingFinal']) {
+    const s=queuedFixture(), run=s.repos[0].runs[0];
+    if(mode==='watched') assert.equal(polling.watch(s,'a/b',7,0),'watching');
+    if(mode==='selected') { s.repos[0].summaryAt=0; s.repos[0].activityAt=15000; polling.select(s,'a/b','',{},0,true); }
+    if(mode==='awaitingFinal') run.awaitingFinal=true;
+    s.queued['a/b:7']=5;
+    assert.equal(polling.next(s,0),null);
+    assert.equal(s.wakeAt,15000,mode);
+    const request=polling.next(s,15000); assert.equal(request.kind,'run',mode);
+  }
+});
+test('selected and watched lookups that stay queued do not raise the level', () => {
+  for(const mode of ['selected','watched']) {
+    const s=queuedFixture();
+    if(mode==='watched') assert.equal(polling.watch(s,'a/b',7,0),'watching');
+    else { s.repos[0].summaryAt=0; s.repos[0].activityAt=15000; polling.select(s,'a/b','',{},0,true); }
+    const request=polling.next(s,15000); assert.equal(request.kind,'run',mode);
+    polling.complete(s,response(request,{id:7,status:'queued'}),16000);
+    assert.equal(s.queued['a/b:7'],undefined,mode);
+  }
+});
+test('a running lookup and selection clear queued levels', () => {
+  const s=queuedFixture(); s.queued['a/b:7']=1;
+  const request=polling.next(s,30000); assert.equal(request.kind,'run');
+  polling.complete(s,response(request,{id:7,status:'in_progress'}),31000);
+  assert.equal(s.queued['a/b:7'],undefined);
+  const selected=queuedFixture(); selected.queued['a/b:7']=5;
+  polling.select(selected,'a/b','',{},0,true);
+  assert.equal(selected.queued['a/b:7'],undefined);
+  polling.select(selected,'','',{},100,true);
+  assert.equal(polling.next(selected,15000).kind,'run');
+});
+test('summary completion clears a queued level while the run stays cached', () => {
+  const s=queuedFixture();
+  let request=polling.next(s,15000); assert.equal(request.kind,'run');
+  polling.select(s,'a/b','',{},15100,true);
+  polling.complete(s,response(request,{id:7,status:'queued'}),15200);
+  assert.equal(s.queued['a/b:7'],undefined,'a lookup finishing after selection does not raise');
+  s.queued['a/b:7']=1; // a level left from before selection
+  request=polling.next(s,16000); assert.equal(request.kind,'summary');
+  polling.complete(s,response(request,[{id:7,status:'completed'}]),16100);
+  assert.equal(s.repos[0].runs[0].status,'completed');
+  assert.equal(s.queued['a/b:7'],undefined);
+});
+test('trim, dropped activity and catalogue removal clear queued levels', () => {
+  const trim=queuedFixture(), r=trim.repos[0];
+  r.runs=completedRuns(1,10); trim.queued['a/b:1']=3;
+  polling.mergeRuns(trim,r,[{id:11,status:'completed'}]);
+  assert.equal(trim.queued['a/b:1'],undefined);
+  const dropped=queuedFixture(), d=dropped.repos[0];
+  d.runs=[{id:7,status:'in_progress'}]; dropped.queued['a/b:7']=3;
+  polling.activity(dropped,d,[{id:8,status:'in_progress'}],1000,250);
+  assert.equal(dropped.queued['a/b:7'],undefined);
+  const removed=queuedFixture(); removed.queued['a/b:7']=5;
+  polling.manual(removed,0,true);
+  let request=polling.next(removed,0); assert.equal(request.kind,'catalogue');
+  polling.complete(removed,response(request,[]),1000);
+  assert.equal(removed.queued['a/b:7'],undefined);
+  polling.manual(removed,2000,true);
+  request=polling.next(removed,2000); assert.equal(request.kind,'catalogue');
+  polling.complete(removed,response(request,[{repo:'a/b'}]),3000);
+  removed.repos[0].activityAt=3000; removed.repos[0].idle=3;
+  removed.repos[0].runs=[{id:7,status:'queued',followupAt:3000}];
+  assert.equal(polling.next(removed,18000).kind,'run');
+});
+test('a five-minute queued wait does not repeatedly seed', () => {
+  const s=queuedFixture(); s.queued['a/b:7']=5;
+  assert.equal(polling.next(s,0),null); assert.equal(s.wakeAt,300000);
+  const before=s.seeds;
+  for(let now=250;now<300000;now+=250) assert.equal(polling.next(s,now),null);
+  assert.ok(s.seeds-before<10); assert.equal(polling.next(s,300000).kind,'run');
+});
+test('a watch respects a lookup error retry and advances an ordinary queued wait', () => {
+  const retry=queuedFixture();
+  let request=polling.next(retry,15000); assert.equal(request.kind,'run');
+  polling.complete(retry,{...response(request,{}),error:'offline',errorType:'network'},16000);
+  assert.equal(retry.queued['a/b:7'],undefined);
+  assert.equal(polling.watch(retry,'a/b',7,17000),'watching');
+  assert.equal(polling.next(retry,20000),null);
+  request=polling.next(retry,21000); assert.equal(request.kind,'run');
+  const ordinary=queuedFixture(); ordinary.queued['a/b:7']=5; ordinary.repos[0].runs[0].followupAt=16000;
+  assert.equal(polling.next(ordinary,0),null);
+  assert.equal(polling.watch(ordinary,'a/b',7,17000),'watching');
+  assert.equal(polling.next(ordinary,17000),null);
+  assert.equal(ordinary.wakeAt,30000);
+  request=polling.next(ordinary,30000); assert.equal(request.kind,'run');
+});
+test('resetHost drops queued lookup levels', () => {
+  const s=queuedFixture(); s.queued['a/b:7']=5;
+  assert.equal(Object.keys(polling.resetHost(s).queued).length,0);
 });
 
 for(const [status,errorType] of [['in_progress',''],['completed',''],['queued','permission']])
@@ -543,7 +828,7 @@ test('an expanded run beyond the recent ten keeps its details', () => {
 // Step 10: a host change replaces the state and drops the old flight.
 test('resetHost starts a new generation and ignores the old reply', () => {
   const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
-  x.repos=[{repo:'a/b'}]; x.details['a/b:7']={jobs:[]};
+  x.repos=[{repo:'a/b',idle:3,hinted:true}]; x.details['a/b:7']={jobs:[]};
   const old=polling.next(x,0); assert.equal(old.kind,'activity');
   x.cooldown=5;
   const y=polling.resetHost(x);
@@ -553,8 +838,10 @@ test('resetHost starts a new generation and ignores the old reply', () => {
   assert.equal(y.generation,x.generation+1);
   assert.equal(polling.complete(y,response(old,[]),100),false);
   const fresh=polling.next(y,2000); assert.equal(fresh.kind,'catalogue');
+  polling.complete(y,response(fresh,[{repo:'a/b'}]),2050);
+  assert.equal(y.repos[0].idle,undefined); assert.equal(y.repos[0].hinted,undefined);
   assert.equal(polling.complete(y,response(old,[{repo:'old/host'}]),2100),false);
-  assert.equal(y.repos.length,0);
+  assert.equal(y.repos.length,1);
 });
 
 test('idle polling seeds once until selection changes', () => {
@@ -775,3 +1062,33 @@ test('a matching reply that is no longer wanted still clears the flight', () => 
   assert.equal(s.flight,null);
 });
 
+
+// Measurement (#35): 137 projects (5 active within a day, 15 within a week, 117 older), org/r0 selected, 1s responses.
+// Baseline before #35: realistic 30 min 713 requests (idle 408); realistic 2 h 2830 (idle 1632); queued 30 min 1800 (lookups 1413).
+function scenario({duration, queued=0}) {
+  const DAY=86400000, age=i=>i<5?DAY/4:i<20?3*DAY:60*DAY;
+  const s=polling.create(), repos=Array.from({length:137},(_,i)=>({repo:`org/r${i}`,lastActivity:new Date(-age(i)).toISOString()}));
+  polling.open(s,0); polling.select(s,'org/r0','',{},0,false);
+  let flight=null, seeded=false; const counts={total:0};
+  for(let now=0;now<duration;now+=250) {
+    if(flight && now>=flight.end) {
+      const q=flight.req; let data=[],next=0;
+      if(q.kind==='catalogue') { data=q.page===1?repos.slice(0,100):repos.slice(100); next=q.page===1?2:0; }
+      if(q.kind==='run') data={id:Number(q.run),status:'queued',conclusion:'pending',run_attempt:1,name:'CI'};
+      polling.complete(s,response(q,data,next),now); flight=null;
+      if(queued && !seeded && q.kind==='catalogue' && s.catalogueComplete) {
+        seeded=true;
+        for(let i=0;i<queued;i++) s.repos.find(r=>r.repo===`org/r${i+1}`).runs=[{id:1000+i,status:'queued',conclusion:'pending',run_attempt:1}];
+        s.wakeAt=0;
+      }
+    }
+    const q=polling.next(s,now);
+    if(q) { counts.total++; const k=q.kind==='activity'?'activity/'+s.tasks[s.flight.key].group:q.kind; counts[k]=(counts[k]||0)+1; flight={req:q,end:now+1000}; }
+  }
+  return counts;
+}
+const realistic30=scenario({duration:1800000}), realistic2h=scenario({duration:7200000}), queued30=scenario({duration:1800000,queued:30});
+console.log('realistic 30 min', realistic30); console.log('realistic 2 h', realistic2h); console.log('queued 30 min', queued30);
+assert.ok(realistic30.total<500,`realistic 30 min ${realistic30.total}`);
+assert.ok(realistic2h['activity/background']<653,`realistic 2 h background activity ${realistic2h['activity/background']}`);
+assert.ok(queued30.run<707,`queued 30 min lookups ${queued30.run}`);

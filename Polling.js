@@ -1,20 +1,30 @@
 // One page at a time; all time is injected so scheduling can be tested without Qt.
 var phases = ["recent", "running", "pending", "created", "waiting_for_resource", "preparing"];
 var WATCH_CAP=5, WATCH_TTL=21600000, WATCH_EVERY=30000;
+var IDLE=[600000,1200000,2400000,3600000];
 var FINISHED=["success","failed","canceled","skipped"];
 function create() {
     // Every exported writer invalidates wakeAt; seeds is test-only.
     return {opened:false, generation:0, serial:0, order:0, slot:0, starts:[], cooldown:0,
         rateFailures:0, auth:false, tasks:{}, flight:null, repos:[], details:{}, selected:"", inspected:"",
-        stableAt:0, expanded:{}, pinned:{}, catalogueAt:0, catalogueComplete:false, discover:true,
+        stableAt:0, expanded:{}, pinned:{}, catalogueAt:0, catalogueComplete:false, discover:true, periodic:false,
         error:"", catalogueError:"", requests:0, lastRequest:"", lastStarted:0, wakeAt:0, seeds:0,
-        watches:{}, events:[]};
+        watches:{}, queued:{}, events:[]};
 }
 function resetHost(s) {
     return Object.assign(create(),{opened:s.opened,starts:s.starts,serial:s.serial,generation:s.generation+1});
 }
 function key(kind, repo, run) { return kind + ":" + (repo || "") + ":" + (run || ""); }
 function age(at, interval) { return at === undefined ? -Infinity : at + interval; }
+function start(r,now) {
+    var a=now-Date.parse(r.lastActivity);
+    if (!isFinite(a)) return 0;
+    return a<86400000 ? 0 : a<604800000 ? 1 : 3;
+}
+function queuedDelay(s,r,run) {
+    return run.status==="queued" && !run.awaitingFinal && r.repo!==s.selected && !s.watches[r.repo+":"+run.id]
+        ? Math.min(300000,15000*Math.pow(2,s.queued[r.repo+":"+run.id]||0)) : 15000;
+}
 function repoFor(s, name) { return s.repos.filter(function(r) { return r.repo === name })[0]; }
 function runFor(s, repo, id) {
     var r = repoFor(s, repo);
@@ -64,7 +74,8 @@ function open(s, now) {
     s.wakeAt=0;
     s.opened = true; s.generation++; s.auth = false;
     if (s.flight) s.flight.generation=s.generation;
-    if ((!s.catalogueComplete || now - s.catalogueAt >= 300000) && !s.catalogueError) s.discover = true;
+    if (!s.catalogueError) s.discover = true;
+    s.periodic=false;
     s.stableAt = now;
 }
 function close(s) {
@@ -77,7 +88,12 @@ function close(s) {
 }
 function select(s, repo, run, expanded, now, immediate) {
     s.wakeAt=0;
-    if (s.selected !== repo) s.stableAt = now + (immediate ? 0 : 250);
+    if (s.selected !== repo) {
+        s.stableAt = now + (immediate ? 0 : 250);
+        var r=repoFor(s,repo);
+        if (r) r.idle=0;
+        if (repo) Object.keys(s.queued).forEach(function(id) { if (id.slice(0,repo.length+1)===repo+":") delete s.queued[id]; });
+    }
     else if (immediate) s.stableAt = now;
     s.selected = repo || ""; s.inspected = String(run || ""); s.expanded = expanded || {};
 }
@@ -92,10 +108,16 @@ function pin(s, names) {
 function manual(s, now, catalogue) {
     s.wakeAt=0;
     s.auth = false;
-    if (catalogue) { s.catalogueError = ""; s.discover = true; return; }
+    if (catalogue) {
+        s.repos.forEach(function(r) { r.idle=0; });
+        s.catalogueError = ""; s.discover = true; s.periodic=false;
+        var task=s.tasks[key("catalogue")];
+        if (task) restart(s,task,now);
+        return;
+    }
     var r = repoFor(s, s.selected);
     if (r) {
-        r.blocked = false; r.error = ""; s.stableAt = now;
+        r.idle=0; r.blocked = false; r.error = ""; s.stableAt = now;
         restart(s,ensure(s, "summary", r.repo, "", "interactive", now),now);
         if (s.inspected && s.expanded[r.repo + ":" + s.inspected]) {
             if (s.details[r.repo+":"+s.inspected]) s.details[r.repo+":"+s.inspected].unavailable=false;
@@ -117,10 +139,14 @@ function seed(s, now) {
             (t.kind === "jobs" && (t.repo !== s.selected || t.run !== s.inspected || !s.expanded[t.repo + ":" + t.run])))
             delete s.tasks[id];
     });
+    if (!s.discover && s.catalogueComplete && !s.catalogueError) {
+        if (now>=s.catalogueAt+300000) { s.discover=true; s.periodic=true; }
+        else wake=Math.min(wake,s.catalogueAt+300000);
+    }
     if (s.discover) ensure(s, "catalogue", "", "", "background", now);
     if (s.stableAt>now) wake=Math.min(wake,s.stableAt);
     var backgroundQueued=Object.keys(s.tasks).some(function(id) { var t=s.tasks[id]; return t.kind==="activity" && t.group==="background" });
-    s.repos.slice().sort(function(a,b) { return (a.activityAt === undefined ? -Infinity : a.activityAt) - (b.activityAt === undefined ? -Infinity : b.activityAt) }).forEach(function(r) {
+    s.repos.slice().sort(function(a,b) { return (b.hinted?1:0)-(a.hinted?1:0) || (a.activityAt === undefined ? -Infinity : a.activityAt) - (b.activityAt === undefined ? -Infinity : b.activityAt) }).forEach(function(r) {
         if (r.archived || r.disabled || r.blocked) return;
         var selected = r.repo === s.selected && now >= s.stableAt;
         if (selected && now >= age(r.summaryAt, 60000)) ensure(s, "summary", r.repo, "", "interactive", age(r.summaryAt,60000));
@@ -130,10 +156,10 @@ function seed(s, now) {
         if (summary && !(s.flight && s.flight.key === activityKey)) delete s.tasks[activityKey];
         if (!summary) {
             var pinned = !selected && !(r.active > 0) && !!s.pinned[r.repo];
-            var interval = selected ? 10000 : r.active > 0 ? 15000 : pinned ? 60000 : 600000;
+            var interval = selected ? 10000 : r.active > 0 ? 15000 : pinned ? 60000 : IDLE[r.idle||0];
             var group = selected ? "interactive" : r.active > 0 ? "active" : pinned ? "pinned" : "background";
-            if (now >= age(r.activityAt, interval) && (group!=="background" || !backgroundQueued || s.tasks[activityKey])) {
-                ensure(s, "activity",r.repo,"",group,age(r.activityAt,interval));
+            if ((group==="background" && r.hinted || now >= age(r.activityAt, interval)) && (group!=="background" || !backgroundQueued || r.hinted || s.tasks[activityKey])) {
+                ensure(s, "activity",r.repo,"",group,group==="background" && r.hinted ? now : age(r.activityAt,interval));
                 if (group==="background") backgroundQueued=true;
             }
             else if (s.tasks[activityKey] && !(s.flight && s.flight.key === activityKey) && !s.tasks[activityKey].failures)
@@ -143,9 +169,11 @@ function seed(s, now) {
         }
         (r.runs || []).forEach(function(run) {
             if (run.status==="queued" && run.followupAt===undefined && !run.lookupError && r.repo!==s.selected) run.followupAt=now;
-            if (run.awaitingFinal || run.followupAt !== undefined && run.status !== "completed" && run.status !== "in_progress")
-                if (now >= age(run.followupAt,15000)) ensure(s,"run",r.repo,run.id,selected ? "interactive" : run.status==="queued" ? "background" : "active",age(run.followupAt,15000));
-                else wake=Math.min(wake,age(run.followupAt,15000));
+            var due=age(run.followupAt,queuedDelay(s,r,run));
+            if (run.awaitingFinal || run.followupAt !== undefined && run.status !== "completed" && run.status !== "in_progress") {
+                if (now >= due) ensure(s,"run",r.repo,run.id,selected ? "interactive" : run.status==="queued" ? "background" : "active",due);
+                else wake=Math.min(wake,due);
+            }
         });
         if (selected && s.inspected && s.expanded[r.repo + ":" + s.inspected]) {
             var run = runFor(s,r.repo,s.inspected), detail = s.details[r.repo + ":" + s.inspected];
@@ -218,6 +246,7 @@ function invalidateJobs(s,r,incoming) {
 function mergeRuns(s,r,incoming) {
     s.wakeAt=0;
     incoming.forEach(function(run) {
+        if (run.status!=="queued") delete s.queued[r.repo+":"+run.id];
         var old=runFor(s,r.repo,run.id);
         var jobs=s.tasks[key("jobs",r.repo,run.id)];
         if (old && (old.run_attempt || 1)!==(run.run_attempt || 1) && jobs) restart(s,jobs,s.clock || 0);
@@ -231,7 +260,7 @@ function trimRuns(s,r,runs) {
     s.wakeAt=0;
     var completed=0, old=(r.runs || []).map(function(run) { return run.id });
     r.runs=runs.sort(function(a,b) { return (a.status==="completed")-(b.status==="completed") || b.id-a.id }).filter(function(run) { return run.status!=="completed" || ++completed<=10 || kept(s,r,run) });
-    old.forEach(function(id) { if (!r.runs.some(function(run) { return run.id===id })) delete s.details[r.repo+":"+id]; });
+    old.forEach(function(id) { if (!r.runs.some(function(run) { return run.id===id })) { delete s.details[r.repo+":"+id]; delete s.queued[r.repo+":"+id]; } });
 }
 function kept(s,r,run) {
     return s.expanded[r.repo+":"+run.id] || r.repo===s.selected && String(run.id)===s.inspected || s.watches[r.repo+":"+run.id];
@@ -252,10 +281,14 @@ function activity(s,r,items,now,total) {
         }
     });
     r.runs=r.runs.filter(function(run) { return !dropped[run.id] });
-    Object.keys(dropped).forEach(function(id) { delete s.details[r.repo+":"+id]; });
+    Object.keys(dropped).forEach(function(id) { delete s.details[r.repo+":"+id]; delete s.queued[r.repo+":"+id]; });
     items.forEach(function(run) { var cached=runFor(s,r.repo,run.id); delete cached.awaitingFinal; delete cached.followupAt; });
     r.activeFromTotal=typeof total==="number" && total>=0;
     r.active=typeof total==="number" && total>=0 ? total : items.filter(function(run) { return run.status==="in_progress" }).length;
+    if (r.active>0 || r.repo===s.selected) r.idle=0;
+    else if (r.idle===undefined) r.idle=start(r,now);
+    else r.idle=Math.min(3,r.idle+1);
+    delete r.hinted;
     if (typeof total==="number") r.hidden=Object.assign({},r.hidden,{running:hiddenCount(total,items)});
     r.activityAt=now; r.checked=new Date(now).toISOString(); r.error="";
 }
@@ -314,9 +347,13 @@ function complete(s,reply,now) {
         if (r) {
             var resolved=Object.assign({},data,{awaitingFinal:false,followupAt:now});
             mergeRuns(s,r,[resolved]);
+            var id=t.repo+":"+t.run;
+            // Only a lookup that backs off raises the level; mergeRuns clears it once the run leaves the queue.
+            if (resolved.status==="queued" && t.repo!==s.selected && !s.watches[id]) s.queued[id]=Math.min(5,(s.queued[id]||0)+1);
             var running=(r.runs || []).filter(function(run) { return run.status==="in_progress" && !run.awaitingFinal }).length;
             // GitLab's total already excludes runs that left; a lookup can only add running ones it has not counted yet.
             r.active=r.activeFromTotal ? Math.max(r.active || 0,running) : running;
+            if (r.active>0) r.idle=0;
             if (s.opened && resolved.status==="completed" && t.repo===s.selected && t.run===s.inspected && s.expanded[t.repo+":"+t.run])
                 ensure(s,"jobs",t.repo,t.run,"interactive",now);
         }
@@ -326,7 +363,12 @@ function complete(s,reply,now) {
     if (t.kind==="catalogue") {
         data.forEach(function(repo) {
             var existing=repoFor(s,repo.repo);
-            if (existing) { Object.assign(existing,repo); existing.blocked=false; existing.error=""; }
+            if (existing) {
+                var changed=existing.lastActivity && repo.lastActivity && existing.lastActivity!==repo.lastActivity && existing.activityAt!==undefined;
+                Object.assign(existing,repo);
+                if (!s.periodic) { existing.blocked=false; existing.error=""; }
+                if (changed) { existing.idle=0; existing.hinted=true; }
+            }
             else s.repos.push(repo);
         });
     } else if (r && t.kind==="summary") mergeRuns(s,r,data);
@@ -335,10 +377,11 @@ function complete(s,reply,now) {
         var names=t.items.map(function(repo) { return repo.repo });
         var gone=s.repos.filter(function(repo) { return names.indexOf(repo.repo)<0 }).map(function(repo) { return repo.repo });
         Object.keys(s.details).forEach(function(id) { if (gone.indexOf(id.slice(0,id.lastIndexOf(":")))>=0) delete s.details[id]; });
+        Object.keys(s.queued).forEach(function(id) { if (gone.indexOf(id.slice(0,id.lastIndexOf(":")))>=0) delete s.queued[id]; });
         s.repos=s.repos.filter(function(repo) { return names.indexOf(repo.repo)>=0 });
         // Most recently active first; gitlab.com cannot sort membership by activity server-side.
         s.repos.sort(function(a,b) { return String(b.lastActivity || "").localeCompare(String(a.lastActivity || "")) || names.indexOf(a.repo)-names.indexOf(b.repo) });
-        s.catalogueComplete=true; s.catalogueAt=now; s.discover=false;
+        s.catalogueComplete=true; s.catalogueAt=now; s.discover=false; s.periodic=false;
     } else if (r && t.kind==="activity") activity(s,r,t.items,now,reply.total);
     else if (r && t.kind==="summary") {
         t.all=union(t.all,t.items);
