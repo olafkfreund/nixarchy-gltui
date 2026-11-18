@@ -8,7 +8,7 @@ It is the GitLab sibling of [nixarchy-ghtui](https://github.com/olafkfreund/nixa
 
 - Omarchy shell with the panel plugin contract and `qs.Commons` / `qs.Ui` components.
 - [`glab`](https://gitlab.com/gitlab-org/cli), authenticated with `glab auth login` for every host you use, or with an environment token (see [Authentication](#authentication)). The token needs the `read_api` scope.
-- Python 3, `xdg-open` for the browser shortcut, and `wl-copy` (wl-clipboard) for the copy keys, and a terminal that `xdg-terminal-exec` can start with a command (Omarchy's terminals can) for the log key.
+- Python 3, `xdg-open` for the browser shortcut, `wl-copy` (wl-clipboard) for the copy keys, and a terminal that `xdg-terminal-exec` can start with a command (Omarchy's terminals can) for the log key.
 
 On NixOS, missing dependencies belong in your declarative configuration. Do not install them with pacman or an imperative Nix profile.
 
