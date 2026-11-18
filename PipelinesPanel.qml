@@ -23,6 +23,15 @@ Item {
     property var entries: []
     property int cursor: 0
     property int zoomPercent: 100
+    property bool helpOpen: false
+    property string helpText: ""
+    property string notice: ""
+    property var copyCommand: ["wl-copy", "--"]
+    property int copySerial: 0
+    property bool copyStarted: false
+    property string copyLabel: ""
+    readonly property string searchHint: "↑↓ select  Enter open  Tab navigate  Esc clear"
+    readonly property string listHint: "↑↓ move  ←→ expand  g/G ends  / search  e failure  y/Y copy  o GitLab  ? help  q close"
     readonly property real borderWidth: Math.max(1, Style.space(2))
     property alias filterText: searchField.text
     readonly property bool filtering: searchField.activeFocus
@@ -77,6 +86,9 @@ Item {
     readonly property Item errorItem: errorStrip
     readonly property Item emptyItem: emptyLabel
     readonly property Item placeholderItem: placeholder
+    readonly property Item helpItem: helpOverlay
+    readonly property Item helpFlick: helpFlickable
+    readonly property alias footerHint: hint.text
 
     function open(payload) {
         root.now = Date.now()
@@ -92,6 +104,10 @@ Item {
     }
     function close() {
         opened = false
+        helpOpen = false
+        notice = ""
+        noticeTimer.stop()
+        copySerial++
         Polling.close(polling)
         requestProc.running = false
     }
@@ -134,6 +150,32 @@ Item {
         cursor = Math.max(0, Math.min(entries.length - 1, cursor + delta))
         list.positionViewAtIndex(cursor, ListView.Contain)
         selectionChanged(false)
+    }
+    function nextFailure() {
+        var i = Model.nextFailure(entries, cursor)
+        if (i < 0) { notify("No failures in the list"); return }
+        cursor = i
+        list.positionViewAtIndex(i, ListView.Contain)
+        selectionChanged(false)
+    }
+    function notify(t) { notice = t; noticeTimer.restart() }
+    function copy(what) {
+        var r = Model.copyText(current, what)
+        if (!r.text) { notify(r.label); return }
+        if (copyProc.running) return
+        copyStarted = false
+        copyLabel = r.label
+        copyProc.serial = copySerial
+        copyProc.command = copyCommand.concat([r.text])
+        copyProc.running = true
+    }
+    function toggleHelp() {
+        helpOpen = !helpOpen
+        if (helpOpen && !helpText && !helpProc.running) helpProc.running = true
+    }
+    function scrollHelp(delta) {
+        var f = helpFlickable
+        f.contentY = Math.max(0, Math.min(Math.max(0, f.contentHeight - f.height), f.contentY + delta))
     }
     function expand(collapse) {
         var row = current
@@ -276,6 +318,23 @@ Item {
             if (code !== 0) console.warn("GitLab Pipelines menu registration failed: " + registrationErrors.text.trim())
         }
     }
+    Timer { id: noticeTimer; interval: 2000; onTriggered: root.notice = "" }
+    Process {
+        id: copyProc
+        property int serial: 0
+        onStarted: root.copyStarted = true
+        onExited: function(code) {
+            if (serial === root.copySerial) root.notify(code === 0 ? root.copyLabel : "Copy failed")
+        }
+        // Quickshell 0.3.1: a missing binary emits neither started nor exited, only running=false.
+        onRunningChanged: if (!running && !root.copyStarted && serial === root.copySerial) root.notify("Copy failed")
+    }
+    Process {
+        id: helpProc
+        command: ["bash", root.localPath("keybindings.sh"), "--print"]
+        stdout: StdioCollector { id: helpOutput }
+        onExited: function(code) { if (code === 0) root.helpText = helpOutput.text.trim() }
+    }
     ListModel { id: visibleRows; dynamicRoles: true }
     FileView {
         path: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
@@ -331,7 +390,23 @@ Item {
                 Keys.onPressed: function(event) {
                     if (root.zoomKey(event)) { event.accepted = true; return }
                     event.accepted = true
-                    if (event.key === Qt.Key_Escape) {
+                    if (root.helpOpen) {
+                        var line = root.zf(Style.font.body) * 1.4
+                        if (event.text === "?" || event.key === Qt.Key_Escape || event.key === Qt.Key_Q) root.helpOpen = false
+                        else if (event.key === Qt.Key_Down || event.key === Qt.Key_J) root.scrollHelp(line)
+                        else if (event.key === Qt.Key_Up || event.key === Qt.Key_K) root.scrollHelp(-line)
+                        else if (event.key === Qt.Key_PageDown) root.scrollHelp(helpFlickable.height)
+                        else if (event.key === Qt.Key_PageUp) root.scrollHelp(-helpFlickable.height)
+                        return
+                    }
+                    var plain = !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
+                    var shift = !!(event.modifiers & Qt.ShiftModifier)
+                    if (plain && event.text === "?") root.toggleHelp()
+                    else if (plain && event.key === Qt.Key_Y) root.copy(shift ? "sha" : "url")
+                    else if (plain && event.key === Qt.Key_G) root.move(shift ? root.entries.length : -root.entries.length)
+                    else if (plain && event.key === Qt.Key_Q && !shift) root.close()
+                    else if (plain && event.key === Qt.Key_E && !shift) root.nextFailure()
+                    else if (event.key === Qt.Key_Escape) {
                         if (root.filterText) root.filterText = ""
                         else root.close()
                     } else if (event.key === Qt.Key_Down || event.key === Qt.Key_J) root.move(1)
@@ -515,7 +590,7 @@ Item {
                         Text {
                             id: hint
                             width: parent.width - (zoomLabel.visible ? zoomLabel.implicitWidth + root.zs(Style.spacing.sm) : 0)
-                            text: root.cooldownText || "↑↓ move  ←→ expand  / search  r refresh  R projects  o GitLab  Ctrl +/- zoom  Esc close"
+                            text: root.notice || root.cooldownText || (root.filtering ? root.searchHint : root.listHint)
                             color: Commons.Color.menu.text
                             opacity: 0.65
                             font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.caption) }
@@ -530,6 +605,36 @@ Item {
                             color: Commons.Color.menu.text
                             opacity: 0.65
                             font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.caption) }
+                            textFormat: Text.PlainText
+                        }
+                    }
+                }
+                Rectangle {
+                    id: helpOverlay
+                    anchors.fill: parent
+                    color: Commons.Color.menu.background
+                    visible: root.helpOpen
+                    Text {
+                        id: helpCaption
+                        width: parent.width
+                        text: "? or Esc to close"
+                        color: Commons.Color.menu.text
+                        opacity: 0.65
+                        font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.caption) }
+                        textFormat: Text.PlainText
+                    }
+                    Flickable {
+                        id: helpFlickable
+                        anchors { top: helpCaption.bottom; topMargin: root.zs(Style.spacing.md); left: parent.left; right: parent.right; bottom: parent.bottom }
+                        clip: true
+                        contentHeight: helpBody.implicitHeight
+                        Text {
+                            id: helpBody
+                            width: helpFlickable.width
+                            wrapMode: Text.Wrap
+                            text: root.helpText || "Help unavailable — see the README"
+                            color: Commons.Color.menu.text
+                            font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.body) }
                             textFormat: Text.PlainText
                         }
                     }
