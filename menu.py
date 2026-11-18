@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlsplit
 
 
 # Keep source offsets while letting the standard JSON decoder validate values.
@@ -106,19 +107,64 @@ def session_tree(instances):
     return str(trees.pop())
 
 
+def remote(url):
+    url = url.strip()
+    if '://' in url:
+        try:
+            parsed = urlsplit(url)
+            if parsed.scheme not in ('ssh', 'http', 'https') or not parsed.hostname:
+                return None
+            host, path = parsed.hostname, parsed.path
+        except ValueError:
+            return None
+    else:
+        match = re.fullmatch(r'(?:[^@/\s]+@)?([^@/:\s\[\]]+):([^/].*)', url)
+        if not match:
+            return None
+        host, path = match.group(1).lower(), match.group(2)
+    path = path.strip('/').removesuffix('.git')
+    if any(character.isspace() for character in path) or '%' in path:
+        return None
+    parts = path.split('/')
+    if len(parts) < 2 or any(part in ('', '.', '..') for part in parts):
+        return None
+    return host, path
+
+
 def main():
     try:
-        if sys.argv[1:] == ["register"]:
+        args = sys.argv[1:]
+        if args == ["register"]:
             register_menu()
             return 0
-        if sys.argv[1:] not in ([], ["keys"], ["toggle"]):
-            raise ValueError("Usage: menu.py [keys|toggle|register]")
+        if args not in ([], ["keys"], ["toggle"], ["open"]) and not (len(args) == 2 and args[0] == "open"):
+            raise ValueError("Usage: menu.py [keys|toggle|register|open [FILTER]]")
+        payload = {}
+        if args and args[0] == "open":
+            if len(args) == 2:
+                payload = {"filter": args[1]}
+            else:
+                try:
+                    result = subprocess.run(["git", "remote", "get-url", "origin"],
+                                            capture_output=True, text=True, timeout=5, check=False)
+                except (OSError, subprocess.TimeoutExpired):
+                    result = None
+                if result is None or result.returncode != 0:
+                    print("GitLab Pipelines: no Git origin remote here", file=sys.stderr)
+                else:
+                    url = result.stdout.strip()
+                    parsed = remote(url)
+                    if parsed is None:
+                        # The URL is not echoed: it may carry a token (https://oauth2:TOKEN@host/…).
+                        print("GitLab Pipelines: unsupported Git origin remote", file=sys.stderr)
+                    else:
+                        payload = {"filter": parsed[1], "host": parsed[0]}
         instances = json.loads(subprocess.check_output(
             ["quickshell", "list", "--all", "--json"], text=True, timeout=5))
         os.environ["OMARCHY_PATH"] = session_tree(instances)
         command = (["bash", str(Path(__file__).with_name("keybindings.sh"))]
-                   if sys.argv[1:] == ["keys"] else
-                   ["omarchy-shell", "shell", "toggle" if sys.argv[1:] == ["toggle"] else "summon", "olafkfreund.gitlab-pipelines", "{}"])
+                   if args == ["keys"] else
+                   ["omarchy-shell", "shell", "toggle" if args == ["toggle"] else "summon", "olafkfreund.gitlab-pipelines", json.dumps(payload)])
         os.execvp(command[0], command)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"GitLab Pipelines: {error}", file=sys.stderr)

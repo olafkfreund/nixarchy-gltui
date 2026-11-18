@@ -1,10 +1,13 @@
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location("menu", Path(__file__).resolve().parents[1] / "menu.py")
 menu = importlib.util.module_from_spec(spec)
@@ -12,6 +15,90 @@ spec.loader.exec_module(menu)
 
 
 class MenuTest(unittest.TestCase):
+    def test_remote(self):
+        valid = {
+            'git@host:group/sub/project.git': ('host', 'group/sub/project'),
+            'ssh://git@host:2222/group/sub/project.git': ('host', 'group/sub/project'),
+            'https://host:8443/group/sub/project.git/': ('host', 'group/sub/project'),
+            'git@host:g/p': ('host', 'g/p'),
+            'https://u@Host/g/s/p/': ('host', 'g/s/p'),
+            '  https://host/g/p  ': ('host', 'g/p'),
+        }
+        for url, expected in valid.items():
+            with self.subTest(url=url):
+                self.assertEqual(menu.remote(url), expected)
+        invalid = ('/local/path', 'file:///x/y', 'https://host/', 'https://host/p',
+                   'git@host:/abs/path', 'https://host/g/../p', 'https://host/g%72oup/p',
+                   'https://[broken/g/p', 'git@[::1]:g/p.git', 'https://host/g/p q',
+                   'ftp://host/g/p')
+        for url in invalid:
+            with self.subTest(url=url):
+                self.assertIsNone(menu.remote(url))
+
+    def call_main(self, args, git_result=None):
+        stderr = io.StringIO()
+        events = []
+        def git_call(*_args, **_kwargs):
+            events.append('git')
+            if isinstance(git_result, Exception):
+                raise git_result
+            return git_result
+        def quickshell_call(*_args, **_kwargs):
+            events.append('quickshell')
+            return '[]'
+        with patch.object(sys, 'argv', ['menu.py', *args]), \
+                patch.object(menu.subprocess, 'check_output', side_effect=quickshell_call) as quickshell, \
+                patch.object(menu.subprocess, 'run', side_effect=git_call) as git, \
+                patch.object(menu, 'session_tree', return_value='/shell'), \
+                patch.object(menu.os, 'execvp') as execvp, \
+                patch.object(sys, 'stderr', stderr):
+            result = menu.main()
+        return result, stderr.getvalue(), git, quickshell, execvp, events
+
+    def test_open_filter(self):
+        filter_text = 'a"b\\c\n$(x)'
+        result, stderr, git, quickshell, execvp, _ = self.call_main(['open', filter_text])
+        self.assertIsNone(result)
+        self.assertEqual(stderr, '')
+        git.assert_not_called()
+        quickshell.assert_called_once()
+        self.assertEqual(execvp.call_args.args[1][4], json.dumps({'filter': filter_text}))
+
+    def test_open_remote(self):
+        response = Mock(returncode=0, stdout='https://Host/g/s/p.git\n')
+        result, stderr, git, quickshell, execvp, events = self.call_main(['open'], response)
+        self.assertIsNone(result)
+        self.assertEqual(stderr, '')
+        git.assert_called_once_with(['git', 'remote', 'get-url', 'origin'],
+                                    capture_output=True, text=True, timeout=5, check=False)
+        self.assertEqual(events, ['git', 'quickshell'])
+        self.assertEqual(execvp.call_args.args[1],
+                         ['omarchy-shell', 'shell', 'summon', 'olafkfreund.gitlab-pipelines',
+                          json.dumps({'filter': 'g/s/p', 'host': 'host'})])
+
+    def test_open_without_remote(self):
+        cases = [
+            (Mock(returncode=2, stdout=''), 'no Git origin remote here'),
+            (Mock(returncode=0, stdout='file:///x/y'), 'unsupported Git origin remote'),
+            (Mock(returncode=0, stdout='https://oauth2:glpat-SECRET@host/p'), 'unsupported Git origin remote'),
+            (OSError('missing git'), 'no Git origin remote here'),
+            (subprocess.TimeoutExpired(['git'], 5), 'no Git origin remote here'),
+        ]
+        for response, message in cases:
+            with self.subTest(response=response):
+                result, stderr, _, _, execvp, _ = self.call_main(['open'], response)
+                self.assertIsNone(result)
+                self.assertEqual(stderr, f'GitLab Pipelines: {message}\n')
+                self.assertEqual(execvp.call_args.args[1][4], '{}')
+
+    def test_open_usage(self):
+        result, stderr, git, quickshell, execvp, _ = self.call_main(['open', 'a', 'b'])
+        self.assertEqual(result, 1)
+        self.assertEqual(stderr, 'GitLab Pipelines: Usage: menu.py [keys|toggle|register|open [FILTER]]\n')
+        git.assert_not_called()
+        quickshell.assert_not_called()
+        execvp.assert_not_called()
+
     def test_running_tree_and_ambiguous_instances(self):
         with tempfile.TemporaryDirectory() as directory:
             trees = [Path(directory) / name for name in ("running", "other")]
