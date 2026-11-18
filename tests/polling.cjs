@@ -17,6 +17,47 @@ if (!fs.existsSync('Polling.js')) process.exit(0);
 const polling = {};
 vm.createContext(polling);
 vm.runInContext(fs.readFileSync('Polling.js', 'utf8'), polling);
+test('recent idle projects back off from 10 to 20, 40, then 60 minutes', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  const r={repo:'a/b',lastActivity:new Date(0).toISOString()}; s.repos=[r];
+  for(const [now,level,wake] of [[0,0,600000],[600000,1,1800000],[1800000,2,4200000],[4200000,3,7800000],[7800000,3,11400000]]) {
+    polling.activity(s,r,[],now,0);
+    polling.seed(s,now);
+    assert.equal(r.idle,level);
+    assert.equal(s.wakeAt,wake);
+  }
+});
+test('last activity sets the first idle level and running activity resets it', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  const old={repo:'old/p',lastActivity:new Date(-60*86400000).toISOString()};
+  const threeDays={repo:'three/p',lastActivity:new Date(-3*86400000).toISOString()};
+  const unknown={repo:'unknown/p'};
+  s.repos=[old,threeDays,unknown];
+  for(const r of s.repos) polling.activity(s,r,[],0,0);
+  assert.deepEqual(s.repos.map(r=>r.idle),[3,1,0]);
+  polling.activity(s,old,[{id:7,status:'in_progress'}],1000,1);
+  assert.equal(old.idle,0);
+});
+test('a run lookup that finds a running pipeline resets idle back-off', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  const r={repo:'a/b',idle:3,active:0,activityAt:0}; s.repos=[r];
+  polling.ensure(s,'run','a/b','7','active',1000);
+  const request=polling.next(s,1000); assert.equal(request.kind,'run');
+  polling.complete(s,response(request,{id:7,status:'in_progress'}),1100);
+  assert.equal(r.active,1); assert.equal(r.idle,0);
+});
+test('selection and manual refresh reset idle back-off', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  const a={repo:'a/b',idle:3}, b={repo:'c/d',idle:3}; s.repos=[a,b];
+  polling.select(s,'a/b','',{},1000,false);
+  polling.select(s,'','',{},1100,false);
+  assert.equal(a.idle,0,'selection resets before debounce completes');
+  a.idle=3; polling.select(s,'a/b','',{},2000,true);
+  a.idle=3; polling.manual(s,2100,false);
+  assert.equal(a.idle,0); assert.equal(b.idle,3);
+  a.idle=3; polling.manual(s,2200,true);
+  assert.equal(a.idle,0); assert.equal(b.idle,0);
+});
 test('pins use a minute interval and separate queue group', () => {
   const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
   s.repos=['pin/one','pin/two','idle/one','idle/two'].map(repo=>({repo,activityAt:0}));
@@ -543,7 +584,7 @@ test('an expanded run beyond the recent ten keeps its details', () => {
 // Step 10: a host change replaces the state and drops the old flight.
 test('resetHost starts a new generation and ignores the old reply', () => {
   const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
-  x.repos=[{repo:'a/b'}]; x.details['a/b:7']={jobs:[]};
+  x.repos=[{repo:'a/b',idle:3,hinted:true}]; x.details['a/b:7']={jobs:[]};
   const old=polling.next(x,0); assert.equal(old.kind,'activity');
   x.cooldown=5;
   const y=polling.resetHost(x);
@@ -553,8 +594,10 @@ test('resetHost starts a new generation and ignores the old reply', () => {
   assert.equal(y.generation,x.generation+1);
   assert.equal(polling.complete(y,response(old,[]),100),false);
   const fresh=polling.next(y,2000); assert.equal(fresh.kind,'catalogue');
+  polling.complete(y,response(fresh,[{repo:'a/b'}]),2050);
+  assert.equal(y.repos[0].idle,undefined); assert.equal(y.repos[0].hinted,undefined);
   assert.equal(polling.complete(y,response(old,[{repo:'old/host'}]),2100),false);
-  assert.equal(y.repos.length,0);
+  assert.equal(y.repos.length,1);
 });
 
 test('idle polling seeds once until selection changes', () => {

@@ -1,6 +1,7 @@
 // One page at a time; all time is injected so scheduling can be tested without Qt.
 var phases = ["recent", "running", "pending", "created", "waiting_for_resource", "preparing"];
 var WATCH_CAP=5, WATCH_TTL=21600000, WATCH_EVERY=30000;
+var IDLE=[600000,1200000,2400000,3600000];
 var FINISHED=["success","failed","canceled","skipped"];
 function create() {
     // Every exported writer invalidates wakeAt; seeds is test-only.
@@ -15,6 +16,11 @@ function resetHost(s) {
 }
 function key(kind, repo, run) { return kind + ":" + (repo || "") + ":" + (run || ""); }
 function age(at, interval) { return at === undefined ? -Infinity : at + interval; }
+function start(r,now) {
+    var a=now-Date.parse(r.lastActivity);
+    if (!isFinite(a)) return 0;
+    return a<86400000 ? 0 : a<604800000 ? 1 : 3;
+}
 function repoFor(s, name) { return s.repos.filter(function(r) { return r.repo === name })[0]; }
 function runFor(s, repo, id) {
     var r = repoFor(s, repo);
@@ -77,7 +83,11 @@ function close(s) {
 }
 function select(s, repo, run, expanded, now, immediate) {
     s.wakeAt=0;
-    if (s.selected !== repo) s.stableAt = now + (immediate ? 0 : 250);
+    if (s.selected !== repo) {
+        s.stableAt = now + (immediate ? 0 : 250);
+        var r=repoFor(s,repo);
+        if (r) r.idle=0;
+    }
     else if (immediate) s.stableAt = now;
     s.selected = repo || ""; s.inspected = String(run || ""); s.expanded = expanded || {};
 }
@@ -92,10 +102,10 @@ function pin(s, names) {
 function manual(s, now, catalogue) {
     s.wakeAt=0;
     s.auth = false;
-    if (catalogue) { s.catalogueError = ""; s.discover = true; return; }
+    if (catalogue) { s.repos.forEach(function(r) { r.idle=0; }); s.catalogueError = ""; s.discover = true; return; }
     var r = repoFor(s, s.selected);
     if (r) {
-        r.blocked = false; r.error = ""; s.stableAt = now;
+        r.idle=0; r.blocked = false; r.error = ""; s.stableAt = now;
         restart(s,ensure(s, "summary", r.repo, "", "interactive", now),now);
         if (s.inspected && s.expanded[r.repo + ":" + s.inspected]) {
             if (s.details[r.repo+":"+s.inspected]) s.details[r.repo+":"+s.inspected].unavailable=false;
@@ -130,7 +140,7 @@ function seed(s, now) {
         if (summary && !(s.flight && s.flight.key === activityKey)) delete s.tasks[activityKey];
         if (!summary) {
             var pinned = !selected && !(r.active > 0) && !!s.pinned[r.repo];
-            var interval = selected ? 10000 : r.active > 0 ? 15000 : pinned ? 60000 : 600000;
+            var interval = selected ? 10000 : r.active > 0 ? 15000 : pinned ? 60000 : IDLE[r.idle||0];
             var group = selected ? "interactive" : r.active > 0 ? "active" : pinned ? "pinned" : "background";
             if (now >= age(r.activityAt, interval) && (group!=="background" || !backgroundQueued || s.tasks[activityKey])) {
                 ensure(s, "activity",r.repo,"",group,age(r.activityAt,interval));
@@ -256,6 +266,10 @@ function activity(s,r,items,now,total) {
     items.forEach(function(run) { var cached=runFor(s,r.repo,run.id); delete cached.awaitingFinal; delete cached.followupAt; });
     r.activeFromTotal=typeof total==="number" && total>=0;
     r.active=typeof total==="number" && total>=0 ? total : items.filter(function(run) { return run.status==="in_progress" }).length;
+    if (r.active>0 || r.repo===s.selected) r.idle=0;
+    else if (r.idle===undefined) r.idle=start(r,now);
+    else r.idle=Math.min(3,r.idle+1);
+    delete r.hinted;
     if (typeof total==="number") r.hidden=Object.assign({},r.hidden,{running:hiddenCount(total,items)});
     r.activityAt=now; r.checked=new Date(now).toISOString(); r.error="";
 }
@@ -317,6 +331,7 @@ function complete(s,reply,now) {
             var running=(r.runs || []).filter(function(run) { return run.status==="in_progress" && !run.awaitingFinal }).length;
             // GitLab's total already excludes runs that left; a lookup can only add running ones it has not counted yet.
             r.active=r.activeFromTotal ? Math.max(r.active || 0,running) : running;
+            if (r.active>0) r.idle=0;
             if (s.opened && resolved.status==="completed" && t.repo===s.selected && t.run===s.inspected && s.expanded[t.repo+":"+t.run])
                 ensure(s,"jobs",t.repo,t.run,"interactive",now);
         }
