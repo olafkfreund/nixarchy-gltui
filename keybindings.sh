@@ -22,6 +22,7 @@ Shift + R → Rediscover accessible projects
 o → Open selected project, pipeline or job on GitLab
 y → Copy the selected row's GitLab URL
 Shift + Y → Copy the pipeline's commit SHA
+p → Pin or unpin the selected project
 g / G → First or last row
 e → Next failed pipeline, stage or job
 ? → Show or hide this help in the panel

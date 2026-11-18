@@ -130,7 +130,7 @@ The catalogue and known activity stay in memory between openings. After five min
 
 ### Self-managed GitLab and settings
 
-The default host is `gitlab.com`. For a self-managed instance, add `host` to this plugin's entry in `~/.config/omarchy/shell.json`. You can also add `projects`, a list of project paths that are shown before discovery finishes; it does not limit discovery.
+The default host is `gitlab.com`. For a self-managed instance, add `host` to this plugin's entry in `~/.config/omarchy/shell.json`. You can also add `projects`, a list of project paths that are shown before discovery finishes; it does not limit discovery. `pinned` lists projects that sort first and are checked about every minute (see [Pinned projects](#pinned-projects)).
 
 ```json
 {
@@ -138,7 +138,8 @@ The default host is `gitlab.com`. For a self-managed instance, add `host` to thi
     {
       "id": "olafkfreund.gitlab-pipelines",
       "host": "gitlab.example.org",
-      "projects": ["group/subgroup/project"]
+      "projects": ["group/subgroup/project"],
+      "pinned": ["group/project"]
     }
   ]
 }
@@ -180,6 +181,7 @@ If that works, the stale token is in the session's environment. `omarchy-restart
 | o | Open the selected project, pipeline or job on GitLab |
 | y | Copy the selected row's GitLab URL |
 | Shift + Y | Copy the pipeline's commit SHA |
+| p | Pin or unpin the selected project |
 | g / G | First or last row |
 | e | Next failed pipeline, stage or job |
 | ? | Show or hide this help in the panel |
@@ -238,6 +240,16 @@ omarchy-shell shell summon olafkfreund.gitlab-pipelines '{"filter":"group/projec
 
 A remote on a different host than the panel's shows a notice instead of filtering. Only `origin` is read.
 
+## Pinned projects
+
+- **p** pins or unpins the selected project (any row inside it).
+- Pinned projects sort first and show `★`.
+- Pins made with **p** are stored per host in `$XDG_STATE_HOME/omarchy-gitlab-pipelines/pinned.json` (default `~/.local/state/…`). The panel never writes `shell.json`.
+- `pinned` in `shell.json` also pins; those cannot be unpinned with **p** (`Pinned in shell.json`).
+- At most 10 apply: `shell.json` pins first, then **p** pins in the order made. Extra saved pins stay saved and apply again when room is made; **p** at the cap says `At most 10 pins`.
+- A pin only shows when the account can see the project.
+- An unreadable or invalid `pinned.json` is never overwritten; the panel says `Pins not saved: …`. Fix or delete the file.
+
 ## Refresh and errors
 
 While open, one scheduler fetches a single API page at a time. Selecting a project waits 250 ms before fetching its missing or stale data, so rapid navigation does not trigger requests for every project you pass.
@@ -246,13 +258,14 @@ While open, one scheduler fetches a single API page at a time. Selecting a proje
 | --- | --- |
 | Inspected unfinished pipeline's jobs | 5 seconds |
 | Selected project activity | 10 seconds |
-| Other projects with running pipelines | 15 seconds |
+| Other projects with running pipelines, pinned or not | 15 seconds |
 | Selected full pipeline summary | 60 seconds |
+| Idle pinned projects | 60 seconds |
 | Previously checked idle projects | 10 minutes |
 
 Request slots are shared as follows:
 
-- Three slots serve selected data, one serves projects with running pipelines, and one serves background discovery. Spare slots serve other due work.
+- Three slots serve selected data, one serves projects with running pipelines, then idle pinned projects, and one serves background discovery. Spare slots serve pins before background work. Under a busy schedule (the selected project plus several running projects) idle pins wait.
 - All paths, including manual refresh, share a limit of 60 pages per rolling minute, at least one second between request starts, and one request in flight.
 - Full summaries cover every unfinished status (`running`, `pending`, `created`, `waiting_for_resource`, `preparing`) plus the ten most recent pipelines.
 - `manual` and `scheduled` pipelines appear in history but do not count as running.
