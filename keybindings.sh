@@ -27,7 +27,7 @@ t → Open the selected job's log in a terminal
 » → Trigger row: downstream pipeline status (no log, no watch)
 w → Watch or stop watching the selected pipeline
 g / G → First or last row
-e → Next failed pipeline, stage or job
+e → Next failed pipeline, stage, job or » row
 ? → Show or hide this help in the panel
 q → Close the panel, or this help
 Ctrl + = / Ctrl + + → Make the panel larger

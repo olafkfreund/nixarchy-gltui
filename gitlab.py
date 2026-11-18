@@ -260,8 +260,11 @@ def bridge(row, host):
     url = downstream.get("web_url") or ""
     path = ""
     if isinstance(url, str):
-        parsed = urlsplit(url)
-        if parsed.netloc.lower() == host.lower():
+        try:
+            parsed = urlsplit(url)
+        except ValueError:
+            parsed = None
+        if parsed and parsed.netloc.lower() == host.lower():
             candidate, separator, _ = parsed.path.lstrip("/").partition("/-/pipelines/")
             if separator:
                 try:

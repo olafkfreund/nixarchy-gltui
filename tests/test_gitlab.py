@@ -285,6 +285,11 @@ class PageTest(unittest.TestCase):
         self.assertEqual((data[1]["conclusion"], data[1]["allow_failure"]), ("failed", True))
         self.assertNotIn("leak", json.dumps(data))
 
+    def test_bridge_malformed_url_keeps_row(self):
+        row = {"id": 5, "status": "success", "name": "deploy", "stage": "test",
+               "downstream_pipeline": {"id": 7, "status": "running", "web_url": "https://[gitlab.com/x/-/pipelines/7"}}
+        self.assertEqual(gitlab.bridge(row, "gitlab.com")["downstream"]["project"], "")
+
     def test_bridges_sorted_and_paginated(self):
         bridges = [{"id": 9, "status": "success", "downstream_pipeline": None},
                    {"id": 8, "status": "success", "downstream_pipeline": {"id": 12, "status": "running"}}]

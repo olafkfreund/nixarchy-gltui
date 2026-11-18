@@ -190,6 +190,26 @@ Then (lead): `tests/qml-smoke.py` in a fresh microVM
 minute of boot); a fresh Codex diff review and an Opus review given only
 this plan and `git diff`.
 
+## Deviations
+
+From the final Codex and Opus reviews:
+
+- **Finality** also requires a bridges snapshot taken after the parent
+  finished (`bridgesAttempt`, set like `finalAttempt`). Otherwise a manual
+  trigger started just before the parent finished could leave a stale
+  "not created" row that never refreshes.
+- `manual`/`scheduled` checks dropped from finality: the helper already
+  normalises them to status `completed`; the test now uses that shape.
+- `bridge()` treats a URL `urlsplit` cannot parse as no project, instead of
+  failing the whole page.
+- A `route` error on `trigger_jobs` uses the text "Pipeline unavailable or
+  read_api scope missing".
+- A trigger row with an empty downstream URL falls back to the bridge's job
+  URL. Its sha stays the downstream's (possibly empty), not the parent's.
+- `e` help text names `»` rows.
+- Kept as is: bridges errors set the panel-wide error strip, like jobs
+  errors.
+
 ## Rollback
 
 Revert the PR commits. No config or state file format changes.

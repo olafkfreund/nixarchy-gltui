@@ -282,7 +282,7 @@ function rows(repos, expanded, details, filter, now, pinned, watched) {
                             status: status === "failed" && job.allow_failure ? "allowed to fail" : status,
                             info: duration(job, now), started: job.started_at || "", ended: job.completed_at || "",
                             finished: job.completed_at || "", repo: repo.repo, run: String(run.id),
-                            url: downstream ? downstream.url : job.html_url, sha: downstream ? downstream.sha : run.sha || ""});
+                            url: downstream && downstream.url || job.html_url, sha: downstream ? downstream.sha : run.sha || ""});
                         return;
                     }
                     result.push({key: runKey + ":" + job.id, parent: stageKey, kind: "job", job: String(job.id), depth: 3, title: job.name, subtitle: "",

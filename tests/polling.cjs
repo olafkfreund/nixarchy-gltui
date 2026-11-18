@@ -218,7 +218,7 @@ assert.equal(limited.catalogueComplete,true); assert.equal(polling.next(limited,
 // Debounce, same-run navigation, completion reconciliation, final cache and rerun invalidation.
 const s=polling.create(); s.repos=[{repo:'a/b',runs:[{id:7,status:'in_progress',run_attempt:1}],activityAt:0,summaryAt:0,active:1}];
 s.catalogueComplete=true; polling.open(s,0); s.discover=false;
-s.details['a/b:7']={bridges:[],bridgesAt:0};
+s.details['a/b:7']={bridges:[],bridgesAt:0,bridgesAttempt:1};
 polling.select(s,'a/b','7',{'a/b:7':true},0,false);
 assert.equal(polling.next(s,200),null);
 req=polling.next(s,250); assert.equal(req.kind,'jobs');
@@ -945,15 +945,27 @@ test('bridges refresh every 15 seconds while a downstream runs, then stop at fin
   const s=bridgeFixture(); let q=bridge(s);
   polling.complete(s,response(q,[{id:2,status:'completed',downstream:{status:'in_progress'}}]),100);
   assert.equal(polling.next(s,1000),null); assert.equal(s.tasks['bridges:a/b:7'],undefined);
-  assert.ok(s.wakeAt<=15100);
+  assert.equal(s.wakeAt,15100);
   q=bridge(s,15100);
   polling.complete(s,response(q,[{id:2,status:'completed',downstream:{status:'completed'}}]),15200);
   polling.seed(s,15200); assert.equal(s.tasks['bridges:a/b:7'],undefined);
 });
+test('a bridges snapshot from before the parent finished is not final', () => {
+  const s=bridgeFixture({id:7,status:'in_progress',run_attempt:1}); const q=bridge(s);
+  polling.complete(s,response(q,[{id:2,status:'completed',downstream:null}]),100);
+  assert.equal(s.details['a/b:7'].bridgesAttempt,0);
+  s.repos[0].runs[0].status='completed';
+  polling.seed(s,15100); assert.ok(s.tasks['bridges:a/b:7']);
+  const again=bridge(s,15100);
+  polling.complete(s,response(again,[{id:2,status:'completed',downstream:{status:'in_progress'}}]),15200);
+  assert.equal(s.details['a/b:7'].bridgesAttempt,1);
+  polling.seed(s,30200); assert.ok(s.tasks['bridges:a/b:7']);
+});
 test('manual and scheduled downstreams stop polling; manual refresh restarts it', () => {
-  for(const status of ['manual','scheduled']) {
+  for(const conclusion of ['manual','scheduled']) {
     const s=bridgeFixture(); const q=bridge(s);
-    polling.complete(s,response(q,[{id:2,status:'completed',downstream:{status}}]),100);
+    // The helper normalises manual and scheduled to status "completed".
+    polling.complete(s,response(q,[{id:2,status:'completed',downstream:{status:'completed',conclusion}}]),100);
     polling.seed(s,20000); assert.equal(s.tasks['bridges:a/b:7'],undefined);
     polling.manual(s,21000,false); assert.equal(s.tasks['bridges:a/b:7'].due,21000);
   }

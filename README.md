@@ -185,7 +185,7 @@ If that works, the stale token is in the session's environment. `omarchy-restart
 | t | Open the selected job's log in a terminal |
 | w | Watch or stop watching the selected pipeline |
 | g / G | First or last row |
-| e | Next failed pipeline, stage or job |
+| e | Next failed pipeline, stage, job or `»` row |
 | ? | Show or hide this help in the panel |
 | q | Close the panel, or the help |
 | Ctrl + = / Ctrl + + | Make the panel larger |

@@ -187,8 +187,9 @@ function seed(s, now) {
             var jobsFinal = detail && (detail.unavailable || run && run.status === "completed" && detail.finalAttempt === attempt);
             if (!jobsFinal && !(detail && detail.unavailable) && now >= age(detail && detail.jobsAt,5000)) ensure(s,"jobs",r.repo,s.inspected,"interactive",age(detail && detail.jobsAt,5000));
             else if (!jobsFinal && !(detail && detail.unavailable)) wake=Math.min(wake,age(detail && detail.jobsAt,5000));
-            var final = run && run.status === "completed" && jobsFinal && detail && detail.bridges &&
-                detail.bridges.every(function(bridge) { return bridge.status==="completed" && (!bridge.downstream || bridge.downstream.status==="completed" || bridge.downstream.status==="manual" || bridge.downstream.status==="scheduled") });
+            // Only a snapshot taken after the parent finished can be final: a trigger may start a downstream just before.
+            var final = run && run.status === "completed" && jobsFinal && detail && detail.bridges && detail.bridgesAttempt === attempt &&
+                detail.bridges.every(function(bridge) { return bridge.status==="completed" && (!bridge.downstream || bridge.downstream.status==="completed") });
             if (!(detail && detail.bridgesUnavailable) && !final) {
                 var bridgeDue=age(detail && detail.bridgesAt,15000);
                 if (now >= bridgeDue) {
@@ -332,7 +333,7 @@ function complete(s,reply,now) {
     var r=repoFor(s,t.repo);
     if (t.kind==="bridges" && reply.errorType==="route") {
         if (t.route==="bridges") { restart(s,t,now); t.route="trigger_jobs"; return true; }
-        reply=Object.assign({},reply,{errorType:"permission"});
+        reply=Object.assign({},reply,{errorType:"permission",error:"Pipeline unavailable or read_api scope missing"});
     }
     if (reply.errorType || reply.error) {
         var watched=t.kind==="run" && s.watches[t.repo+":"+t.run];
@@ -423,7 +424,9 @@ function complete(s,reply,now) {
         s.details[t.repo+":"+t.run]=Object.assign({},s.details[t.repo+":"+t.run] || {},{jobs:t.items,updated:new Date(now).toISOString(),jobsAt:now,error:"",unavailable:false,
             finalAttempt:run && run.status==="completed" && t.items.every(function(job) { return job.status==="completed" }) ? run.run_attempt || 1 : 0});
     } else if (r && t.kind==="bridges") {
-        s.details[t.repo+":"+t.run]=Object.assign({},s.details[t.repo+":"+t.run] || {},{bridges:t.items,bridgesAt:now,bridgesError:"",bridgesUnavailable:false});
+        var run=runFor(s,t.repo,t.run);
+        s.details[t.repo+":"+t.run]=Object.assign({},s.details[t.repo+":"+t.run] || {},{bridges:t.items,bridgesAt:now,bridgesError:"",bridgesUnavailable:false,
+            bridgesAttempt:run && run.status==="completed" ? run.run_attempt || 1 : 0});
         if (t.route==="trigger_jobs") s.bridgeRoute=t.route;
     }
     delete s.tasks[t.key]; settle(s,now); return true;

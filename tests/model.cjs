@@ -116,6 +116,7 @@ assert.equal(model.rows(repos, expanded, {}, '', Date.now())[2].title, 'Loading 
   assert.equal(trigger.status, 'running');
   assert.equal(trigger.url, child.url);
   assert.equal(trigger.sha, child.sha);
+  assert.equal(show([bridge(8, {...child, url:''})]).find(r => r.kind === 'trigger').url, 'https://gitlab.com/p/-/jobs/8');
   assert.equal(trigger.repo, repos[0].repo);
   assert.equal(trigger.run, '7');
   assert.equal(model.infoText(trigger, at), 'running · trigger 1m 0s · 1m ago');
