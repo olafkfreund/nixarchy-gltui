@@ -6,7 +6,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+import warnings
 from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location("menu", Path(__file__).resolve().parents[1] / "menu.py")
@@ -94,10 +96,100 @@ class MenuTest(unittest.TestCase):
     def test_open_usage(self):
         result, stderr, git, quickshell, execvp, _ = self.call_main(['open', 'a', 'b'])
         self.assertEqual(result, 1)
-        self.assertEqual(stderr, 'GitLab Pipelines: Usage: menu.py [keys|toggle|register|open [FILTER]]\n')
+        self.assertEqual(stderr, 'GitLab Pipelines: Usage: menu.py [keys|toggle|register|open [FILTER]|trace HOST PROJECT JOB]\n')
         git.assert_not_called()
         quickshell.assert_not_called()
         execvp.assert_not_called()
+
+    def test_trace_launch_and_exit(self):
+        args = ['trace', 'gitlab.example.org:8443', 'g/s/p', '42']
+        expected = [menu.LAUNCHER, '--app-id=org.omarchy.gitlab-trace', 'sh', '-c',
+                    menu.TRACE, 'sh', '42', 'https://gitlab.example.org:8443/g/s/p']
+        for outcome, code, error in (
+            (subprocess.TimeoutExpired(expected, 2), 0, ''),
+            (0, 0, ''),
+            (3, 1, 'GitLab Pipelines: terminal launcher failed (exit 3)\n'),
+        ):
+            with self.subTest(outcome=outcome), patch.object(menu.subprocess, 'Popen') as popen:
+                popen.return_value.wait.side_effect = outcome if isinstance(outcome, Exception) else None
+                if not isinstance(outcome, Exception):
+                    popen.return_value.wait.return_value = outcome
+                result, stderr, git, quickshell, execvp, _ = self.call_main(args)
+                self.assertEqual((result, stderr), (code, error))
+                popen.assert_called_once_with(expected, start_new_session=True,
+                                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                              stderr=subprocess.DEVNULL)
+                popen.return_value.wait.assert_called_once_with(timeout=2)
+                git.assert_not_called()
+                quickshell.assert_not_called()
+                execvp.assert_not_called()
+
+    def test_trace_rejects_invalid_arguments(self):
+        valid = ['gitlab.example.org', 'g/p', '42']
+        invalid = [
+            ['-x', *valid[1:]], ['a b', *valid[1:]],
+            [valid[0], 'p', valid[2]], [valid[0], 'g/../p', valid[2]],
+            [valid[0], 'g/p;x', valid[2]],
+            *([valid[0], valid[1], job] for job in
+              ('0', '-1', '1a', '12345678901234567890', '$(x)')),
+            ['a', 'b'], ['a', 'b', 'c', 'd'],
+        ]
+        for args in invalid:
+            with self.subTest(args=args), patch.object(menu.subprocess, 'Popen') as popen:
+                result, stderr, git, quickshell, execvp, _ = self.call_main(['trace', *args])
+                self.assertEqual(result, 1)
+                self.assertTrue(stderr.startswith('GitLab Pipelines: '), stderr)
+                popen.assert_not_called()
+                git.assert_not_called()
+                quickshell.assert_not_called()
+                execvp.assert_not_called()
+
+    def test_trace_missing_launcher(self):
+        with patch.object(menu.subprocess, 'Popen', side_effect=FileNotFoundError('missing')) as popen:
+            result, stderr, _, quickshell, execvp, _ = self.call_main(['trace', 'host', 'g/p', '42'])
+        self.assertEqual(result, 1)
+        self.assertEqual(stderr, 'GitLab Pipelines: missing\n')
+        popen.assert_called_once()
+        quickshell.assert_not_called()
+        execvp.assert_not_called()
+
+    def test_trace_real_launcher_handoff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = Path(directory) / 'launcher'
+            for body, expected in (('sleep 5', (0, '')),
+                                   ('exit 0', (0, '')),
+                                   ('exit 3', (1, 'GitLab Pipelines: terminal launcher failed (exit 3)\n'))):
+                with self.subTest(body=body):
+                    launcher.write_text('#!/bin/sh\n' + body + '\n')
+                    launcher.chmod(0o700)
+                    with patch.object(menu, 'LAUNCHER', str(launcher)):
+                        start = time.monotonic()
+                        with warnings.catch_warnings():
+                            warnings.simplefilter('ignore', ResourceWarning)
+                            result, stderr, _, quickshell, execvp, _ = self.call_main(['trace', 'host', 'g/p', '42'])
+                        elapsed = time.monotonic() - start
+                    self.assertEqual((result, stderr), expected)
+                    self.assertLess(elapsed, 4)
+                    quickshell.assert_not_called()
+                    execvp.assert_not_called()
+
+    def test_trace_shell_quotes_arguments_and_prompts_on_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fakebin = root / 'bin'
+            fakebin.mkdir()
+            glab = fakebin / 'glab'
+            for exit_code in (0, 1):
+                with self.subTest(exit_code=exit_code):
+                    glab.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\nexit ' + str(exit_code) + '\n')
+                    glab.chmod(0o700)
+                    result = subprocess.run(
+                        ['sh', '-c', menu.TRACE, 'sh', '$(touch X)', 'u;v'], cwd=root,
+                        env={**os.environ, 'PATH': f'{fakebin}:{os.environ["PATH"]}'},
+                        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+                    self.assertEqual(result.stdout.splitlines(),
+                                     ['ci', 'trace', '$(touch X)', '-R', 'u;v', '', 'Press Enter to close. '])
+                    self.assertFalse((root / 'X').exists())
 
     def test_running_tree_and_ambiguous_instances(self):
         with tempfile.TemporaryDirectory() as directory:
