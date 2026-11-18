@@ -564,6 +564,111 @@ test('background queued run is looked up after 15 seconds', () => {
   assert.equal(x.tasks[x.flight.key].group,'background');
 });
 
+function queuedFixture() {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true; s.catalogueAt=1000000000;
+  s.repos=[{repo:'a/b',activityAt:0,idle:3,runs:[{id:7,status:'queued',followupAt:0}]}];
+  return s;
+}
+test('queued lookups back off through 15, 30, 60, 120, 240 and 300 seconds', () => {
+  const s=queuedFixture(); let at=0;
+  for(const [level,delay] of [[0,15000],[1,30000],[2,60000],[3,120000],[4,240000],[5,300000],[5,300000]]) {
+    assert.equal(polling.next(s,at+delay-1),null);
+    assert.equal(s.wakeAt,at+delay);
+    const request=polling.next(s,at+delay); assert.equal(request.kind,'run');
+    at+=delay+1000;
+    polling.complete(s,response(request,{id:7,status:'queued'}),at);
+    assert.equal(s.queued['a/b:7'],Math.min(5,level+1));
+  }
+});
+test('a backed-off queued task is created only at its full delay with that due time', () => {
+  const s=queuedFixture(); s.queued['a/b:7']=3; s.repos[0].runs[0].followupAt=5000;
+  polling.seed(s,20000);
+  assert.equal(s.tasks['run:a/b:7'],undefined);
+  polling.seed(s,125000);
+  assert.equal(s.tasks['run:a/b:7'].due,125000);
+});
+test('watched, selected and awaiting-final queued runs keep the 15-second delay', () => {
+  for(const mode of ['watched','selected','awaitingFinal']) {
+    const s=queuedFixture(), run=s.repos[0].runs[0];
+    if(mode==='watched') assert.equal(polling.watch(s,'a/b',7,0),'watching');
+    if(mode==='selected') { s.repos[0].summaryAt=0; s.repos[0].activityAt=15000; polling.select(s,'a/b','',{},0,true); }
+    if(mode==='awaitingFinal') run.awaitingFinal=true;
+    s.queued['a/b:7']=5;
+    assert.equal(polling.next(s,0),null);
+    assert.equal(s.wakeAt,15000,mode);
+    const request=polling.next(s,15000); assert.equal(request.kind,'run',mode);
+  }
+});
+test('a running lookup and selection clear queued levels', () => {
+  const s=queuedFixture(); s.queued['a/b:7']=1;
+  const request=polling.next(s,30000); assert.equal(request.kind,'run');
+  polling.complete(s,response(request,{id:7,status:'in_progress'}),31000);
+  assert.equal(s.queued['a/b:7'],undefined);
+  const selected=queuedFixture(); selected.queued['a/b:7']=5;
+  polling.select(selected,'a/b','',{},0,true);
+  assert.equal(selected.queued['a/b:7'],undefined);
+  polling.select(selected,'','',{},100,true);
+  assert.equal(polling.next(selected,15000).kind,'run');
+});
+test('summary completion clears a queued level while the run stays cached', () => {
+  const s=queuedFixture();
+  let request=polling.next(s,15000); assert.equal(request.kind,'run');
+  polling.select(s,'a/b','',{},15100,true);
+  polling.complete(s,response(request,{id:7,status:'queued'}),15200);
+  assert.equal(s.queued['a/b:7'],1,'in-flight lookup can raise after selection');
+  request=polling.next(s,16000); assert.equal(request.kind,'summary');
+  polling.complete(s,response(request,[{id:7,status:'completed'}]),16100);
+  assert.equal(s.repos[0].runs[0].status,'completed');
+  assert.equal(s.queued['a/b:7'],undefined);
+});
+test('trim, dropped activity and catalogue removal clear queued levels', () => {
+  const trim=queuedFixture(), r=trim.repos[0];
+  r.runs=completedRuns(1,10); trim.queued['a/b:1']=3;
+  polling.mergeRuns(trim,r,[{id:11,status:'completed'}]);
+  assert.equal(trim.queued['a/b:1'],undefined);
+  const dropped=queuedFixture(), d=dropped.repos[0];
+  d.runs=[{id:7,status:'in_progress'}]; dropped.queued['a/b:7']=3;
+  polling.activity(dropped,d,[{id:8,status:'in_progress'}],1000,250);
+  assert.equal(dropped.queued['a/b:7'],undefined);
+  const removed=queuedFixture(); removed.queued['a/b:7']=5;
+  polling.manual(removed,0,true);
+  let request=polling.next(removed,0); assert.equal(request.kind,'catalogue');
+  polling.complete(removed,response(request,[]),1000);
+  assert.equal(removed.queued['a/b:7'],undefined);
+  polling.manual(removed,2000,true);
+  request=polling.next(removed,2000); assert.equal(request.kind,'catalogue');
+  polling.complete(removed,response(request,[{repo:'a/b'}]),3000);
+  removed.repos[0].activityAt=3000; removed.repos[0].idle=3;
+  removed.repos[0].runs=[{id:7,status:'queued',followupAt:3000}];
+  assert.equal(polling.next(removed,18000).kind,'run');
+});
+test('a five-minute queued wait does not repeatedly seed', () => {
+  const s=queuedFixture(); s.queued['a/b:7']=5;
+  assert.equal(polling.next(s,0),null); assert.equal(s.wakeAt,300000);
+  const before=s.seeds;
+  for(let now=250;now<300000;now+=250) assert.equal(polling.next(s,now),null);
+  assert.ok(s.seeds-before<10); assert.equal(polling.next(s,300000).kind,'run');
+});
+test('a watch respects a lookup error retry and advances an ordinary queued wait', () => {
+  const retry=queuedFixture();
+  let request=polling.next(retry,15000); assert.equal(request.kind,'run');
+  polling.complete(retry,{...response(request,{}),error:'offline',errorType:'network'},16000);
+  assert.equal(retry.queued['a/b:7'],undefined);
+  assert.equal(polling.watch(retry,'a/b',7,17000),'watching');
+  assert.equal(polling.next(retry,20000),null);
+  request=polling.next(retry,21000); assert.equal(request.kind,'run');
+  const ordinary=queuedFixture(); ordinary.queued['a/b:7']=5; ordinary.repos[0].runs[0].followupAt=16000;
+  assert.equal(polling.next(ordinary,0),null);
+  assert.equal(polling.watch(ordinary,'a/b',7,17000),'watching');
+  assert.equal(polling.next(ordinary,17000),null);
+  assert.equal(ordinary.wakeAt,30000);
+  request=polling.next(ordinary,30000); assert.equal(request.kind,'run');
+});
+test('resetHost drops queued lookup levels', () => {
+  const s=queuedFixture(); s.queued['a/b:7']=5;
+  assert.equal(Object.keys(polling.resetHost(s).queued).length,0);
+});
+
 for(const [status,errorType] of [['in_progress',''],['completed',''],['queued','permission']])
   test(`queued run follow-up stops after ${errorType || status}`, () => {
     const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;

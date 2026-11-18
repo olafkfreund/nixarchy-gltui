@@ -9,7 +9,7 @@ function create() {
         rateFailures:0, auth:false, tasks:{}, flight:null, repos:[], details:{}, selected:"", inspected:"",
         stableAt:0, expanded:{}, pinned:{}, catalogueAt:0, catalogueComplete:false, discover:true, periodic:false,
         error:"", catalogueError:"", requests:0, lastRequest:"", lastStarted:0, wakeAt:0, seeds:0,
-        watches:{}, events:[]};
+        watches:{}, queued:{}, events:[]};
 }
 function resetHost(s) {
     return Object.assign(create(),{opened:s.opened,starts:s.starts,serial:s.serial,generation:s.generation+1});
@@ -20,6 +20,10 @@ function start(r,now) {
     var a=now-Date.parse(r.lastActivity);
     if (!isFinite(a)) return 0;
     return a<86400000 ? 0 : a<604800000 ? 1 : 3;
+}
+function queuedDelay(s,r,run) {
+    return run.status==="queued" && !run.awaitingFinal && r.repo!==s.selected && !s.watches[r.repo+":"+run.id]
+        ? Math.min(300000,15000*Math.pow(2,s.queued[r.repo+":"+run.id]||0)) : 15000;
 }
 function repoFor(s, name) { return s.repos.filter(function(r) { return r.repo === name })[0]; }
 function runFor(s, repo, id) {
@@ -88,6 +92,7 @@ function select(s, repo, run, expanded, now, immediate) {
         s.stableAt = now + (immediate ? 0 : 250);
         var r=repoFor(s,repo);
         if (r) r.idle=0;
+        if (repo) Object.keys(s.queued).forEach(function(id) { if (id.slice(0,repo.length+1)===repo+":") delete s.queued[id]; });
     }
     else if (immediate) s.stableAt = now;
     s.selected = repo || ""; s.inspected = String(run || ""); s.expanded = expanded || {};
@@ -164,9 +169,11 @@ function seed(s, now) {
         }
         (r.runs || []).forEach(function(run) {
             if (run.status==="queued" && run.followupAt===undefined && !run.lookupError && r.repo!==s.selected) run.followupAt=now;
-            if (run.awaitingFinal || run.followupAt !== undefined && run.status !== "completed" && run.status !== "in_progress")
-                if (now >= age(run.followupAt,15000)) ensure(s,"run",r.repo,run.id,selected ? "interactive" : run.status==="queued" ? "background" : "active",age(run.followupAt,15000));
-                else wake=Math.min(wake,age(run.followupAt,15000));
+            var due=age(run.followupAt,queuedDelay(s,r,run));
+            if (run.awaitingFinal || run.followupAt !== undefined && run.status !== "completed" && run.status !== "in_progress") {
+                if (now >= due) ensure(s,"run",r.repo,run.id,selected ? "interactive" : run.status==="queued" ? "background" : "active",due);
+                else wake=Math.min(wake,due);
+            }
         });
         if (selected && s.inspected && s.expanded[r.repo + ":" + s.inspected]) {
             var run = runFor(s,r.repo,s.inspected), detail = s.details[r.repo + ":" + s.inspected];
@@ -239,6 +246,7 @@ function invalidateJobs(s,r,incoming) {
 function mergeRuns(s,r,incoming) {
     s.wakeAt=0;
     incoming.forEach(function(run) {
+        if (run.status!=="queued") delete s.queued[r.repo+":"+run.id];
         var old=runFor(s,r.repo,run.id);
         var jobs=s.tasks[key("jobs",r.repo,run.id)];
         if (old && (old.run_attempt || 1)!==(run.run_attempt || 1) && jobs) restart(s,jobs,s.clock || 0);
@@ -252,7 +260,7 @@ function trimRuns(s,r,runs) {
     s.wakeAt=0;
     var completed=0, old=(r.runs || []).map(function(run) { return run.id });
     r.runs=runs.sort(function(a,b) { return (a.status==="completed")-(b.status==="completed") || b.id-a.id }).filter(function(run) { return run.status!=="completed" || ++completed<=10 || kept(s,r,run) });
-    old.forEach(function(id) { if (!r.runs.some(function(run) { return run.id===id })) delete s.details[r.repo+":"+id]; });
+    old.forEach(function(id) { if (!r.runs.some(function(run) { return run.id===id })) { delete s.details[r.repo+":"+id]; delete s.queued[r.repo+":"+id]; } });
 }
 function kept(s,r,run) {
     return s.expanded[r.repo+":"+run.id] || r.repo===s.selected && String(run.id)===s.inspected || s.watches[r.repo+":"+run.id];
@@ -273,7 +281,7 @@ function activity(s,r,items,now,total) {
         }
     });
     r.runs=r.runs.filter(function(run) { return !dropped[run.id] });
-    Object.keys(dropped).forEach(function(id) { delete s.details[r.repo+":"+id]; });
+    Object.keys(dropped).forEach(function(id) { delete s.details[r.repo+":"+id]; delete s.queued[r.repo+":"+id]; });
     items.forEach(function(run) { var cached=runFor(s,r.repo,run.id); delete cached.awaitingFinal; delete cached.followupAt; });
     r.activeFromTotal=typeof total==="number" && total>=0;
     r.active=typeof total==="number" && total>=0 ? total : items.filter(function(run) { return run.status==="in_progress" }).length;
@@ -339,6 +347,9 @@ function complete(s,reply,now) {
         if (r) {
             var resolved=Object.assign({},data,{awaitingFinal:false,followupAt:now});
             mergeRuns(s,r,[resolved]);
+            var id=t.repo+":"+t.run;
+            if (resolved.status==="queued") s.queued[id]=Math.min(5,(s.queued[id]||0)+1);
+            else delete s.queued[id];
             var running=(r.runs || []).filter(function(run) { return run.status==="in_progress" && !run.awaitingFinal }).length;
             // GitLab's total already excludes runs that left; a lookup can only add running ones it has not counted yet.
             r.active=r.activeFromTotal ? Math.max(r.active || 0,running) : running;
@@ -366,6 +377,7 @@ function complete(s,reply,now) {
         var names=t.items.map(function(repo) { return repo.repo });
         var gone=s.repos.filter(function(repo) { return names.indexOf(repo.repo)<0 }).map(function(repo) { return repo.repo });
         Object.keys(s.details).forEach(function(id) { if (gone.indexOf(id.slice(0,id.lastIndexOf(":")))>=0) delete s.details[id]; });
+        Object.keys(s.queued).forEach(function(id) { if (gone.indexOf(id.slice(0,id.lastIndexOf(":")))>=0) delete s.queued[id]; });
         s.repos=s.repos.filter(function(repo) { return names.indexOf(repo.repo)>=0 });
         // Most recently active first; gitlab.com cannot sort membership by activity server-side.
         s.repos.sort(function(a,b) { return String(b.lastActivity || "").localeCompare(String(a.lastActivity || "")) || names.indexOf(a.repo)-names.indexOf(b.repo) });
