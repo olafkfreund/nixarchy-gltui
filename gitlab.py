@@ -12,7 +12,7 @@ import unicodedata
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 
 # Unfinished statuses polled by a full summary; "running" is also the activity check.
@@ -125,7 +125,7 @@ def request(endpoint, host="gitlab.com"):
 
 
 def page_endpoint(task):
-    if not isinstance(task, dict) or task.get("kind") not in ("catalogue", "activity", "summary", "jobs", "run"):
+    if not isinstance(task, dict) or task.get("kind") not in ("catalogue", "activity", "summary", "jobs", "bridges", "run"):
         raise ValueError("Invalid page operation")
     number = task.get("page", 1)
     if type(number) is not int or number < 1 or number > 100000:
@@ -136,12 +136,17 @@ def page_endpoint(task):
     if task["kind"] == "catalogue":
         return f"projects?membership=true&per_page=100&page={number}"
     base = "projects/" + quote(project_path(task.get("repo")), safe="") + "/pipelines"
-    if task["kind"] in ("jobs", "run"):
+    if task["kind"] in ("jobs", "bridges", "run"):
         run = str(task.get("run", ""))
         if not re.fullmatch(r"[0-9]+", run) or int(run) < 1:
             raise ValueError("Invalid pipeline ID")
         if task["kind"] == "run":
             return f"{base}/{run}"
+        if task["kind"] == "bridges":
+            route = task.get("route", "bridges")
+            if route not in ("bridges", "trigger_jobs"):
+                raise ValueError("Invalid trigger jobs route")
+            return f"{base}/{run}/{route}?per_page=100&page={number}"
         return f"{base}/{run}/jobs?include_retried=false&per_page=100&page={number}"
     status = "running" if task["kind"] == "activity" else task.get("status", "recent")
     if status == "recent":
@@ -241,6 +246,40 @@ def job(row):
             "duration": number(row.get("duration")), "queued_duration": number(row.get("queued_duration"))}
 
 
+def bridge(row, host):
+    result = job(row)
+    downstream = row.get("downstream_pipeline")
+    if not isinstance(downstream, dict):
+        result["downstream"] = None
+        return result
+
+    def non_negative_int(value):
+        return value if type(value) is int and value >= 0 else None
+
+    parent = row.get("pipeline")
+    url = downstream.get("web_url") or ""
+    path = ""
+    if isinstance(url, str):
+        parsed = urlsplit(url)
+        if parsed.netloc.lower() == host.lower():
+            candidate, separator, _ = parsed.path.lstrip("/").partition("/-/pipelines/")
+            if separator:
+                try:
+                    path = project_path(candidate)
+                except ValueError:
+                    pass
+    sha = downstream.get("sha")
+    result["downstream"] = {
+        "id": downstream.get("id"), "iid": non_negative_int(downstream.get("iid")),
+        "project_id": non_negative_int(downstream.get("project_id")),
+        "parent_project_id": non_negative_int(parent.get("project_id")) if isinstance(parent, dict) else None,
+        "status": state(downstream.get("status")), "conclusion": downstream.get("status"),
+        "ref": plain(downstream.get("ref") or ""),
+        "sha": sha if isinstance(sha, str) and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", sha) else "",
+        "url": url, "project": path}
+    return result
+
+
 def project(row):
     if not isinstance(row, dict):
         raise ValueError("Invalid project entry")
@@ -284,6 +323,8 @@ def read_page(task):
                 result.update(errorType="rate", error="GitLab rate limit")
             elif status == 401:
                 result.update(errorType="auth", error="Authenticate with glab auth login")
+            elif status == 404 and task["kind"] == "bridges":
+                result.update(errorType="route", error="GitLab has no trigger jobs route")
             elif status in (403, 404):
                 result.update(errorType="permission", error="Project unavailable or read_api scope missing")
             elif 300 <= status < 400:
@@ -303,9 +344,11 @@ def read_page(task):
                 result["data"] = [project(row) for row in body]
             elif kind == "jobs":
                 result["data"] = sorted((job(row) for row in body), key=lambda row: row["id"])
+            elif kind == "bridges":
+                result["data"] = sorted((bridge(row, task.get("host", "gitlab.com")) for row in body), key=lambda row: row["id"])
             else:
                 result["data"] = [pipeline(row) for row in body]
-            if kind in ("catalogue", "jobs"):
+            if kind in ("catalogue", "jobs", "bridges"):
                 result["nextPage"] = next_page(headers, task.get("page", 1))
             elif kind == "activity" or task.get("status") in PHASES:
                 # One page per unfinished status (#15, ghtui #30); X-Total says how many were left out.

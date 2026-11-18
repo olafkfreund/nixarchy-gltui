@@ -47,7 +47,12 @@ class ValidationTest(unittest.TestCase):
                   base + "?status=waiting_for_resource&per_page=100&page=1"),
                  ({"kind": "run", "repo": "g/sub/p", "run": "7"}, base + "/7"),
                  ({"kind": "jobs", "repo": "g/sub/p", "run": 7, "page": 3},
-                  base + "/7/jobs?include_retried=false&per_page=100&page=3")]
+                  base + "/7/jobs?include_retried=false&per_page=100&page=3"),
+                 ({"kind": "bridges", "repo": "g/sub/p", "run": 7}, base + "/7/bridges?per_page=100&page=1"),
+                 ({"kind": "bridges", "repo": "g/sub/p", "run": 7, "route": "bridges", "page": 3},
+                  base + "/7/bridges?per_page=100&page=3"),
+                 ({"kind": "bridges", "repo": "g/sub/p", "run": 7, "route": "trigger_jobs", "page": 3},
+                  base + "/7/trigger_jobs?per_page=100&page=3")]
         for task, expected in cases:
             with self.subTest(task=task):
                 self.assertEqual(gitlab.page_endpoint({"requestId": 1, **task}), expected)
@@ -55,6 +60,8 @@ class ValidationTest(unittest.TestCase):
                      {"kind": "catalogue", "requestId": 1, "host": "evil.test/x"},
                      {"kind": "activity", "repo": "a/..", "requestId": 1},
                      {"kind": "jobs", "repo": "a/b", "run": "../x", "requestId": 1},
+                     {"kind": "bridges", "repo": "a/b", "run": "../x", "requestId": 1},
+                     {"kind": "bridges", "repo": "a/b", "run": 7, "route": "jobs", "requestId": 1},
                      {"kind": "summary", "repo": "a/b", "status": "success", "requestId": 1}]:
             with self.subTest(task=task), self.assertRaises(ValueError):
                 gitlab.page_endpoint(task)
@@ -171,6 +178,39 @@ class NormaliseTest(unittest.TestCase):
         self.assertIsNone(gitlab.job(base)["duration"])
         self.assertIsNone(gitlab.job(base)["queued_duration"])
 
+    def test_bridge_details(self):
+        base = {"id": 5, "status": "success", "name": "deploy", "stage": "test",
+                "pipeline": {"project_id": 42}}
+        self.assertIsNone(gitlab.bridge(base, "gitlab.com")["downstream"])
+        self.assertIsNone(gitlab.bridge({**base, "downstream_pipeline": []}, "gitlab.com")["downstream"])
+        downstream = {"id": 7, "iid": 3, "project_id": 42, "status": "running", "ref": "main",
+                      "sha": "a" * 40, "web_url": "https://gitlab.com/g/sub/p/-/pipelines/7"}
+        result = gitlab.bridge({**base, "downstream_pipeline": downstream}, "gitlab.com")
+        self.assertEqual(result["name"], "deploy")
+        self.assertEqual(result["downstream"], {
+            "id": 7, "iid": 3, "project_id": 42, "parent_project_id": 42,
+            "status": "in_progress", "conclusion": "running", "ref": "main", "sha": "a" * 40,
+            "url": downstream["web_url"], "project": "g/sub/p"})
+        for value in (-1, "42", None, True):
+            with self.subTest(value=value):
+                changed = {**downstream, "iid": value, "project_id": value}
+                normalized = gitlab.bridge({**base, "pipeline": {"project_id": value},
+                                            "downstream_pipeline": changed}, "gitlab.com")["downstream"]
+                self.assertIsNone(normalized["iid"])
+                self.assertIsNone(normalized["project_id"])
+                self.assertIsNone(normalized["parent_project_id"])
+        missing = gitlab.bridge({**base, "pipeline": {}, "downstream_pipeline": {"id": 7, "status": "manual"}},
+                                "gitlab.com")["downstream"]
+        self.assertEqual((missing["iid"], missing["project_id"], missing["parent_project_id"]), (None, None, None))
+        self.assertEqual(missing["status"], "completed")
+        for url in ("https://foreign.example/g/p/-/pipelines/7", "https://gitlab.com/a/../p/-/pipelines/7",
+                    "https://gitlab.com/single/-/pipelines/7"):
+            with self.subTest(url=url):
+                self.assertEqual(gitlab.bridge({**base, "downstream_pipeline": {**downstream, "web_url": url}},
+                                               "gitlab.com")["downstream"]["project"], "")
+        self.assertEqual(gitlab.bridge({**base, "downstream_pipeline": {**downstream, "sha": "bad"}},
+                                       "gitlab.com")["downstream"]["sha"], "")
+
     def test_pipeline_fields_and_attempt(self):
         running = gitlab.pipeline(PIPELINE)
         self.assertEqual(running, {"id": 7, "run_number": 3, "name": "merge request event", "display_title": "01234567", "sha": "",
@@ -244,6 +284,27 @@ class PageTest(unittest.TestCase):
         self.assertEqual(data[0]["completed_at"], "2026-01-01T00:02:00Z")
         self.assertEqual((data[1]["conclusion"], data[1]["allow_failure"]), ("failed", True))
         self.assertNotIn("leak", json.dumps(data))
+
+    def test_bridges_sorted_and_paginated(self):
+        bridges = [{"id": 9, "status": "success", "downstream_pipeline": None},
+                   {"id": 8, "status": "success", "downstream_pipeline": {"id": 12, "status": "running"}}]
+        task = {"kind": "bridges", "repo": "g/p", "run": 7, "requestId": 1}
+        with patch.object(gitlab, "request", return_value=reply(bridges, headers="X-Next-Page: 2\r\n")) as request:
+            result = gitlab.read_page(task)
+        self.assertEqual([row["id"] for row in result["data"]], [8, 9])
+        self.assertEqual(result["data"][0]["downstream"]["status"], "in_progress")
+        self.assertEqual(result["nextPage"], 2)
+        self.assertEqual(request.call_args.args[0], "projects/g%2Fp/pipelines/7/bridges?per_page=100&page=1")
+
+    def test_bridge_404_only_changes_bridge_error(self):
+        for kind in ("bridges", "jobs", "run"):
+            with self.subTest(kind=kind), patch.object(gitlab, "request", return_value=reply(
+                    {"message": "private response"}, status="404 Not Found")):
+                result = gitlab.read_page({"kind": kind, "repo": "g/p", "run": 7, "requestId": 1})
+                self.assertEqual(result["errorType"], "route" if kind == "bridges" else "permission")
+                self.assertEqual(result["error"], "GitLab has no trigger jobs route" if kind == "bridges"
+                                 else "Project unavailable or read_api scope missing")
+                self.assertNotIn("private response", json.dumps(result))
 
     def test_waiting_for_callback_job_is_not_completed(self):
         jobs = [{"id": 5, "name": "deploy", "stage": "deploy", "status": "waiting_for_callback"}]
