@@ -480,6 +480,22 @@ test('a periodic merge keeps blocked projects; full refreshes clear them', () =>
   assert.equal(r.blocked,false); assert.equal(r.error,'');
 });
 
+test('closing during a periodic scan makes the reopen scan a full one', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  const r={repo:'a/b',blocked:true,error:'forbidden',activityAt:0}; s.repos=[r];
+  let request=polling.next(s,300000); assert.equal(request.kind,'catalogue'); assert.equal(s.periodic,true);
+  polling.close(s); polling.open(s,301000); assert.equal(s.periodic,false);
+  request=polling.next(s,301000); assert.equal(request.kind,'catalogue');
+  polling.complete(s,response(request,[{repo:'a/b'}]),301100);
+  assert.equal(r.blocked,false);
+});
+test('a changed activity time on a never-checked project is not a hint', () => {
+  const s=polling.create(); polling.open(s,0); s.catalogueComplete=true;
+  const r={repo:'new/p',lastActivity:'old'}; s.repos=[r];
+  const request=polling.next(s,0); assert.equal(request.kind,'catalogue');
+  polling.complete(s,response(request,[{repo:'new/p',lastActivity:'new'}]),1000);
+  assert.equal(r.hinted,undefined);
+});
 test('overdue reopen and R use full scans, including R during page two', () => {
   for(const mode of ['reopen','R']) {
     const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
@@ -599,6 +615,16 @@ test('watched, selected and awaiting-final queued runs keep the 15-second delay'
     const request=polling.next(s,15000); assert.equal(request.kind,'run',mode);
   }
 });
+test('selected and watched lookups that stay queued do not raise the level', () => {
+  for(const mode of ['selected','watched']) {
+    const s=queuedFixture();
+    if(mode==='watched') assert.equal(polling.watch(s,'a/b',7,0),'watching');
+    else { s.repos[0].summaryAt=0; s.repos[0].activityAt=15000; polling.select(s,'a/b','',{},0,true); }
+    const request=polling.next(s,15000); assert.equal(request.kind,'run',mode);
+    polling.complete(s,response(request,{id:7,status:'queued'}),16000);
+    assert.equal(s.queued['a/b:7'],undefined,mode);
+  }
+});
 test('a running lookup and selection clear queued levels', () => {
   const s=queuedFixture(); s.queued['a/b:7']=1;
   const request=polling.next(s,30000); assert.equal(request.kind,'run');
@@ -615,7 +641,8 @@ test('summary completion clears a queued level while the run stays cached', () =
   let request=polling.next(s,15000); assert.equal(request.kind,'run');
   polling.select(s,'a/b','',{},15100,true);
   polling.complete(s,response(request,{id:7,status:'queued'}),15200);
-  assert.equal(s.queued['a/b:7'],1,'in-flight lookup can raise after selection');
+  assert.equal(s.queued['a/b:7'],undefined,'a lookup finishing after selection does not raise');
+  s.queued['a/b:7']=1; // a level left from before selection
   request=polling.next(s,16000); assert.equal(request.kind,'summary');
   polling.complete(s,response(request,[{id:7,status:'completed'}]),16100);
   assert.equal(s.repos[0].runs[0].status,'completed');

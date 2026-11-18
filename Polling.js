@@ -348,8 +348,8 @@ function complete(s,reply,now) {
             var resolved=Object.assign({},data,{awaitingFinal:false,followupAt:now});
             mergeRuns(s,r,[resolved]);
             var id=t.repo+":"+t.run;
-            if (resolved.status==="queued") s.queued[id]=Math.min(5,(s.queued[id]||0)+1);
-            else delete s.queued[id];
+            // Only a lookup that backs off raises the level; mergeRuns clears it once the run leaves the queue.
+            if (resolved.status==="queued" && t.repo!==s.selected && !s.watches[id]) s.queued[id]=Math.min(5,(s.queued[id]||0)+1);
             var running=(r.runs || []).filter(function(run) { return run.status==="in_progress" && !run.awaitingFinal }).length;
             // GitLab's total already excludes runs that left; a lookup can only add running ones it has not counted yet.
             r.active=r.activeFromTotal ? Math.max(r.active || 0,running) : running;

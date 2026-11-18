@@ -297,3 +297,31 @@ confirmed and folded in:
 
 It also corrected the simulation assertion range (`:136-143`) and asked
 for a fresh-context Codex review of the code.
+
+## Deviations
+
+Recorded during implementation; the code changed in the same commit as this note.
+
+- **The queued level rises only when the back-off applies** (decision C,
+  "Raised"). The plan raised the level on every lookup that returned
+  queued. The Opus code review showed that while a run is selected or
+  watched, its lookups stay at 15 s but the level still climbed. After
+  deselecting or unwatching, the next lookup came 2 to 5 minutes late,
+  against the intent's "15 s for selected and watched". The raise now also
+  requires `t.repo!==s.selected && !s.watches[id]`.
+- **The `else delete s.queued[id]` after a lookup is removed.** It could
+  never take effect: `mergeRuns()` already clears the level for any run
+  that is not queued, and a mutation check confirmed it.
+- **One step-3 test changed its setup.** It created a level through a
+  lookup that finished after selection, which relied on the bug above. It
+  now asserts that such a lookup does not raise the level, and then sets
+  the level by hand to keep testing the summary clear.
+- **Tests added from the review:**
+  - selected and watched lookups do not raise the level;
+  - closing during a periodic scan makes the reopen scan a full one;
+  - a never-checked project is not hinted.
+
+  Each one fails when its rule is reverted.
+- **Step 2 and 3 follow-ups:** after mutation checks, Codex added three
+  tests in steps 2 and 3. They cover `R` during a periodic scan, and the
+  queued delay's condition and due time.
