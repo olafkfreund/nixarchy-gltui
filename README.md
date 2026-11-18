@@ -224,7 +224,7 @@ Stage status follows GitLab's rules, in this order:
 2. Otherwise failed, if a job failed that is not `allow_failure`.
 3. Otherwise pending, then canceled, then success.
 
-Stage rows show completed/total jobs. Press **t** on a job to follow its log in a terminal (`glab ci trace`), or **o** to open it on GitLab. If the terminal launcher fails within two seconds, the panel stays open and says `Could not open a terminal`. A terminal that fails later is not reported by the panel; errors after the terminal opens show in that window.
+`»` rows are trigger jobs and show their downstream pipeline's status; `t` and `w` do not apply to them (use the parent pipeline row for `w`). Stage rows show completed/total jobs. Press **t** on a job to follow its log in a terminal (`glab ci trace`), or **o** to open it on GitLab. If the terminal launcher fails within two seconds, the panel stays open and says `Could not open a terminal`. A terminal that fails later is not reported by the panel; errors after the terminal opens show in that window.
 
 ## Open on the current repository
 
@@ -299,7 +299,7 @@ Closing the panel cancels the helper and its `glab` child. While the panel is cl
 
 ## Known limits
 
-- **Downstream pipelines** (trigger/bridge jobs) are not shown, only the parent pipeline's own jobs.
+- **Downstream pipelines**: downstream and child pipelines show as `»` rows inside the trigger job's stage, with their status. Their own jobs are not shown. The times on a `»` row are the trigger job's. A downstream waiting in manual or scheduled stops refreshing until you press `r`.
 - **Stage order** follows job creation. Pipelines built with `needs:` can show a stage later than the GitLab UI does.
 - **Pipeline durations** in lists start at creation time, so they include queue time until the pipeline is looked up individually.
 

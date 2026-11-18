@@ -24,6 +24,7 @@ y → Copy the selected row's GitLab URL
 Shift + Y → Copy the pipeline's commit SHA
 p → Pin or unpin the selected project
 t → Open the selected job's log in a terminal
+» → Trigger row: downstream pipeline status (no log, no watch)
 w → Watch or stop watching the selected pipeline
 g / G → First or last row
 e → Next failed pipeline, stage or job
