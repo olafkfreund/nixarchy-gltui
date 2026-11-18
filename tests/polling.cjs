@@ -631,3 +631,129 @@ test('an inspected unfinished pipeline wakes for its jobs', () => {
   assert.equal(polling.next(x,6000).kind,'jobs');
 });
 
+function watchFixture(count=2) {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  s.repos=[{repo:'x/y',activityAt:0,summaryAt:0,runs:Array.from({length:count},(_,i)=>
+    ({id:i+1,run_number:i+11,head_branch:'main',status:'in_progress'}))}];
+  for(let i=1;i<=count;i++) assert.equal(polling.watch(s,'x/y',i,0),'watching');
+  return s;
+}
+test('watch codes, finished conclusions, cap, and unfinished statuses', () => {
+  const s=watchFixture(5);
+  assert.equal(polling.watch(s,'x/y',1,0),'unwatched');
+  assert.equal(polling.watch(s,'x/y',99,0),'missing');
+  for(const conclusion of ['success','failed','canceled','skipped']) {
+    s.repos[0].runs[0].conclusion=conclusion;
+    assert.equal(polling.watch(s,'x/y',1,0),'finished');
+  }
+  for(const status of ['manual','scheduled']) {
+    s.repos[0].runs[0]={id:1,status};
+    assert.equal(polling.watch(s,'x/y',1,0),'watching');
+    assert.equal(polling.watch(s,'x/y',1,0),'unwatched');
+  }
+  assert.equal(polling.watch(s,'x/y',1,0),'watching');
+  s.repos[0].runs.push({id:6,status:'in_progress'});
+  assert.equal(polling.watch(s,'x/y',6,0),'cap');
+});
+test('closed mode requests only watched runs every thirty seconds', () => {
+  const s=watchFixture(); polling.select(s,'x/y','1',{'x/y:1':true},0,true); polling.close(s);
+  polling.ensure(s,'activity','x/y','','active',0);
+  polling.ensure(s,'run','x/y','3','active',0);
+  let req=polling.next(s,30000); assert.equal(req.kind,'run'); assert.equal(req.repo,'x/y'); assert.equal(req.run,'1');
+  polling.complete(s,response(req,{id:1,status:'in_progress'}),30000);
+  req=polling.next(s,31000); assert.equal(req.kind,'run'); assert.equal(req.repo,'x/y'); assert.equal(req.run,'2');
+  polling.complete(s,response(req,{id:2,status:'in_progress'}),31000);
+  assert.equal(Object.values(s.tasks).some(t=>t.kind!=='run' || t.run==='3'),false);
+  assert.equal(polling.next(s,32000),null);
+  req=polling.next(s,60000); assert.equal(req.kind,'run'); assert.equal(req.run,'1');
+  polling.complete(s,response(req,{id:1,status:'completed',conclusion:'success'}),60000);
+  assert.equal(s.events.length,1); assert.equal(s.events[0].type,'finished');
+  assert.equal(s.tasks['jobs:x/y:1'],undefined);
+  req=polling.next(s,61000); assert.equal(req.kind,'run'); assert.equal(req.run,'2');
+  polling.complete(s,response(req,{id:2,status:'completed',conclusion:'failed'}),61000);
+  assert.equal(polling.next(s,62000),null); assert.equal(polling.next(s,100000),null);
+});
+test('activity and intermediate summary pages settle a finish once', () => {
+  const s=watchFixture(1), r=s.repos[0];
+  const lookup=polling.next(s,30000); assert.equal(lookup.kind,'run');
+  polling.activity(s,r,[{id:1,status:'completed',conclusion:'success'}],1000);
+  polling.settle(s,1000);
+  polling.complete(s,response(lookup,{id:1,status:'completed',conclusion:'success'}),30100);
+  assert.equal(s.events.length,1);
+  const x=watchFixture(1); x.repos[0].summaryAt=undefined; polling.select(x,'x/y','',{},0,true);
+  let req=polling.next(x,0); assert.equal(req.kind,'summary');
+  polling.complete(x,response(req,[{id:1,status:'completed',conclusion:'failed'}]),100);
+  assert.equal(x.events.length,1); assert.equal(x.events[0].conclusion,'failed');
+});
+test('watched run survives the completed trim until lookup finishes it', () => {
+  const s=watchFixture(1); s.repos[0].runs[0].status='completed';
+  polling.mergeRuns(s,s.repos[0],Array.from({length:10},(_,i)=>({id:i+2,status:'completed'})));
+  assert.ok(polling.runFor(s,'x/y',1));
+  polling.close(s);
+  const req=polling.next(s,30000); assert.equal(req.run,'1');
+  polling.complete(s,response(req,{id:1,status:'completed',conclusion:'failed'}),30000);
+  assert.equal(s.events.length,1); assert.equal(s.events[0].conclusion,'failed');
+});
+test('idle open watch wakes at its next lookup', () => {
+  const s=watchFixture(1); s.repos[0].activityAt=1000; s.repos[0].summaryAt=1000;
+  const req=polling.next(s,30000); assert.equal(req.kind,'run');
+  polling.complete(s,response(req,{id:1,status:'completed'}),30000);
+  assert.ok(s.wakeAt<=60000);
+  assert.equal(polling.next(s,59000),null);
+  assert.equal(polling.next(s,60000).kind,'run');
+});
+test('expiry runs before cooldown or auth and keeps its original deadline', () => {
+  const s=watchFixture(1), until=s.watches['x/y:1'].until;
+  polling.close(s); polling.open(s,1000); assert.equal(s.watches['x/y:1'].until,until);
+  s.cooldown=until+1000; s.auth=true;
+  assert.equal(polling.next(s,until),null);
+  assert.equal(s.events[0].type,'expired'); assert.equal(Object.keys(s.watches).length,0);
+});
+test('watched lookup errors isolate permission, stop closed auth, and retain network retry', () => {
+  const permission=watchFixture(); polling.close(permission);
+  let req=polling.next(permission,30000);
+  polling.complete(permission,{...response(req,{}),error:'forbidden',errorType:'permission'},30000);
+  assert.equal(permission.events.length,1); assert.equal(permission.events[0].type,'unavailable');
+  assert.deepEqual(Object.keys(permission.watches),['x/y:2']);
+  const auth=watchFixture(); polling.close(auth);
+  req=polling.next(auth,30000);
+  polling.complete(auth,{...response(req,{}),error:'login',errorType:'auth'},30000);
+  assert.equal(auth.events[0].type,'auth'); assert.equal(auth.events[0].count,2);
+  assert.equal(Object.keys(auth.watches).length,0);
+  const open=watchFixture(1); req=polling.next(open,30000);
+  polling.complete(open,{...response(req,{}),error:'login',errorType:'auth'},30000);
+  assert.equal(Object.keys(open.watches).length,1);
+  const network=watchFixture(1); polling.close(network); req=polling.next(network,30000);
+  polling.complete(network,{...response(req,{}),error:'offline',errorType:'network'},30000);
+  assert.equal(Object.keys(network.watches).length,1);
+  assert.equal(network.tasks['run:x/y:1'].failures,1);
+});
+test('close reports auth, open accepts a closed flight, close rejects an open flight', () => {
+  const s=watchFixture(1); s.auth=true; polling.close(s);
+  assert.equal(s.events[0].type,'auth'); assert.equal(s.events[0].count,1);
+  const x=watchFixture(1); polling.close(x);
+  let req=polling.next(x,30000); polling.open(x,30100);
+  assert.equal(polling.complete(x,response(req,{id:1,status:'in_progress'}),30200),true);
+  assert.equal(x.flight,null);
+  polling.ensure(x,'activity','x/y','','active',40000);
+  req=polling.next(x,40000); assert.ok(req);
+  polling.close(x); assert.equal(polling.complete(x,response(req,[]),40100),false);
+});
+test('catalogue removal settles unavailable, blocked retry survives seed, reset drops watches', () => {
+  const s=watchFixture(1); s.discover=true; s.slot=4;
+  let req=polling.next(s,0); assert.equal(req.kind,'catalogue');
+  polling.complete(s,response(req,[]),100);
+  assert.equal(s.events[0].type,'unavailable');
+  const x=watchFixture(1); x.repos[0].blocked=true;
+  const task=polling.ensure(x,'run','x/y','1','active',50000); task.failures=2;
+  polling.seed(x,1000); assert.equal(x.tasks[task.key],task);
+  assert.equal(task.due,50000); assert.equal(task.failures,2);
+  assert.equal(Object.keys(polling.resetHost(x).watches).length,0);
+});
+test('a retried watched run remains watched', () => {
+  const s=watchFixture(1); polling.close(s);
+  const req=polling.next(s,30000);
+  polling.complete(s,response(req,{id:1,status:'running'}),30000);
+  assert.equal(Object.keys(s.watches).length,1); assert.equal(s.events.length,0);
+});
+

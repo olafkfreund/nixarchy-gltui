@@ -1,11 +1,14 @@
 // One page at a time; all time is injected so scheduling can be tested without Qt.
 var phases = ["recent", "running", "pending", "created", "waiting_for_resource", "preparing"];
+var WATCH_CAP=5, WATCH_TTL=21600000, WATCH_EVERY=30000;
+var FINISHED=["success","failed","canceled","skipped"];
 function create() {
     // Every exported writer invalidates wakeAt; seeds is test-only.
     return {opened:false, generation:0, serial:0, order:0, slot:0, starts:[], cooldown:0,
         rateFailures:0, auth:false, tasks:{}, flight:null, repos:[], details:{}, selected:"", inspected:"",
         stableAt:0, expanded:{}, pinned:{}, catalogueAt:0, catalogueComplete:false, discover:true,
-        error:"", catalogueError:"", requests:0, lastRequest:"", lastStarted:0, wakeAt:0, seeds:0};
+        error:"", catalogueError:"", requests:0, lastRequest:"", lastStarted:0, wakeAt:0, seeds:0,
+        watches:{}, events:[]};
 }
 function resetHost(s) {
     return Object.assign(create(),{opened:s.opened,starts:s.starts,serial:s.serial,generation:s.generation+1});
@@ -16,6 +19,31 @@ function repoFor(s, name) { return s.repos.filter(function(r) { return r.repo ==
 function runFor(s, repo, id) {
     var r = repoFor(s, repo);
     return r && (r.runs || []).filter(function(run) { return String(run.id) === String(id) })[0];
+}
+function finished(run) { return !!run && FINISHED.indexOf(run.conclusion)>=0; }
+function watch(s, repo, run, now) {
+    s.wakeAt=0;
+    var id=repo+":"+run;
+    if (s.watches[id]) { delete s.watches[id]; return "unwatched"; }
+    var r=runFor(s,repo,run);
+    if (!r) return "missing";
+    if (finished(r)) return "finished";
+    if (Object.keys(s.watches).length>=WATCH_CAP) return "cap";
+    s.watches[id]={repo:repo,run:String(run),number:r.run_number,ref:r.head_branch||"",
+        until:now+WATCH_TTL,checkedAt:0};
+    return "watching";
+}
+function settle(s, now) {
+    Object.keys(s.watches).forEach(function(id) {
+        var w=s.watches[id], type="", run;
+        if (now>=w.until) type="expired";
+        else if (!repoFor(s,w.repo)) type="unavailable";
+        else { run=runFor(s,w.repo,w.run); if (finished(run)) type="finished"; }
+        if (type) {
+            s.events.push(type==="finished" ? {type:type,watch:w,conclusion:run.conclusion} : {type:type,watch:w});
+            delete s.watches[id]; s.wakeAt=0;
+        }
+    });
 }
 function ensure(s, kind, repo, run, group, due) {
     s.wakeAt=0;
@@ -35,12 +63,17 @@ function restart(s,t,now) {
 function open(s, now) {
     s.wakeAt=0;
     s.opened = true; s.generation++; s.auth = false;
+    if (s.flight) s.flight.generation=s.generation;
     if ((!s.catalogueComplete || now - s.catalogueAt >= 300000) && !s.catalogueError) s.discover = true;
     s.stableAt = now;
 }
 function close(s) {
     s.wakeAt=0;
     s.opened = false; s.generation++; s.tasks = {}; s.flight = null;
+    if (s.auth && Object.keys(s.watches).length) {
+        s.events.push({type:"auth",count:Object.keys(s.watches).length});
+        s.watches={}; s.wakeAt=0;
+    }
 }
 function select(s, repo, run, expanded, now, immediate) {
     s.wakeAt=0;
@@ -77,8 +110,9 @@ function seed(s, now) {
         var t = s.tasks[id];
         if (s.flight && s.flight.key === id) return;
         var owner=repoFor(s,t.repo);
-        if (owner && owner.blocked) { delete s.tasks[id]; return; }
-        if (t.repo && !owner) { delete s.tasks[id]; return; }
+        var watched=t.kind==="run" && s.watches[t.repo+":"+t.run];
+        if (owner && owner.blocked && !watched) { delete s.tasks[id]; return; }
+        if (t.repo && !owner && !watched) { delete s.tasks[id]; return; }
         if ((t.kind === "summary" && t.repo !== s.selected) ||
             (t.kind === "jobs" && (t.repo !== s.selected || t.run !== s.inspected || !s.expanded[t.repo + ":" + t.run])))
             delete s.tasks[id];
@@ -122,15 +156,34 @@ function seed(s, now) {
             else if (!final) wake=Math.min(wake,age(detail && detail.jobsAt,5000));
         }
     });
+    wake=Math.min(wake,seedWatches(s,now));
     Object.keys(s.tasks).forEach(function(id) { var due=s.tasks[id].due; if (due>now) wake=Math.min(wake,due); });
     s.wakeAt=wake;
 }
+function seedWatches(s, now) {
+    var wake=Infinity;
+    Object.keys(s.watches).forEach(function(id) {
+        var w=s.watches[id], taskKey=key("run",w.repo,w.run);
+        if (s.flight && s.flight.key===taskKey) return;
+        var at=w.checkedAt+WATCH_EVERY;
+        if (now>=at) ensure(s,"run",w.repo,w.run,"active",at).group="active";
+        else wake=Math.min(wake,at);
+    });
+    return wake;
+}
 function next(s, now) {
-    if (!s.opened || s.flight || s.auth || now < s.cooldown) return null;
+    settle(s,now);
+    var watching=Object.keys(s.watches).length>0;
+    if ((!s.opened && !watching) || s.flight || s.auth || now < s.cooldown) return null;
     s.starts = s.starts.filter(function(at) { return now - at < 60000 });
     if (s.starts.length >= 60 || s.starts.length && now - s.starts[s.starts.length-1] < 1000) return null;
     s.clock=now;
-    if (now>=s.wakeAt) seed(s,now);
+    if (s.opened) { if (now>=s.wakeAt) seed(s,now); }
+    else {
+        Object.keys(s.tasks).forEach(function(id) { var t=s.tasks[id];
+            if (t.kind!=="run" || !s.watches[t.repo+":"+t.run]) delete s.tasks[id]; });
+        seedWatches(s,now);
+    }
     var due = Object.keys(s.tasks).map(function(id) { return s.tasks[id] }).filter(function(t) { return t.due <= now });
     due.sort(function(a,b) { return a.due === b.due ? a.order-b.order : a.due-b.due });
     var group = ["interactive","interactive","interactive","active","background"][s.slot % 5];
@@ -168,7 +221,7 @@ function mergeRuns(s,r,incoming) {
         var old=runFor(s,r.repo,run.id);
         var jobs=s.tasks[key("jobs",r.repo,run.id)];
         if (old && (old.run_attempt || 1)!==(run.run_attempt || 1) && jobs) restart(s,jobs,s.clock || 0);
-        if (old && old.status!=="completed" && run.status==="completed" && s.selected===r.repo && s.inspected===String(run.id) && s.expanded[r.repo+":"+run.id])
+        if (s.opened && old && old.status!=="completed" && run.status==="completed" && s.selected===r.repo && s.inspected===String(run.id) && s.expanded[r.repo+":"+run.id])
             ensure(s,"jobs",r.repo,run.id,"interactive",s.clock || 0);
     });
     invalidateJobs(s,r,incoming);
@@ -181,7 +234,7 @@ function trimRuns(s,r,runs) {
     old.forEach(function(id) { if (!r.runs.some(function(run) { return run.id===id })) delete s.details[r.repo+":"+id]; });
 }
 function kept(s,r,run) {
-    return s.expanded[r.repo+":"+run.id] || r.repo===s.selected && String(run.id)===s.inspected;
+    return s.expanded[r.repo+":"+run.id] || r.repo===s.selected && String(run.id)===s.inspected || s.watches[r.repo+":"+run.id];
 }
 // ponytail: total -1 means "more than one page, count unknown" (GitLab omits X-Total above 10,000).
 function hiddenCount(total,items) { return total<0 ? -1 : Math.max(0,total-items.length); }
@@ -208,7 +261,7 @@ function activity(s,r,items,now,total) {
 }
 function complete(s,reply,now) {
     var flight=s.flight;
-    if (!s.opened || !flight || flight.generation!==s.generation || reply.requestId!==flight.request.requestId) return false;
+    if ((!s.opened && !Object.keys(s.watches).length) || !flight || flight.generation!==s.generation || reply.requestId!==flight.request.requestId) return false;
     var t=s.tasks[flight.key]; s.flight=null;
     if (!t) return false;
     s.wakeAt=0;
@@ -224,10 +277,18 @@ function complete(s,reply,now) {
     if (t.restart) { restart(s,t,now); delete t.restart; return true; }
     var r=repoFor(s,t.repo);
     if (reply.errorType || reply.error) {
+        var watched=t.kind==="run" && s.watches[t.repo+":"+t.run];
+        if (watched) watched.checkedAt=now;
         s.error=reply.error || "Invalid GitLab response";
         // ponytail: s.auth now means "stopped until manual refresh"; rename if a third stop reason appears
-        if (reply.errorType==="auth" || reply.errorType==="setup") s.auth=true;
+        if (reply.errorType==="auth" || reply.errorType==="setup") {
+            s.auth=true;
+            if (!s.opened && Object.keys(s.watches).length) {
+                s.events.push({type:"auth",count:Object.keys(s.watches).length}); s.watches={};
+            }
+        }
         if (reply.errorType==="permission") {
+            if (watched) { s.events.push({type:"unavailable",watch:watched}); delete s.watches[t.repo+":"+t.run]; }
             if (t.kind==="catalogue") { s.discover=false; s.catalogueError=s.error; }
             if (r && t.kind!=="jobs" && t.kind!=="run") { r.blocked=true; r.error=s.error; }
             else if (r && t.kind==="jobs") s.details[t.repo+":"+t.run]=Object.assign({},s.details[t.repo+":"+t.run] || {},{error:s.error,jobsAt:now,unavailable:true});
@@ -245,16 +306,17 @@ function complete(s,reply,now) {
     if (r) r.error="";
     var data=reply.data;
     if (t.kind==="run") {
+        if (s.watches[t.repo+":"+t.run]) s.watches[t.repo+":"+t.run].checkedAt=now;
         if (r) {
             var resolved=Object.assign({},data,{awaitingFinal:false,followupAt:now});
             mergeRuns(s,r,[resolved]);
             var running=(r.runs || []).filter(function(run) { return run.status==="in_progress" && !run.awaitingFinal }).length;
             // GitLab's total already excludes runs that left; a lookup can only add running ones it has not counted yet.
             r.active=r.activeFromTotal ? Math.max(r.active || 0,running) : running;
-            if (resolved.status==="completed" && t.repo===s.selected && t.run===s.inspected && s.expanded[t.repo+":"+t.run])
+            if (s.opened && resolved.status==="completed" && t.repo===s.selected && t.run===s.inspected && s.expanded[t.repo+":"+t.run])
                 ensure(s,"jobs",t.repo,t.run,"interactive",now);
         }
-        delete s.tasks[t.key]; return true;
+        delete s.tasks[t.key]; settle(s,now); return true;
     }
     t.items=t.kind==="catalogue" ? t.items.concat(data) : union(t.items,data);
     if (t.kind==="catalogue") {
@@ -264,7 +326,7 @@ function complete(s,reply,now) {
             else s.repos.push(repo);
         });
     } else if (r && t.kind==="summary") mergeRuns(s,r,data);
-    if (reply.nextPage) { t.page=reply.nextPage; t.due=now; t.order=++s.order; return true; }
+    if (reply.nextPage) { t.page=reply.nextPage; t.due=now; t.order=++s.order; settle(s,now); return true; }
     if (t.kind==="catalogue") {
         var names=t.items.map(function(repo) { return repo.repo });
         var gone=s.repos.filter(function(repo) { return names.indexOf(repo.repo)<0 }).map(function(repo) { return repo.repo });
@@ -279,7 +341,7 @@ function complete(s,reply,now) {
         if (phases[t.phase]==="running") activity(s,r,t.items,now,reply.total);
         if (typeof reply.total==="number") (t.hidden=t.hidden || {})[phases[t.phase]]=hiddenCount(reply.total,t.items);
         t.phase++; t.items=[]; t.page=1;
-        if (t.phase<phases.length) { t.due=now; t.order=++s.order; return true; }
+        if (t.phase<phases.length) { t.due=now; t.order=++s.order; settle(s,now); return true; }
         var keep=(r.runs || []).filter(function(run) { return run.awaitingFinal || kept(s,r,run) });
         trimRuns(s,r,union(t.all,keep));
         r.hidden=t.hidden || {};
@@ -289,5 +351,5 @@ function complete(s,reply,now) {
         s.details[t.repo+":"+t.run]={jobs:t.items,updated:new Date(now).toISOString(),jobsAt:now,
             finalAttempt:run && run.status==="completed" && t.items.every(function(job) { return job.status==="completed" }) ? run.run_attempt || 1 : 0};
     }
-    delete s.tasks[t.key]; return true;
+    delete s.tasks[t.key]; settle(s,now); return true;
 }
