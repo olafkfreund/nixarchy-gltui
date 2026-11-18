@@ -1,0 +1,441 @@
+---
+status: draft
+issue: 32
+spec: spec/2026-11-18-32-pinned-projects.md
+coders:
+  1: codex   # small tricky scheduler logic (groups, slots, orphan cleanup) with simulation tests
+  2: codex   # pure model rules with exact edge cases (cap, union, toggle branches) and Node tests
+  3: codex   # file-safety code (atomic write, refusal rules, modes) with unittest
+  4: coder   # QML wiring following the existing Process/notify/key patterns
+  5: coder   # README, keybindings.sh and version bump, tied to steps 1-4 wording
+  6: coder   # smoke-test stages, following the existing esteps pattern
+reviewers:
+  - codex    # independent read of the diff against this plan; agy omitted, out of use (#2748)
+---
+
+# Plan: Pin projects so they are checked first
+
+Self-contained. Branch `feat/32-pinned-projects`, based on `b91ba77`
+(main after #31; v1.6.0 code). Line numbers are for that commit; match on
+the quoted code.
+
+## Approved decisions (from the spec)
+
+### Scheduler (`Polling.js`)
+
+- `create()` gains `pinned:{}`. `resetHost()` is unchanged: it starts from
+  `create()`, so a host change clears the pins until the panel sets them.
+- **New exported writer `pin(s, names)`:**
+  - `s.wakeAt=0`;
+  - `s.pinned` = a new map, `name → true`, for each entry in `names`;
+  - if `!s.catalogueComplete`: for each name with no `repoFor(s,name)`,
+    push `{repo:name}` onto `s.repos`. After the catalogue is complete,
+    nothing is added.
+- **`seed()`, first loop** (`Polling.js:68-76`, the one that skips the
+  flight): after the `blocked` check, also delete a task with a non-empty
+  `t.repo` whose `repoFor(s,t.repo)` is missing. Catalogue tasks have
+  `repo:""` and are kept.
+- **`seed()`, interval and group** (`Polling.js:89-90`):
+
+  ```js
+  var pinned = !selected && !(r.active > 0) && !!s.pinned[r.repo];
+  var interval = selected ? 10000 : r.active > 0 ? 15000 : pinned ? 60000 : 600000;
+  var group = selected ? "interactive" : r.active > 0 ? "active" : pinned ? "pinned" : "background";
+  ```
+
+  The `backgroundQueued` rule stays for `group==="background"` only.
+- **`next()`** (`Polling.js:123-128`): the rotation array stays. Replace
+  the pick with:
+
+  ```js
+  var group = ["interactive","interactive","interactive","active","background"][s.slot % 5];
+  var order = group === "active" ? ["active","pinned"] : [group];
+  var t;
+  order.concat(["interactive","active","pinned","background"]).some(function(g) {
+      t = due.filter(function(x) { return x.group === g })[0]; return !!t });
+  ```
+
+  The `due` sort (due, then order) is unchanged.
+- **Accepted limit:** while interactive and running tasks are due at every
+  start, `pinned` gets no start. Tested, not fixed.
+
+### Model (`PipelinesModel.js`)
+
+- `validProject(name)`: `typeof name === "string"` and
+  `/^[A-Za-z0-9_.][A-Za-z0-9_.-]*(\/[A-Za-z0-9_.][A-Za-z0-9_.-]*)+$/`
+  and not `/(^|\/)\.\.?(\/|$)/`. This is the check at
+  `PipelinesPanel.qml:242`; that line then uses `Model.validProject`.
+- `pins(config, saved)` → `{names, config}`:
+  - a non-array argument counts as `[]`;
+  - `names`: `config` then `saved`, valid entries only, first occurrence
+    kept, cut to 10;
+  - `config`: map of the valid config entries (all of them, even past 10).
+- `togglePin(repo, config, saved)` → `{saved, notice}`, `saved` a new array
+  or `null`. With `p = pins(config, saved)`:
+  1. `p.config[repo]` → `{null, "Pinned in shell.json"}`;
+  2. `repo` in `p.names` → `saved` without `repo`,
+     `"Unpinned " + repo`;
+  3. `p.names.length >= 10` → `{null, "At most 10 pins"}`;
+  4. else → `saved` without `repo`, then `repo` appended,
+     `"Pinned " + repo`.
+
+  Non-array `saved` counts as `[]`.
+- `rows(repos, expanded, details, filter, now, pinned)`:
+  - `pinned` missing → `{}`;
+  - sort: `(!!pinned[b.repo]) - (!!pinned[a.repo]) || (b.active||0) - (a.active||0)`;
+  - the repo row gains `pinned: !!pinned[repo.repo]`;
+  - `shownFields` gains `"pinned"`.
+
+### State file (`gitlab.py`)
+
+- `state_path()`: `base = os.environ.get("XDG_STATE_HOME", "")`; if not
+  `os.path.isabs(base)`, `base = os.path.expanduser("~/.local/state")`.
+  Returns `Path(base) / "omarchy-gitlab-pipelines" / "pinned.json"`.
+- `read_state(path)` → `{"version": 1, "hosts": {...}}`:
+  - `FileNotFoundError` → `{"version": 1, "hosts": {}}`;
+  - other `OSError` → `ValueError("Cannot read pinned.json")`;
+  - not JSON, not a dict, `version != 1`, `hosts` not a dict, or a host's
+    value not a list → `ValueError("pinned.json is not valid")`.
+- `pins(task)`:
+  - `task` must be a dict; `host = host_name(task.get("host")).lower()`;
+  - **load** (no `"save"` key): `read_state`, return
+    `{"pins": [n for n in hosts.get(host, []) if valid]}`, valid meaning
+    `project_path` does not raise;
+  - **save**: `task["save"]` must be a list of strings that each pass
+    `project_path`, else `ValueError("Invalid pins")`. Duplicates are
+    dropped, order kept. Then `read_state` (an error stops here, nothing
+    written), set `hosts[host]`, and write:
+    - `path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)`;
+    - `tempfile.mkstemp(dir=path.parent, prefix=".pinned-", suffix=".json")`,
+      `os.fchmod(fd, 0o600)`, write `json.dumps(state, indent=2)`, flush,
+      `os.fsync`, close, `os.replace(tmp, path)`;
+    - on any exception, unlink the temp file if it exists, and raise
+      `ValueError("Cannot write pinned.json")` for an `OSError`;
+    - return `{"pins": list}`.
+- `main()`: `choices=("page","pins")`. For `pins`: no alarm, no signal
+  handlers needed; `print(json.dumps(pins(json.loads(args.request))))`
+  and return 0; on `ValueError` (JSON errors included) print
+  `{"error": str(exc)}` and return 1. The `page` path is unchanged.
+- No lock (one panel per session, one save at a time).
+
+### Panel (`PipelinesPanel.qml`)
+
+- **Properties:** `configPins: []`, `savedPins: []`, `pinsLoaded: false`,
+  `pinsError: ""`, `pinned: ({})`, `pinsLoadHost: ""`,
+  `pinsLoadStarted: false`, `pinsQueue: ({})` (host → list),
+  `pinsSaveStarted: false`.
+- **`configure(text)`:**
+  - in the host-change branch (`configuredHost !== host`), also set
+    `savedPins = []` and `pinsLoaded = false`;
+  - the `projects` filter uses `Model.validProject`;
+  - read `configPins = entry && Array.isArray(entry.pinned) ? entry.pinned : []`;
+    if more than 10 pass `validProject`,
+    `console.warn("GitLab Pipelines: only the first 10 pins apply")`;
+  - after `host = configuredHost`, if the host changed, call `loadPins()`;
+  - at the end of the `try`, call `applyPins()`. `markConfigured()` stays
+    last.
+- **`markConfigured()`:** after `configured = true`, call `applyPins()`.
+- **`applyPins()`:** return if `!configured`. Else
+  `var p = Model.pins(configPins, savedPins)`; set `pinned` to a map of
+  `p.names` (`name → true`); `Polling.pin(polling, p.names)`; `adopt()`.
+- **`rebuild()`:** pass `pinned` as the new last argument of `Model.rows`.
+- **`loadPins()`:** if `pinsLoad.running`, return (its exit handler
+  reloads). Else set `pinsLoadHost = host`, `pinsLoadStarted = false`,
+  command `["python3", helper, "pins", JSON.stringify({host: host})]`,
+  `running = true`. `Component.onCompleted` calls it once.
+- **`pinsLoad` Process:** stdout `StdioCollector`.
+  - `onStarted: root.pinsLoadStarted = true`;
+  - `onExited: function(code) { root.finishPinsLoad(code, output.text) }`;
+  - `onRunningChanged: if (!running && !root.pinsLoadStarted) root.finishPinsLoad(127, "")`;
+  - `finishPinsLoad(code, text)`:
+    - if `pinsLoadHost !== host`: `loadPins()` and return;
+    - parse `text` inside `try`; success needs `code === 0` and
+      `Array.isArray(reply.pins)`; then `savedPins = reply.pins`;
+    - else `savedPins = []` and
+      `pinsError = "Pins not loaded: " + (reply && reply.error || "helper failed")`;
+    - `pinsLoaded = true`; `applyPins()`.
+  - A failed start and a later `exited` must not both finish: guard with
+    `pinsLoadStarted`, as `requestProc` does.
+- **`open()`:** after `applyOpen`/queue, `if (pinsError) { notify(pinsError); pinsError = "" }`.
+- **`togglePin()`:**
+  - `if (!current) return`;
+  - `if (!pinsLoaded) { notify("Pins are still loading"); return }`;
+  - `var r = Model.togglePin(current.repo, configPins, savedPins); notify(r.notice)`;
+  - if `r.saved`: `savedPins = r.saved; applyPins(); savePins(host, r.saved)`,
+    then `list.positionViewAtIndex(cursor, ListView.Contain)` so the moved
+    row stays visible.
+- **`savePins(h, names)`:** `pinsQueue[h] = names` (copy the map and
+  reassign); `nextSave()`.
+- **`nextSave()`:** if `pinsSave.running`, return. Take the first key of
+  `pinsQueue`, remove it, set `pinsSaveStarted = false`, command
+  `["python3", helper, "pins", JSON.stringify({host: h, save: names})]`,
+  `running = true`.
+- **`pinsSave` Process:** same started/failed-start pattern. On finish:
+  success needs exit 0 and `Array.isArray(reply.pins)`; else
+  `notify("Pins not saved: " + (reply && reply.error || "helper failed"))`.
+  Then `nextSave()`.
+- **Key:** in the `plain` chain, after the `e` branch:
+  `else if (plain && event.key === Qt.Key_P && !shift) root.togglePin()`.
+- **Delegate title:** after the arrow,
+  `(modelData.kind === "repo" && modelData.pinned ? "★ " : "")`.
+- **Text:** header `" · running first · "` → `" · pinned and running first · "`;
+  `listHint` inserts `p pin  ` after `y/Y copy  `.
+
+### Docs
+
+- **`README.md`:**
+  - "Self-managed GitLab and settings" (`:131-147`): the JSON example gains
+    `"pinned": ["group/project"]`, and the sentence about `projects` gains
+    one on `pinned` (pinned projects sort first and are checked about every
+    minute; see Pinned projects);
+  - new section "Pinned projects" after "Open on the current repository":
+    - `p` pins or unpins the selected project (any row inside it);
+    - pinned projects sort first and show `★`;
+    - pins made with `p` are stored per host in
+      `$XDG_STATE_HOME/omarchy-gitlab-pipelines/pinned.json` (default
+      `~/.local/state/…`); the panel never writes `shell.json`;
+    - `pinned` in `shell.json` also pins; those cannot be unpinned with `p`
+      (`Pinned in shell.json`);
+    - at most 10 apply: `shell.json` pins first, then `p` pins in the order
+      made; extra saved pins stay saved and apply again when room is made;
+      `p` at the cap says `At most 10 pins`;
+    - a pin only shows when the account can see the project;
+    - an unreadable or invalid `pinned.json` is never overwritten; the
+      panel says `Pins not saved: …`; fix or delete the file;
+  - "Refresh and errors" table: new row `| Idle pinned projects | 60 seconds |`
+    before the 10-minute row; the running row becomes "Other projects with
+    running pipelines, pinned or not";
+  - the slot paragraph: the running-pipelines slot also serves idle pinned
+    projects, after running ones; spare slots serve pins before background
+    work; under a busy schedule (the selected project plus several running
+    projects) idle pins wait;
+  - "Keyboard" table: `| p | Pin or unpin the selected project |` after
+    Shift + Y.
+- **`keybindings.sh`:** after the Shift + Y line:
+  `p → Pin or unpin the selected project`.
+- **`manifest.json`:** `"version": "1.7.0"`.
+
+## Steps
+
+1. **`Polling.js` and `tests/polling.cjs`: the scheduler.** Per
+   "Scheduler". New tests (use the existing `polling.create/open/seed/next`
+   helpers in the file):
+   - an idle pin is due 60 s after `activityAt`, not before; an idle
+     unpinned project after 600 s;
+   - two idle pins and two idle unpinned projects, all due: both pins are
+     queued, only one `background` activity task is;
+   - a running project (`active:1`) and an idle pin both due: the
+     `active`-slot start takes the running one;
+   - saturation: selection with expanded jobs always due, 10 pins, 3
+     running projects, discovery on; over 100 starts, `background` gets at
+     least one start in every five, and the total stays within
+     60 a minute;
+   - the accepted limit: with interactive and active always due, no
+     `pinned` start; once active is empty, the next active-slot start is a
+     pin;
+   - a selected pin gets a `summary` and no `activity` task;
+   - `pin()` seeds `{repo}` for unknown names while the catalogue is
+     incomplete, not after; `pinned` is replaced, not merged;
+   - reopen (`close` then `open`) 30 s after a pin's check does not queue
+     it; 61 s after does;
+   - orphan: a seeded pin with a queued activity task in retry
+     (`failures:1`) is removed when a catalogue without it completes and
+     `seed()` runs; a task in flight is not removed.
+
+   Check: `node tests/polling.cjs >/dev/null && node tests/model.cjs >/dev/null`.
+
+   Traps: ES5 in `Polling.js` (no `let`, arrows or `includes`). Every
+   exported writer sets `s.wakeAt=0`. Do not change the rotation array or
+   the budget code.
+
+2. **`PipelinesModel.js` and `tests/model.cjs`: the model.** Per "Model".
+   Tests:
+   - `validProject`: `g/p` and `a.b/c_d-e` pass; `p`, `/g/p`, `g/../p`,
+     `g/./p`, `g//p`, `g/p q`, `3` fail;
+   - `pins`: config then saved order, duplicates across sources removed,
+     invalid entries dropped, cap at 10 with 12 inputs, config map holds
+     all valid config entries, non-arrays count as `[]`;
+   - `togglePin`: each of the four branches with exact `saved` and
+     `notice`; a saved pin beyond the cap (8 config + 3 saved) gives
+     `At most 10 pins`; re-pinning moves to the end;
+   - `rows`: pinned before unpinned, then running count; ties keep input
+     order; `pinned` true/false on repo rows; missing argument works;
+     filter `★` returns no rows;
+   - `syncRows` updates a row whose only change is `pinned`.
+
+   Check: as step 1.
+
+   Traps: ES5 only. Compare `vm` objects through `JSON.stringify`
+   (`tests/model.cjs:45-46`).
+
+3. **`gitlab.py` and `tests/test_gitlab.py`: the state file.** Per "State
+   file". New `PinsTest` class, each test with a temporary
+   `XDG_STATE_HOME` (`patch.dict(os.environ, ...)`):
+   - load: absent file → `[]`; valid file → that host's list, invalid
+     entries dropped; host matched lower-case;
+   - load: unreadable (chmod 000; skip if running as root) →
+     `Cannot read pinned.json`; invalid JSON, `[]`, `version: 2`, a host
+     value `"x"` → `pinned.json is not valid`;
+   - save: keeps other hosts' lists; lower-cases `Gitlab.Example.org:8443`
+     and keeps the port; removes duplicates; file mode 0600, new directory
+     mode 0700;
+   - save refuses an invalid or unreadable file and leaves it byte for
+     byte unchanged;
+   - a patched failing `os.replace` leaves the old file unchanged and no
+     `.pinned-*` temp file;
+   - bad host, `save` not a list, `save: ["bad"]` → `ValueError`;
+   - `XDG_STATE_HOME` empty or relative → `~/.local/state/...` under a
+     patched `HOME`;
+   - `main()` with `pins`: prints `{"pins": [...]}` and returns 0; on error
+     prints `{"error": ...}` and returns 1; invalid JSON request → error.
+
+   Check: `python3 -m unittest discover -s tests`.
+
+   Traps: never touch the real `~/.local/state`: every test patches
+   `XDG_STATE_HOME` or `HOME`. Keep the `page` path and its alarm
+   unchanged.
+
+4. **`PipelinesPanel.qml`: the panel.** Per "Panel".
+
+   Check: steps 1-3 checks, then the microVM smoke run (Tests). Existing
+   smoke checks must pass unchanged, apart from the header and `listHint`
+   strings if a check quotes them (update those, and say so).
+
+   Traps:
+   - `applyPins()` must do nothing before `configured`, so `configure()`
+     seeds `projects` first (`PipelinesPanel.qml:240`).
+   - Ignore a load result for another host, then reload.
+   - Do not change `requestProc`, `toggle()`, the search field, or
+     `configure()`'s host validation and reset beyond the lines above.
+   - `p` is in the `plain` chain only: Ctrl/Alt/Meta + P must do nothing new.
+
+5. **`README.md`, `keybindings.sh`, `manifest.json`.** Per "Docs".
+
+   Check: the full test set, and
+   `bash keybindings.sh --print | grep -c 'Pin or unpin'` prints 1.
+
+   Traps: keep table formats; the version is `1.7.0`.
+
+6. **`tests/qml-smoke.py`: the pin checks.**
+   - **Harness:**
+     - add `'XDG_STATE_HOME': str(home / '.local/state')` to the `env` of
+       the `quickshell` call (`tests/qml-smoke.py:1096`). The theme path
+       already lives under `home`, so nothing else moves.
+     - the fake `gitlab.py`: as its first lines, if `sys.argv[1] == 'pins'`,
+       load the real helper with `importlib` from the source path (format
+       the path into the fake's text with `repr`), then
+       `sys.exit(real.main())`. The API fake stays as it is for `page`.
+   - **New `esteps`,** inserted immediately before the final `estep` (the
+     one that sets `panel.workerBusy=false` and calls `panel.close()`).
+     `workerBusy` is already true there, so no API request starts.
+     Synchronous checks grouped in one function; waits use `waitUntil`
+     (`:273`) in their own steps.
+     - **P1. Fixture:** `cfg` with `pinned:["o/gamma"]` on
+       `gitlab.example.org`; repos `o/alpha` (`active:1`), `o/beta`,
+       `o/gamma`, `o/delta`, all `checked`; wait until `pinsLoaded`.
+     - **P2. Config pin sorts first:** `entries[0].key` is `repo:o/gamma`,
+       its row text in the list starts with `▸ ★ `; `entries[1]` is
+       `o/alpha` (running).
+     - **P3. `p` pins:** cursor on `o/delta`, `pressKey(Qt.Key_P)`: notice
+       `Pinned o/delta`, `entries[1].key` is `repo:o/delta`, cursor still
+       on `o/delta`; wait until the state file
+       (`XDG_STATE_HOME/omarchy-gitlab-pipelines/pinned.json`, read with a
+       `FileView` or `Process` `cat`) holds `"o/delta"` under
+       `gitlab.example.org`.
+     - **P4. `p` unpins:** `p` again on `o/delta`: notice
+       `Unpinned o/delta`; wait until the file no longer holds it.
+     - **P5. Config pin:** `p` on `o/gamma`: notice `Pinned in shell.json`.
+     - **P6. Cap:** `cfg` with 10 valid config pins; `p` on an unpinned
+       project: `At most 10 pins`. Restore `cfg` with `["o/gamma"]`.
+     - **P7. Ctrl+P:** does not change pins or notice.
+     - **P8. Save failure:** make the state directory read-only
+       (`Process` `chmod 500`), `p` on `o/beta`: wait for a notice starting
+       `Pins not saved:`; restore `chmod 700`.
+     - **P9. Host race:** `cfg` host `gitlab.other.org` then at once back
+       to `gitlab.example.org`; wait until `pinsLoaded`; `savedPins`
+       equals the file's `gitlab.example.org` list.
+     - **P10. Order at start:** `panel.configured=false`,
+       `panel.polling.repos=[]`, `savedPins=["o/beta"]`, call
+       `applyPins()` (does nothing), then `cfg` with `projects:["o/alpha"]`:
+       both `o/alpha` and `o/beta` are in `polling.repos`.
+     - **P11. Failed start:** set the `pinsLoad` command to a missing
+       binary (expose `pinsLoadItem`/`pinsSaveItem` as test hooks, like
+       `copyCommand`), `loadPins()`: wait until `pinsLoaded` and
+       `pinsError` starts `Pins not loaded:`; the same for a save, notice
+       `Pins not saved:`. Restore the commands.
+     - **P12. Text:** `footerHint` contains `p pin`; wait until `helpText`
+       contains `Pin or unpin`.
+     - **Restore:** `cfg("gitlab.example.org")` with no pins, clear the
+       state file through a save of `[]`, wait until done, `adopt()`.
+
+   Check: the microVM smoke run gives `passed=2 rc=0 binding_loop=0`.
+
+   Traps:
+   - **Never run `tests/qml-smoke.py` on the host desktop.**
+   - The smoke runs two scenarios (`fresh`, `managed`) in separate temp
+     dirs; the state file is per scenario.
+   - If the run nears the 90 s watchdog, raise it together with the 110 s
+     subprocess timeout, and record it in Deviations.
+
+## Tests
+
+```bash
+node tests/polling.cjs && node tests/model.cjs && python3 -m unittest discover -s tests
+```
+
+**QML smoke test, in the microVM only.** Never on the host desktop.
+
+1. Start the VM:
+   ```bash
+   nixarchy vm create gltui-32 --template nixarchy-desktop
+   nixarchy vm run --detach gltui-32
+   ```
+   Wait about 45 s.
+2. Create `~/.local/state/nixarchy/microvm/gltui-32/share/run-smoke.sh`:
+   ```sh
+   #!/bin/sh
+   cd /mnt/host/repo || exit 1
+   { python3 tests/qml-smoke.py; echo "rc=$?"; } > /mnt/host/smoke.out 2>&1
+   touch /mnt/host/smoke.done
+   ```
+3. Each run, from the repo root:
+   ```sh
+   share=~/.local/state/nixarchy/microvm/gltui-32/share
+   rm -rf "${share:?}/repo" && mkdir "$share/repo" && git ls-files -co --exclude-standard -z | xargs -0 tar -c | tar -x -C "$share/repo"
+   rm -f "$share/smoke.done" "$share/smoke.out"
+   echo '[{"tool":"launch","args":{"argv":["sh","/mnt/host/run-smoke.sh"],"timeout":2,"generation":"@generation"}}]' \
+     | ~/.claude/skills/ai-mirror/mirror-vm gltui-32 - --out /tmp/gltui-32-shots >/dev/null 2>&1
+   for i in $(seq 1 70); do [ -f "$share/smoke.done" ] && break; sleep 5; done
+   echo "passed=$(grep -c QML_CHECKS_PASSED "$share/smoke.out") $(grep -o 'rc=[0-9]*' "$share/smoke.out" | tail -1) binding_loop=$(grep -c 'binding loop' "$share/smoke.out")"
+   grep 'CHECK FAILED' "$share/smoke.out"
+   ```
+   Expected: `passed=2 rc=0 binding_loop=0`.
+4. **Mutation checks, in the VM copy only:** (a) drop `"pinned"` from the
+   active-slot order in `next()`: `polling.cjs` fails; (b) drop the pinned
+   term from the `rows()` sort: `model.cjs` and P2 fail; (c) remove the
+   `configured` guard in `applyPins()`: P10 fails.
+5. Afterwards: `nixarchy vm stop gltui-32`, then, when stopped,
+   `nixarchy vm rm gltui-32`.
+
+Also build the flake checks: `nix build .#checks.x86_64-linux.plugin
+.#checks.x86_64-linux.menu-verbs --no-link`.
+
+**Review:** a fresh Opus agent, given only this plan and `git diff`, and
+Codex's read-only review of the diff (`codex review --base <approve-plan sha>`).
+
+**Release, after the PR merges:** tag `v1.7.0`; nixarchy pin bump PR;
+lock nixos_config's `nixarchy-gltui` node (locked fields only, each count
+1); switch p620 with its live overrides, then razer, announcing on the bus
+first; check `manifest.json` is 1.7.0 and no units failed. p510 is left
+alone.
+
+## Rollback
+
+Revert the merge commit and release a patch, or pin the previous tag in
+nixarchy. The state file is only read by this feature; leaving it behind
+is harmless, and deleting `~/.local/state/omarchy-gitlab-pipelines/`
+removes all key pins.
+
+## Deviations
+
+None yet.
