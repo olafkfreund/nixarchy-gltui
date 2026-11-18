@@ -52,13 +52,13 @@ never reads a token, and `glab` does. After it, add:
 >
 > The variable must be in the environment the Omarchy shell was started with. Exporting it in a terminal does not change a running shell.
 >
-> If the panel keeps asking you to authenticate although `glab auth status` looks fine, check for a stale environment token. In a terminal, compare with all three cleared:
+> If the panel keeps asking you to authenticate although `glab auth status` looks fine, check for a stale environment token. In a terminal, compare with all three cleared, using the panel's host in place of `gitlab.example.org`:
 >
 > ```bash
 > env -u GITLAB_TOKEN -u GITLAB_ACCESS_TOKEN -u OAUTH_TOKEN glab api --hostname gitlab.example.org user
 > ```
 >
-> If that works, remove the variable from your session's environment and restart the shell (`omarchy-restart-shell`). Keep tokens out of world-readable files and the Nix store.
+> If that works, the stale token is in the session's environment. `omarchy-restart-shell` starts the shell through Hyprland, so the shell gets Hyprland's environment: remove the variable where your session sets it, then log out and back in. Keep tokens out of world-readable files and the Nix store.
 
 `CI_JOB_TOKEN` is not mentioned: it is out of scope.
 
@@ -93,10 +93,38 @@ never reads a token, and `glab` does. After it, add:
   look at the PR's rendered file.
 - `python3 -m unittest discover -s tests` and the node tests still pass.
   Nothing they test changes; this checks that nothing else was touched.
-- Re-run the two live checks with an invalid token before merging, so the
-  README's two key claims are confirmed on the current glab:
+- Re-run the live checks before merging, so the README's two key claims
+  are confirmed on the current glab. Output goes to `/dev/null`, so nothing
+  is printed.
+  - **Prerequisites:** `gitlab.com` is a configured glab host with a working
+    stored login. `gitlab.example.invalid` is not configured. `GITLAB_HOST`
+    and `GITLAB_REPO` are unset.
+  - The checks:
 
-  ```bash
-  GITLAB_TOKEN=glpat-invalid glab api --hostname gitlab.com user          # 401: env overrides login
-  GITLAB_TOKEN=glpat-invalid glab api --hostname gitlab.example.invalid user  # refused: not sent
-  ```
+    ```bash
+    env -u GITLAB_TOKEN -u GITLAB_ACCESS_TOKEN -u OAUTH_TOKEN -u GITLAB_HOST -u GITLAB_REPO \
+      glab api --hostname gitlab.com user >/dev/null && echo baseline-ok      # stored login works
+    env -u GITLAB_HOST -u GITLAB_REPO GITLAB_TOKEN=glpat-invalid \
+      glab api --hostname gitlab.com user >/dev/null || echo override-401      # env token overrides it
+    env -u GITLAB_HOST -u GITLAB_REPO GITLAB_TOKEN=glpat-invalid \
+      glab api --hostname gitlab.example.invalid user 2>&1 | grep -q 'did not send' && echo not-sent
+    ```
+  - **Expected:** `baseline-ok`, `override-401` and `not-sent`.
+
+## Review notes
+
+Codex reviewed the draft read-only. It confirmed the replacement targets,
+the anchor, the blockquote nesting, the facts against glab 1.130.0's help,
+and that the text covers every intent outcome. Its findings, which I
+checked and folded in above:
+- a 401 alone does not prove an override: the live checks now start with
+  a stored-login baseline, and state their prerequisites;
+- the diagnostic command now says to use the panel's host.
+
+I also found that `omarchy-restart-shell` starts the shell through
+`hyprctl dispatch exec` (`omarchy-restart-shell:117-119`), so the shell
+inherits Hyprland's environment. Restarting the shell alone would not drop
+a variable Hyprland has, so the fix now says to log out and back in.
+
+When applying the text, remove the `> ` prefix from every line, including
+the fences and blank lines.
