@@ -170,3 +170,11 @@ folded in above:
 Revert the PR's merge commit.
 
 ## Deviations
+- **Render check:** GitHub's `/markdown` API adds no heading IDs. The repo
+  view does that. `anchor-ok` was therefore checked on the pushed branch's
+  rendered README (`repos/…/readme?ref=docs/31-gitlab-token` as HTML).
+- **`fence-ok`:** GitHub renders the block as
+  `<div class="highlight highlight-source-shell"><pre class="notranslate">env -u GITLAB_TOKEN`,
+  so the pattern was adjusted to that markup without loosening it.
+- **Results:** `text-ok`, `only-readme`, the tests, and the live checks
+  `baseline-ok`, `override-401` and `not-sent` all pass.

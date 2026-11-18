@@ -7,7 +7,7 @@ It is the GitLab sibling of [nixarchy-ghtui](https://github.com/olafkfreund/nixa
 ## Requirements
 
 - Omarchy shell with the panel plugin contract and `qs.Commons` / `qs.Ui` components.
-- [`glab`](https://gitlab.com/gitlab-org/cli), authenticated with `glab auth login` for every host you use. The token needs the `read_api` scope.
+- [`glab`](https://gitlab.com/gitlab-org/cli), authenticated with `glab auth login` for every host you use, or with an environment token (see [Authentication](#authentication)). The token needs the `read_api` scope.
 - Python 3, `xdg-open` for the browser shortcut, and `wl-copy` (wl-clipboard) for the copy keys.
 
 On NixOS, missing dependencies belong in your declarative configuration. Do not install them with pacman or an imperative Nix profile.
@@ -52,7 +52,7 @@ Import a NixOS module like this one, replacing `YOUR_USER`:
 }
 ```
 
-The package supports `x86_64-linux` and `aarch64-linux` and contains only the plugin files. Adding it to `environment.systemPackages` does not register it with Omarchy. The Nixarchy module validates the package and links it into your plugin directory. Never put tokens in `flake.nix` or `flake.lock`; runtime API access comes from `glab auth login`.
+The package supports `x86_64-linux` and `aarch64-linux` and contains only the plugin files. Adding it to `environment.systemPackages` does not register it with Omarchy. The Nixarchy module validates the package and links it into your plugin directory. Never put tokens in `flake.nix` or `flake.lock`; runtime API access comes from `glab`'s stored login or an environment token (see [Authentication](#authentication)).
 
 Build and activate through NixOS, replacing `HOST`, then enable the plugin once in the running session (or use **Setup → Plugins**):
 
@@ -144,11 +144,23 @@ The default host is `gitlab.com`. For a self-managed instance, add `host` to thi
 }
 ```
 
-Keep any other keys already in that entry. The host must be authenticated with `glab auth login --hostname gitlab.example.org`. Browser links only open URLs on the configured host. One host is shown at a time.
+Keep any other keys already in that entry. The host must be authenticated with `glab auth login --hostname gitlab.example.org` (or reachable by an environment token, see [Authentication](#authentication)). Browser links only open URLs on the configured host. One host is shown at a time.
 
 ### Authentication
 
 The plugin uses your existing `glab` login and never reads, extracts or stores a token. A personal, group or project access token works if it has `read_api`. If a project is missing, confirm that `glab api projects?membership=true` lists it with the same login, then press **Shift + R**.
+
+**Environment tokens.** `glab` prefers a token from the environment over its stored login: `GITLAB_TOKEN`, then `GITLAB_ACCESS_TOKEN`, then `OAUTH_TOKEN`, the first one set wins. It needs the same `read_api` scope. `glab` only sends such a token to some hosts: the default host (`GITLAB_HOST`), the host in `GITLAB_REPO`, and hosts already in its configuration. `glab config --help` has the full rules. The panel names its host only on the command line, so for any other host run `glab auth login --hostname …` once. Setting `GITLAB_HOST` for the whole session also works, but then every `glab` command in that session uses that host, and fails in repositories whose remotes do not match it.
+
+The variable must be in the environment the Omarchy shell was started with. Exporting it in a terminal does not change a running shell.
+
+If the panel keeps asking you to authenticate although `glab auth status` looks fine, check for a stale environment token. In a terminal, compare with all three cleared, using the panel's host in place of `gitlab.example.org`:
+
+```bash
+env -u GITLAB_TOKEN -u GITLAB_ACCESS_TOKEN -u OAUTH_TOKEN glab api --hostname gitlab.example.org user
+```
+
+If that works, the stale token is in the session's environment. `omarchy-restart-shell` starts the shell through Hyprland, so the shell gets Hyprland's environment: remove the variable where your session sets it, then log out and back in. Keep tokens out of world-readable files and the Nix store.
 
 ## Keyboard
 
