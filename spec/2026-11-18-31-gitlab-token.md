@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 31
 intent: intent/2026-11-18-31-gitlab-token.md
 ---
