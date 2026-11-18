@@ -2,13 +2,16 @@
 import argparse
 import json
 import math
+import os
 import re
 import signal
 import subprocess
 import sys
+import tempfile
 import unicodedata
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from urllib.parse import quote
 
 
@@ -31,6 +34,74 @@ def project_path(value):
     if any(part in (".", "..") for part in value.split("/")):
         raise ValueError("Invalid project")
     return value
+
+
+def state_path():
+    base = os.environ.get("XDG_STATE_HOME", "")
+    if not os.path.isabs(base):
+        base = os.path.expanduser("~/.local/state")
+    return Path(base) / "omarchy-gitlab-pipelines" / "pinned.json"
+
+
+def read_state(path):
+    try:
+        state = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {"version": 1, "hosts": {}}
+    except OSError as exc:
+        raise ValueError("Cannot read pinned.json") from exc
+    except ValueError as exc:
+        raise ValueError("pinned.json is not valid") from exc
+    if (not isinstance(state, dict) or state.get("version") != 1 or
+            not isinstance(state.get("hosts"), dict) or
+            any(not isinstance(value, list) for value in state["hosts"].values())):
+        raise ValueError("pinned.json is not valid")
+    return state
+
+
+def pins(task):
+    if not isinstance(task, dict):
+        raise ValueError("Invalid pins")
+    host = host_name(task.get("host")).lower()
+    path = state_path()
+    if "save" not in task:
+        state = read_state(path)
+        valid = []
+        for name in state["hosts"].get(host, []):
+            try:
+                valid.append(project_path(name))
+            except ValueError:
+                pass
+        return {"pins": valid}
+    if not isinstance(task["save"], list):
+        raise ValueError("Invalid pins")
+    names = []
+    for name in task["save"]:
+        try:
+            project_path(name)
+        except ValueError as exc:
+            raise ValueError("Invalid pins") from exc
+        if name not in names:
+            names.append(name)
+    state = read_state(path)
+    state["hosts"][host] = names
+    tmp = None
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".pinned-", suffix=".json")
+        with os.fdopen(fd, "w") as output:
+            os.fchmod(output.fileno(), 0o600)
+            output.write(json.dumps(state, indent=2))
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(tmp, path)
+    except Exception as exc:
+        if tmp is not None:
+            Path(tmp).unlink(missing_ok=True)
+        if isinstance(exc, OSError):
+            raise ValueError("Cannot write pinned.json") from exc
+        raise
+    return {"pins": names}
 
 
 def host_name(value):
@@ -249,9 +320,16 @@ def read_page(task):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("page",))
+    parser.add_argument("mode", choices=("page", "pins"))
     parser.add_argument("request")
     args = parser.parse_args()
+    if args.mode == "pins":
+        try:
+            print(json.dumps(pins(json.loads(args.request))))
+            return 0
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 1
     # Bound the complete request, including glab start-up.
     def timed_out(*_):
         raise DeadlineExceeded()

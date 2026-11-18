@@ -22,7 +22,14 @@ for scenario in ('fresh', 'managed'):
             (root / name).symlink_to(shell / name)
         for name in ('PipelinesPanel.qml', 'PipelinesModel.js', 'Polling.js', 'keybindings.sh', 'menu.py', 'menu.example.json'):
             (root / name).symlink_to(source / name)
-        (root / 'gitlab.py').write_text('''import json, sys, time
+        (root / 'gitlab.py').write_text("REAL = " + repr(str(source / 'gitlab.py')) + '''
+import importlib.util, json, os, sys, time
+if sys.argv[1] == 'pins':
+    # Only saves are delayed, so a load can overtake a pending save.
+    if 'save' in json.loads(sys.argv[2]) and os.path.exists(os.environ['PINS_DELAY']): time.sleep(1.5)
+    spec = importlib.util.spec_from_file_location('real_gitlab', REAL)
+    real = importlib.util.module_from_spec(spec); spec.loader.exec_module(real)
+    sys.exit(real.main())
 request=json.loads(sys.argv[2]); kind=request['kind']
 time.sleep(0.1)
 host=request.get('host'); assert host in ('gitlab.example.org','gitlab.other.org'), request
@@ -39,6 +46,9 @@ print(json.dumps({'requestId':request['requestId'],'data':data,'nextPage':0,'err
         theme = home / '.local/state/omarchy/current/theme'
         theme.parent.mkdir(parents=True)
         theme.symlink_to(Path.home() / '.local/state/omarchy/current/theme')
+        state = home / '.local/state/omarchy-gitlab-pipelines'
+        state.mkdir()
+        (state / 'pinned.json').write_text('{"version":1,"hosts":{"gitlab.com":["zz/saved"]}}')
         (home / '.config').mkdir()
         (home / '.config/fontconfig').symlink_to(Path.home() / '.config/fontconfig')
         (home / '.config/omarchy').mkdir()
@@ -67,7 +77,7 @@ ShellRoot {
     }
     Timer {
         interval: 90000; running: true
-        onTriggered: { console.error("CHECK FAILED: timeout stage=" + stage + " " + panel.status()); Qt.quit() }
+        onTriggered: { console.error("CHECK FAILED: timeout stage=" + stage + " ei=" + ei + " " + panel.status()); Qt.quit() }
     }
     property int stage: 0
     property string selected: ""
@@ -275,6 +285,31 @@ ShellRoot {
         if (cond()) { kt=0; return true }
         check(Date.now()-kt<5000,"timeout: " + label)
         return false
+    }
+    function cfg(h, extra) { panel.configure(JSON.stringify({plugins:[Object.assign({id:"olafkfreund.gitlab-pipelines",host:h}, extra || {})]})) }
+    property var startPins: null
+    readonly property string stateDir: Quickshell.env("XDG_STATE_HOME") + "/omarchy-gitlab-pipelines"
+    // Records the list the real start-up load read for gitlab.com, before the first test step changes host.
+    Connections {
+        target: panel
+        function onPinsLoadedChanged() { if (panel.pinsLoaded && startPins===null && panel.host==="gitlab.com") startPins=panel.savedPins.slice() }
+    }
+    FileView { id: stateFile; path: stateDir + "/pinned.json"; blockLoading: true; printErrors: false }
+    Process { id: shp }
+    function sh(cmd) { shp.command=["sh","-c",cmd]; shp.running=true }
+    // True when pinned.json holds exactly want (host -> list) for every host named in it.
+    function stateIs(want) {
+        stateFile.reload()
+        try {
+            var hosts=JSON.parse(stateFile.text()).hosts
+            return Object.keys(want).every(function(h) { return JSON.stringify(hosts[h])===JSON.stringify(want[h]) })
+        } catch (e) { return false }
+    }
+    function pinFixture() {
+        panel.filterText=""
+        panel.expanded=({})
+        panel.polling.repos=[{repo:"o/alpha",checked:"x",runs:[],active:1},{repo:"o/beta",checked:"x",runs:[]},{repo:"o/gamma",checked:"x",runs:[]},{repo:"o/delta",checked:"x",runs:[]}]
+        panel.adopt()
     }
     function pasteStart() { pasteCode=-1; paste.running=true }
     function kP(n) {
@@ -858,7 +893,6 @@ ShellRoot {
             eq(panel.notice,"","O8 no notice on match")
         },
         function() {
-            function cfg(h) { panel.configure('{"plugins":[{"id":"olafkfreund.gitlab-pipelines","host":"' + h + '"}]}') }
             panel.configured=false
             panel.filterText="o"
             panel.open('{"filter":"o/beta"}')
@@ -882,6 +916,219 @@ ShellRoot {
             eq(panel.notice,"","O9 no notice on accepted host")
             cfg("gitlab.example.org")
             panel.filterText=""
+            panel.adopt()
+        },
+        // P1-P14: pinned projects. The state file lives under XDG_STATE_HOME of this run.
+        function() {
+            cfg("gitlab.example.org",{pinned:["o/gamma"]})
+            pinFixture()
+        },
+        function() {
+            if (!waitUntil(function() { return panel.pinsLoaded && panel.host==="gitlab.example.org" },"P1 pins loaded")) return false
+            eq(JSON.stringify(startPins),'["zz/saved"]',"P1 start-up load read the file")
+            panel.pinsError=""
+            check(panel.pinned["o/gamma"] && !panel.pinned["o/alpha"],"P1 config pin applied")
+        },
+        function() {
+            if (!waitUntil(function() { return rowItem("repo:o/gamma") },"P2 rows laid out")) return false
+            eq(panel.entries[0].key,"repo:o/gamma","P2 config pin first")
+            eq(panel.entries[1].key,"repo:o/alpha","P2 running project second")
+            check(arrowOf(rowItem("repo:o/gamma")).indexOf("▸ ★ ")===0,"P2 star in the row: " + arrowOf(rowItem("repo:o/gamma")))
+            check(arrowOf(rowItem("repo:o/alpha")).indexOf("★")<0,"P2 no star on an unpinned row")
+        },
+        function() {
+            cursorTo("repo:o/delta")
+            kPress(Qt.Key_P)
+            eq(panel.notice,"Pinned o/delta","P3 notice")
+            eq(panel.entries[1].key,"repo:o/delta","P3 pin moves up")
+            eq(panel.current.key,"repo:o/delta","P3 cursor stays on the project")
+        },
+        function() {
+            if (!waitUntil(function() { return stateIs({"gitlab.example.org":["o/delta"]}) },"P3 state file")) return false
+            cursorTo("repo:o/delta")
+            kPress(Qt.Key_P)
+            eq(panel.notice,"Unpinned o/delta","P4 notice")
+            check(!panel.pinned["o/delta"],"P4 unpinned")
+        },
+        function() {
+            if (!waitUntil(function() { return stateIs({"gitlab.example.org":[]}) },"P4 state file")) return false
+            cursorTo("repo:o/gamma")
+            kPress(Qt.Key_P)
+            eq(panel.notice,"Pinned in shell.json","P5 notice")
+            check(panel.pinned["o/gamma"],"P5 still pinned")
+        },
+        function() {
+            cfg("gitlab.example.org",{pinned:["o/gamma"].concat(Array.from({length:9},function(_, i) { return "p/x" + i }))})
+            cursorTo("repo:o/beta")
+            kPress(Qt.Key_P)
+            eq(panel.notice,"At most 10 pins","P6 cap notice")
+            check(!panel.pinned["o/beta"],"P6 not pinned")
+            cfg("gitlab.example.org",{pinned:["o/gamma"]})
+        },
+        function() {
+            cursorTo("repo:o/beta")
+            var before=JSON.stringify([panel.savedPins,panel.pinned])
+            kPress(Qt.Key_P, Qt.ControlModifier)
+            eq(panel.notice,"","P7 Ctrl+P shows no notice")
+            eq(JSON.stringify([panel.savedPins,panel.pinned]),before,"P7 Ctrl+P changes no pins")
+            sh("chmod 500 '" + stateDir + "'")
+        },
+        function() {
+            cursorTo("repo:o/beta")
+            kPress(Qt.Key_P)
+            eq(panel.notice,"Pinned o/beta","P8 pinned in memory")
+        },
+        function() {
+            if (!waitUntil(function() { return panel.notice.indexOf("Pins not saved:")===0 },"P8 save failure notice")) return false
+            sh("chmod 700 '" + stateDir + "'")
+        },
+        function() {
+            // Unpin again so the file and the session agree before P9.
+            cursorTo("repo:o/beta")
+            kPress(Qt.Key_P)
+            eq(panel.notice,"Unpinned o/beta","P8 unpinned again")
+        },
+        function() {
+            if (!waitUntil(function() { return stateIs({"gitlab.example.org":[]}) },"P8 state file")) return false
+            cursorTo("repo:o/beta")
+            kPress(Qt.Key_P)
+            eq(panel.notice,"Pinned o/beta","P9 pin on example")
+        },
+        function() {
+            if (!waitUntil(function() { return stateIs({"gitlab.example.org":["o/beta"]}) },"P9 example file")) return false
+            cfg("gitlab.other.org")
+        },
+        function() {
+            if (!waitUntil(function() { return panel.pinsLoaded && panel.host==="gitlab.other.org" },"P9 other loaded")) return false
+            panel.polling.repos=[{repo:"three/repo",checked:"x",runs:[]}]
+            panel.adopt()
+            cursorTo("repo:three/repo")
+            kPress(Qt.Key_P)
+            eq(panel.notice,"Pinned three/repo","P9 pin on other")
+        },
+        function() {
+            if (!waitUntil(function() { return stateIs({"gitlab.other.org":["three/repo"],"gitlab.example.org":["o/beta"]}) },"P9 distinct lists")) return false
+            sh("touch '" + Quickshell.env("PINS_DELAY") + "'")
+        },
+        function() {
+            // P10: a save for the old host is delayed while the host changes and a pin is queued.
+            cursorTo("repo:three/repo")
+            kPress(Qt.Key_P)
+            eq(panel.notice,"Unpinned three/repo","P10 unpin on other")
+            cfg("gitlab.example.org")
+        },
+        function() {
+            if (!waitUntil(function() { return panel.pinsLoaded && panel.host==="gitlab.example.org" },"P10 example loaded")) return false
+            pinFixture()
+            cursorTo("repo:o/delta")
+            kPress(Qt.Key_P)
+            eq(panel.notice,"Pinned o/delta","P10 pin queued behind the delayed save")
+            sh("rm -f '" + Quickshell.env("PINS_DELAY") + "'")
+        },
+        function() {
+            if (!waitUntil(function() { return stateIs({"gitlab.other.org":[],"gitlab.example.org":["o/beta","o/delta"]}) },"P10 both saves landed")) return false
+            sh("touch '" + Quickshell.env("PINS_DELAY") + "'")
+        },
+        function() {
+            // P11: A -> B -> A while a save is pending: the session's list wins over the older file.
+            pinFixture()
+            cursorTo("repo:o/delta")
+            kPress(Qt.Key_P)
+            eq(panel.notice,"Unpinned o/delta","P11 unpin")
+            cfg("gitlab.other.org")
+            cfg("gitlab.example.org")
+        },
+        function() {
+            if (!waitUntil(function() { return panel.pinsLoaded && panel.host==="gitlab.example.org" },"P11 reload finished")) return false
+            eq(JSON.stringify(panel.savedPins),'["o/beta"]',"P11 session list, not the file's older one")
+            sh("rm -f '" + Quickshell.env("PINS_DELAY") + "'")
+        },
+        function() {
+            if (!waitUntil(function() { return stateIs({"gitlab.example.org":["o/beta"]}) },"P11 state file")) return false
+        },
+        function() {
+            // P12: the pins and the project list arrive in either order while the catalogue is incomplete.
+            panel.polling.catalogueComplete=false
+            panel.configured=false
+            panel.polling.repos=[]
+            panel.savedPins=["o/beta"]
+            var before=JSON.stringify(panel.pinned)
+            panel.applyPins()
+            eq(JSON.stringify(panel.pinned),before,"P12 applyPins before configured does nothing")
+            cfg("gitlab.example.org",{projects:["o/alpha"]})
+            var names=panel.polling.repos.map(function(r) { return r.repo })
+            check(names.indexOf("o/alpha")>=0 && names.indexOf("o/beta")>=0,"P12 config first: " + names)
+            panel.configured=false
+            panel.polling.repos=[]
+            panel.savedPins=[]
+            panel.sessionPins=({})
+            cfg("gitlab.example.org",{projects:["o/alpha"]})
+            panel.pinsLoadHost=panel.host
+            panel.finishPinsLoad(0,'{"pins":["o/gamma2"]}')
+            names=panel.polling.repos.map(function(r) { return r.repo })
+            check(names.indexOf("o/alpha")>=0 && names.indexOf("o/gamma2")>=0,"P12 load last: " + names)
+            panel.polling.catalogueComplete=true
+            panel.savedPins=[]
+        },
+        function() {
+            // P13: a pin helper that cannot start.
+            pinFixture()
+            panel.pinsCommand=["/nonexistent-python"]
+            panel.pinsLoaded=false
+            panel.loadPins()
+        },
+        function() {
+            if (!waitUntil(function() { return panel.pinsLoaded && panel.pinsError.indexOf("Pins not loaded:")===0 },"P13 failed load")) return false
+            panel.sessionPins=({})
+            pinFixture()
+            cursorTo("repo:o/beta")
+            var before=panel.savedPins.slice()
+            kPress(Qt.Key_P)
+            // After a failed load, p reloads instead of saving over the file.
+            eq(panel.notice,"Pins not loaded; trying again","P13 p after failed load")
+            eq(JSON.stringify(panel.savedPins),JSON.stringify(before),"P13 nothing pinned after failed load")
+        },
+        function() {
+            if (!waitUntil(function() { return panel.pinsLoaded },"P13 reload done")) return false
+            panel.pinsCommand=["python3"]
+            panel.pinsLoaded=false
+            panel.loadPins()
+        },
+        function() {
+            if (!waitUntil(function() { return panel.pinsLoaded && !panel.pinsLoadFailed },"P13 good load")) return false
+            panel.pinsCommand=["/nonexistent-python"]
+            pinFixture()
+            cursorTo("repo:o/beta")
+            kPress(Qt.Key_P)
+        },
+        function() {
+            if (!waitUntil(function() { return panel.notice.indexOf("Pins not saved:")===0 },"P13 failed save")) return false
+            panel.pinsCommand=["python3"]
+            panel.pinsError=""
+        },
+        function() {
+            // P14: texts.
+            panel.notice=""
+            listFocus()
+            panel.toggleHelp()
+        },
+        function() {
+            if (!waitUntil(function() { return panel.helpText.indexOf("Pin or unpin")>=0 },"P14 help text")) return false
+            panel.helpOpen=false
+            listFocus()
+        },
+        function() {
+            if (!waitUntil(function() { return panel.footerHint.indexOf("p pin")>=0 },"P14 footer hint")) return false
+        },
+        function() {
+            // Restore: no pins, empty state file.
+            cfg("gitlab.example.org")
+            panel.savedPins=[]
+            panel.sessionPins=({})
+            panel.savePins("gitlab.example.org",[])
+        },
+        function() {
+            if (!waitUntil(function() { return stateIs({"gitlab.example.org":[]}) },"restore state file")) return false
             panel.adopt()
         },
         function() {
@@ -1093,7 +1340,7 @@ ShellRoot {
 ''')
         try:
             result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=110,
-                                  env={**os.environ, 'HOME':str(home), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower()})
+                                  env={**os.environ, 'HOME':str(home), 'XDG_STATE_HOME':str(home / '.local/state'), 'PINS_DELAY':str(root / 'pins-delay'), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower()})
         except subprocess.TimeoutExpired as error:
             print(error.stdout, error.stderr)
             raise

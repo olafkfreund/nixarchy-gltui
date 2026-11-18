@@ -4,7 +4,7 @@ function create() {
     // Every exported writer invalidates wakeAt; seeds is test-only.
     return {opened:false, generation:0, serial:0, order:0, slot:0, starts:[], cooldown:0,
         rateFailures:0, auth:false, tasks:{}, flight:null, repos:[], details:{}, selected:"", inspected:"",
-        stableAt:0, expanded:{}, catalogueAt:0, catalogueComplete:false, discover:true,
+        stableAt:0, expanded:{}, pinned:{}, catalogueAt:0, catalogueComplete:false, discover:true,
         error:"", catalogueError:"", requests:0, lastRequest:"", lastStarted:0, wakeAt:0, seeds:0};
 }
 function resetHost(s) {
@@ -48,6 +48,14 @@ function select(s, repo, run, expanded, now, immediate) {
     else if (immediate) s.stableAt = now;
     s.selected = repo || ""; s.inspected = String(run || ""); s.expanded = expanded || {};
 }
+function pin(s, names) {
+    s.wakeAt=0;
+    s.pinned={};
+    names.forEach(function(name) {
+        s.pinned[name]=true;
+        if (!s.catalogueComplete && !repoFor(s,name)) s.repos.push({repo:name});
+    });
+}
 function manual(s, now, catalogue) {
     s.wakeAt=0;
     s.auth = false;
@@ -70,6 +78,7 @@ function seed(s, now) {
         if (s.flight && s.flight.key === id) return;
         var owner=repoFor(s,t.repo);
         if (owner && owner.blocked) { delete s.tasks[id]; return; }
+        if (t.repo && !owner) { delete s.tasks[id]; return; }
         if ((t.kind === "summary" && t.repo !== s.selected) ||
             (t.kind === "jobs" && (t.repo !== s.selected || t.run !== s.inspected || !s.expanded[t.repo + ":" + t.run])))
             delete s.tasks[id];
@@ -86,8 +95,9 @@ function seed(s, now) {
         var activityKey = key("activity",r.repo);
         if (summary && !(s.flight && s.flight.key === activityKey)) delete s.tasks[activityKey];
         if (!summary) {
-            var interval = selected ? 10000 : r.active > 0 ? 15000 : 600000;
-            var group = selected ? "interactive" : r.active > 0 ? "active" : "background";
+            var pinned = !selected && !(r.active > 0) && !!s.pinned[r.repo];
+            var interval = selected ? 10000 : r.active > 0 ? 15000 : pinned ? 60000 : 600000;
+            var group = selected ? "interactive" : r.active > 0 ? "active" : pinned ? "pinned" : "background";
             if (now >= age(r.activityAt, interval) && (group!=="background" || !backgroundQueued || s.tasks[activityKey])) {
                 ensure(s, "activity",r.repo,"",group,age(r.activityAt,interval));
                 if (group==="background") backgroundQueued=true;
@@ -124,10 +134,11 @@ function next(s, now) {
     var due = Object.keys(s.tasks).map(function(id) { return s.tasks[id] }).filter(function(t) { return t.due <= now });
     due.sort(function(a,b) { return a.due === b.due ? a.order-b.order : a.due-b.due });
     var group = ["interactive","interactive","interactive","active","background"][s.slot % 5];
-    var t = due.filter(function(t) { return t.group === group })[0];
-    if (!t) {
-        ["interactive","active","background"].some(function(g) { t=due.filter(function(t) { return t.group===g })[0]; return !!t });
-    }
+    var order = group === "active" ? ["active","pinned"] : [group];
+    var t;
+    order.concat(["interactive","active","pinned","background"]).some(function(g) {
+        t = due.filter(function(x) { return x.group === g })[0]; return !!t;
+    });
     if (!t) return null;
     s.slot++; s.starts.push(now); s.requests++; s.lastStarted=now; s.lastRequest=t.kind + (t.repo ? " " + t.repo : "");
     var request = {kind:t.kind,repo:t.repo,run:t.run,page:t.page,requestId:++s.serial};

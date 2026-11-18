@@ -60,6 +60,89 @@ class ValidationTest(unittest.TestCase):
                 gitlab.page_endpoint(task)
 
 
+class PinsTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        env = patch.dict(os.environ, {"XDG_STATE_HOME": self.temp.name, "HOME": self.temp.name})
+        env.start()
+        self.addCleanup(env.stop)
+        self.path = gitlab.state_path()
+
+    def write(self, value):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(value)
+
+    def test_load_and_validation(self):
+        self.assertEqual(gitlab.pins({"host": "GITLAB.COM"}), {"pins": []})
+        self.write(json.dumps({"version": 1, "hosts": {"gitlab.com": ["a/b", "bad", 3, "c/d"]}}))
+        self.assertEqual(gitlab.pins({"host": "Gitlab.com"}), {"pins": ["a/b", "c/d"]})
+        for value in ("{bad", "[]", '{"version": 2, "hosts": {}}',
+                      '{"version": 1, "hosts": {"gitlab.com": "x"}}'):
+            with self.subTest(value=value):
+                self.write(value)
+                with self.assertRaisesRegex(ValueError, "pinned.json is not valid"):
+                    gitlab.pins({"host": "gitlab.com"})
+
+    def test_unreadable(self):
+        if os.geteuid() == 0:
+            self.skipTest("root can read mode 000")
+        self.write('{"version": 1, "hosts": {}}')
+        self.path.chmod(0)
+        self.addCleanup(self.path.chmod, 0o600)
+        with self.assertRaisesRegex(ValueError, "Cannot read pinned.json"):
+            gitlab.pins({"host": "gitlab.com"})
+        with self.assertRaisesRegex(ValueError, "Cannot read pinned.json"):
+            gitlab.pins({"host": "gitlab.com", "save": ["a/b"]})
+
+    def test_save_preserves_hosts_and_modes(self):
+        self.assertEqual(gitlab.pins({"host": "Gitlab.Example.org:8443", "save": ["a/b", "a/b", "c/d"]}),
+                         {"pins": ["a/b", "c/d"]})
+        state = json.loads(self.path.read_text())
+        self.assertEqual(state["hosts"], {"gitlab.example.org:8443": ["a/b", "c/d"]})
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.path.parent.stat().st_mode & 0o777, 0o700)
+        gitlab.pins({"host": "other.test", "save": ["x/y"]})
+        self.assertEqual(json.loads(self.path.read_text())["hosts"],
+                         {"gitlab.example.org:8443": ["a/b", "c/d"], "other.test": ["x/y"]})
+
+    def test_save_refuses_bad_state_and_replace_failure(self):
+        for value in ("{bad", '{"version": 2, "hosts": {}}'):
+            self.write(value)
+            with self.assertRaisesRegex(ValueError, "pinned.json is not valid"):
+                gitlab.pins({"host": "gitlab.com", "save": ["a/b"]})
+            self.assertEqual(self.path.read_text(), value)
+        old = '{"version": 1, "hosts": {"other.test": ["x/y"]}}'
+        self.write(old)
+        with patch.object(gitlab.os, "replace", side_effect=OSError("fail")):
+            with self.assertRaisesRegex(ValueError, "Cannot write pinned.json"):
+                gitlab.pins({"host": "gitlab.com", "save": ["a/b"]})
+        self.assertEqual(self.path.read_text(), old)
+        self.assertEqual(list(self.path.parent.glob(".pinned-*")), [])
+
+    def test_bad_input_and_fallback_path(self):
+        for task in ({"host": "bad/host"}, {"host": "gitlab.com", "save": "a/b"},
+                     {"host": "gitlab.com", "save": ["bad"]}, []):
+            with self.subTest(task=task), self.assertRaises(ValueError):
+                gitlab.pins(task)
+        for base in ("", "relative"):
+            with patch.dict(os.environ, {"XDG_STATE_HOME": base}):
+                self.assertEqual(gitlab.state_path(), Path(self.temp.name) / ".local/state/omarchy-gitlab-pipelines/pinned.json")
+
+    def test_main(self):
+        for request, expected, code in [('{"host":"gitlab.com"}', {"pins": []}, 0),
+                                         ('{"host":"bad/host"}', {"error": "Invalid GitLab host"}, 1),
+                                         ('not json', None, 1)]:
+            out = io.StringIO()
+            with patch.object(sys, "argv", ["gitlab.py", "pins", request]), contextlib.redirect_stdout(out):
+                self.assertEqual(gitlab.main(), code)
+            value = json.loads(out.getvalue())
+            if expected is None:
+                self.assertIn("error", value)
+            else:
+                self.assertEqual(value, expected)
+
+
 class NormaliseTest(unittest.TestCase):
     def test_status_mapping(self):
         for raw, expected in [("running", "in_progress"), ("canceling", "in_progress"), ("created", "queued"),

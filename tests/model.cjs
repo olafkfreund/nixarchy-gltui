@@ -4,6 +4,26 @@ const vm = require('node:vm');
 const model = {};
 vm.createContext(model);
 vm.runInContext(fs.readFileSync('PipelinesModel.js', 'utf8'), model);
+const plain = value => JSON.parse(JSON.stringify(value));
+for (const name of ['g/p','a.b/c_d-e']) assert.equal(model.validProject(name), true);
+for (const name of ['p','/g/p','g/../p','g/./p','g//p','g/p q',3]) assert.equal(model.validProject(name), false);
+assert.deepEqual(plain(model.pins(['a/1','bad','a/1','b/2'], ['b/2','c/3'])),
+  {names:['a/1','b/2','c/3'],config:{'a/1':true,'b/2':true}});
+assert.deepEqual(plain(model.pins(null, {})), {names:[],config:{}});
+const twelve=Array.from({length:12},(_,i)=>`g/p${i}`);
+assert.deepEqual(plain(model.pins(twelve, [] )).names, twelve.slice(0,10));
+assert.equal(Object.keys(plain(model.pins(twelve, []).config)).length, 12);
+assert.deepEqual(plain(model.togglePin('a/1',['a/1'],[])), {saved:null,notice:'Pinned in shell.json'});
+assert.deepEqual(plain(model.togglePin('a/1',[],['a/1','b/2'])), {saved:['b/2'],notice:'Unpinned a/1'});
+assert.deepEqual(plain(model.togglePin('new/p',twelve.slice(0,8),twelve.slice(8,11))), {saved:null,notice:'At most 10 pins'});
+assert.deepEqual(plain(model.togglePin('g/p10',twelve.slice(0,8),twelve.slice(8,11))), {saved:null,notice:'At most 10 pins'});
+assert.deepEqual(plain(model.togglePin('a/1',[],['a/1','b/2','a/1'])), {saved:['b/2'],notice:'Unpinned a/1'});
+assert.deepEqual(plain(model.togglePin('new/p',[],['a/1','new/p','b/2'])), {saved:['a/1','b/2'],notice:'Unpinned new/p'});
+assert.deepEqual(plain(model.togglePin('new/p',[],['a/1','b/2'])), {saved:['a/1','b/2','new/p'],notice:'Pinned new/p'});
+const sortedPins=model.rows([{repo:'a/1',active:2},{repo:'b/2',active:0},{repo:'c/3',active:1},{repo:'d/4',active:0}],{}, {},'',0,{'b/2':true,'d/4':true});
+assert.deepEqual(plain(sortedPins.map(x=>[x.repo,x.pinned])), [['b/2',true],['d/4',true],['a/1',false],['c/3',false]]);
+assert.equal(model.rows([{repo:'a/1'}],{}, {},'',0)[0].pinned,false);
+assert.equal(model.rows([{repo:'a/1'}],{}, {},'★',0,{'a/1':true}).length,0);
 const open = (payload, host = 'gitlab.example.org') => JSON.parse(JSON.stringify(model.openFilter(payload, host)));
 const empty = {filter: null, notice: ''};
 for (const payload of ['{}', '', 'null', '[]', '3', '{bad', {filter: 3}, {filter: '  '}])
@@ -231,7 +251,7 @@ model.syncRows(list, [first[0]]);
 assert.equal(list.count, 1);
 assert.equal(backing[0].rowKey, 'a');
 for (const field of ['checked','started','ended','finished','fetched','done','total','complete',
-  'serverDuration','queued','reason']) {
+  'serverDuration','queued','reason','pinned']) {
   const value = field === 'serverDuration' ? 0 : field === 'complete' ? false : 'value';
   model.syncRows(list, [{...first[0], [field]:value}]);
   assert.equal(backing[0].rowData[field], value, field + ' appeared');

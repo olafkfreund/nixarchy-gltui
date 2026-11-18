@@ -29,11 +29,23 @@ Item {
     property string helpText: ""
     property string notice: ""
     property var copyCommand: ["wl-copy", "--"]
+    property var configPins: []
+    property var savedPins: []
+    property bool pinsLoaded: false
+    property bool pinsLoadFailed: false
+    property string pinsError: ""
+    property var pinned: ({})
+    property string pinsLoadHost: ""
+    property bool pinsLoadStarted: false
+    property var pinsQueue: ({})
+    property bool pinsSaveStarted: false
+    property var sessionPins: ({})
+    property var pinsCommand: ["python3"]
     property int copySerial: 0
     property bool copyStarted: false
     property string copyLabel: ""
     readonly property string searchHint: "↑↓ select  Enter open  Tab navigate  Esc clear"
-    readonly property string listHint: "↑↓ move  ←→ expand  g/G ends  / search  e failure  y/Y copy  o GitLab  ? help  q close"
+    readonly property string listHint: "↑↓ move  ←→ expand  g/G ends  / search  e failure  y/Y copy  p pin  o GitLab  ? help  q close"
     readonly property real borderWidth: Math.max(1, Style.space(2))
     property alias filterText: searchField.text
     readonly property bool filtering: searchField.activeFocus
@@ -102,6 +114,7 @@ Item {
         opened = true
         if (configured) applyOpen(payload)
         else pendingOpen = pendingOpen.concat([payload])
+        if (pinsError) { notify(pinsError); pinsError = "" }
         selectionChanged(true)
         pump()
         Qt.callLater(function() { keys.forceActiveFocus() })
@@ -122,6 +135,7 @@ Item {
         var queued = pendingOpen
         pendingOpen = []
         for (var i = 0; i < queued.length; i++) applyOpen(queued[i])
+        applyPins()
     }
     function close() {
         opened = false
@@ -148,7 +162,7 @@ Item {
         var topItem = list.itemAtIndex(topIndex)
         var topKey = entries[topIndex] ? entries[topIndex].key : ""
         var topOffset = topItem ? topItem.y - list.contentY : 0
-        var next = Model.rows(repos, shown, details, filterText, now)
+        var next = Model.rows(repos, shown, details, filterText, now, pinned)
         var structureChanged = Model.syncRows(visibleRows, next)
         entries = next
         cursor = resetSelection ? 0 : Model.selection(entries, key, cursor)
@@ -225,13 +239,88 @@ Item {
         selectionChanged(true)
         pump()
     }
+    function applyPins() {
+        if (!configured) return
+        var p = Model.pins(configPins, savedPins)
+        var map = {}
+        p.names.forEach(function(n) { map[n] = true })
+        pinned = map
+        Polling.pin(polling, p.names)
+        adopt()
+    }
+    function loadPins() {
+        if (pinsLoad.running) return
+        pinsLoadHost = host
+        pinsLoadStarted = false
+        pinsLoad.command = pinsCommand.concat([helper, "pins", JSON.stringify({host: host})])
+        pinsLoad.running = true
+    }
+    function finishPinsLoad(code, text) {
+        if (pinsLoadHost !== host) { Qt.callLater(loadPins); return }
+        var reply = null
+        try { reply = JSON.parse(text) } catch (e) {}
+        pinsLoadFailed = !(code === 0 && reply && Array.isArray(reply.pins))
+        if (!pinsLoadFailed) savedPins = reply.pins
+        else {
+            savedPins = []
+            pinsError = "Pins not loaded: " + (reply && reply.error || "helper failed")
+        }
+        var own = sessionPins[host.toLowerCase()]
+        if (own) { savedPins = own; pinsLoadFailed = false }
+        pinsLoaded = true
+        applyPins()
+    }
+    function togglePin() {
+        if (!current) return
+        if (!pinsLoaded) { notify("Pins are still loading"); return }
+        // A save after a failed load would replace this host's saved pins with only the new one.
+        if (pinsLoadFailed) { notify("Pins not loaded; trying again"); pinsLoaded = false; loadPins(); return }
+        var r = Model.togglePin(current.repo, configPins, savedPins)
+        notify(r.notice)
+        if (r.saved) {
+            savedPins = r.saved
+            var s = Object.assign({}, sessionPins)
+            s[host.toLowerCase()] = r.saved
+            sessionPins = s
+            applyPins()
+            savePins(host, r.saved)
+            list.positionViewAtIndex(cursor, ListView.Contain)
+        }
+    }
+    function savePins(h, names) {
+        var q = Object.assign({}, pinsQueue)
+        q[h.toLowerCase()] = names
+        pinsQueue = q
+        nextSave()
+    }
+    function nextSave() {
+        if (pinsSave.running) return
+        var h = Object.keys(pinsQueue)[0]
+        if (h === undefined) return
+        var names = pinsQueue[h]
+        var q = Object.assign({}, pinsQueue)
+        delete q[h]
+        pinsQueue = q
+        pinsSaveStarted = false
+        pinsSave.command = pinsCommand.concat([helper, "pins", JSON.stringify({host: h, save: names})])
+        pinsSave.running = true
+    }
+    function finishPinsSave(code, text) {
+        var reply = null
+        try { reply = JSON.parse(text) } catch (e) {}
+        if (!(code === 0 && reply && Array.isArray(reply.pins)))
+            notify("Pins not saved: " + (reply && reply.error || "helper failed"))
+        Qt.callLater(nextSave)
+    }
     function configure(text) {
         try {
             var config = JSON.parse(text)
             var entry = (config.plugins || []).filter(function(p) { return p.id === "olafkfreund.gitlab-pipelines" })[0]
             var configuredHost = entry && typeof entry.host === "string" ? entry.host : "gitlab.com"
             if (!/^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$/.test(configuredHost)) throw new Error("invalid host " + configuredHost)
-            if (configuredHost !== host) {
+            var hostChanged = configuredHost !== host
+            if (hostChanged) {
+                savedPins = []; pinsLoaded = false
                 polling = Polling.resetHost(polling)
                 expanded = ({}); searchCollapsed = ({}); details = ({}); updated = ""; error = ""; cursor = 0
             }
@@ -239,9 +328,14 @@ Item {
             var names = entry && Array.isArray(entry.projects) ? entry.projects : []
             if (!polling.repos.length && names.length) {
                 polling.wakeAt = 0
-                polling.repos = names.filter(function(name) { return typeof name === "string" && /^[A-Za-z0-9_.][A-Za-z0-9_.-]*(\/[A-Za-z0-9_.][A-Za-z0-9_.-]*)+$/.test(name) && !/(^|\/)\.\.?(\/|$)/.test(name) }).map(function(name) { return {repo:name} })
+                polling.repos = names.filter(function(name) { return Model.validProject(name) }).map(function(name) { return {repo:name} })
             }
+            configPins = entry && Array.isArray(entry.pinned) ? entry.pinned : []
+            if (configPins.filter(function(name) { return Model.validProject(name) }).length > 10) console.warn("GitLab Pipelines: only the first 10 pins apply")
             adopt()
+            applyPins()
+            // After configPins and projects are set, so even a synchronous failed start sees this host's config.
+            if (hostChanged) loadPins()
         } catch (e) { error = "Configuration: " + e.message }
         markConfigured()
     }
@@ -331,6 +425,7 @@ Item {
 
     Component.onCompleted: {
         rebuild()
+        loadPins()
         registrationProc.running = true
     }
     Process {
@@ -340,6 +435,21 @@ Item {
         onExited: function(code) {
             if (code !== 0) console.warn("GitLab Pipelines menu registration failed: " + registrationErrors.text.trim())
         }
+    }
+    Process {
+        id: pinsLoad
+        stdout: StdioCollector { id: pinsLoadOutput }
+        onStarted: root.pinsLoadStarted = true
+        onExited: function(code) { root.finishPinsLoad(code, pinsLoadOutput.text) }
+        // Quickshell 0.3.1: a failed start emits neither started nor exited, only running=false.
+        onRunningChanged: if (!running && !root.pinsLoadStarted) root.finishPinsLoad(127, "")
+    }
+    Process {
+        id: pinsSave
+        stdout: StdioCollector { id: pinsSaveOutput }
+        onStarted: root.pinsSaveStarted = true
+        onExited: function(code) { root.finishPinsSave(code, pinsSaveOutput.text) }
+        onRunningChanged: if (!running && !root.pinsSaveStarted) root.finishPinsSave(127, "")
     }
     Timer { id: noticeTimer; interval: 2000; onTriggered: root.notice = "" }
     Process {
@@ -431,6 +541,7 @@ Item {
                     else if (plain && event.key === Qt.Key_G) root.move(shift ? root.entries.length : -root.entries.length)
                     else if (plain && event.key === Qt.Key_Q && !shift) root.close()
                     else if (plain && event.key === Qt.Key_E && !shift) root.nextFailure()
+                    else if (plain && event.key === Qt.Key_P && !shift) root.togglePin()
                     else if (event.key === Qt.Key_Escape) {
                         if (root.filterText) root.filterText = ""
                         else root.close()
@@ -491,7 +602,7 @@ Item {
                             anchors.fill: parent
                             visible: searchField.text.length === 0
                             text: root.filtering ? "Search projects…" :
-                                (root.discoveryComplete ? "Activity checked " + root.checkedCount + "/" + root.repos.length + " · running first · / search projects" : "Discovering projects… " + root.repos.length + " found")
+                                (root.discoveryComplete ? "Activity checked " + root.checkedCount + "/" + root.repos.length + " · pinned and running first · / search projects" : "Discovering projects… " + root.repos.length + " found")
                             color: Commons.Color.menu.text
                             opacity: 0.75
                             font: searchField.font
@@ -563,7 +674,7 @@ Item {
                                     anchors.verticalCenter: parent.verticalCenter
                                     Text {
                                         width: parent.width
-                                        text: (["repo", "run", "stage"].indexOf(modelData.kind) >= 0 ? (root.shown[modelData.key] ? "▾ " : "▸ ") : "") + modelData.title
+                                        text: (["repo", "run", "stage"].indexOf(modelData.kind) >= 0 ? (root.shown[modelData.key] ? "▾ " : "▸ ") : "") + (modelData.kind === "repo" && modelData.pinned ? "★ " : "") + modelData.title
                                         color: index === root.cursor ? Commons.Color.menu.selectedText : Commons.Color.menu.text
                                         font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.body); bold: modelData.kind === "repo" }
                                         elide: Text.ElideRight
