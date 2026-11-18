@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 32
 spec: spec/2026-11-18-32-pinned-projects.md
 coders:
