@@ -123,7 +123,10 @@ the quoted code.
 - **Properties:** `configPins: []`, `savedPins: []`, `pinsLoaded: false`,
   `pinsError: ""`, `pinned: ({})`, `pinsLoadHost: ""`,
   `pinsLoadStarted: false`, `pinsQueue: ({})` (host → list),
-  `pinsSaveStarted: false`.
+  `pinsSaveStarted: false`, `sessionPins: ({})` (host → the latest list
+  set with `p` in this session), and `pinsCommand: ["python3"]`, the
+  launcher prefix for both pin Processes (a test hook, like
+  `copyCommand`).
 - **`configure(text)`:**
   - in the host-change branch (`configuredHost !== host`), also set
     `savedPins = []` and `pinsLoaded = false`;
@@ -141,7 +144,7 @@ the quoted code.
 - **`rebuild()`:** pass `pinned` as the new last argument of `Model.rows`.
 - **`loadPins()`:** if `pinsLoad.running`, return (its exit handler
   reloads). Else set `pinsLoadHost = host`, `pinsLoadStarted = false`,
-  command `["python3", helper, "pins", JSON.stringify({host: host})]`,
+  command `pinsCommand.concat([helper, "pins", JSON.stringify({host: host})])`,
   `running = true`. `Component.onCompleted` calls it once.
 - **`pinsLoad` Process:** stdout `StdioCollector`.
   - `onStarted: root.pinsLoadStarted = true`;
@@ -151,6 +154,10 @@ the quoted code.
     - if `pinsLoadHost !== host`: `loadPins()` and return;
     - parse `text` inside `try`; success needs `code === 0` and
       `Array.isArray(reply.pins)`; then `savedPins = reply.pins`;
+    - in every case, if `sessionPins[host]` is set, `savedPins` is that
+      list instead: this session's own edits win over the file, so a
+      return to a host whose save is still pending or running never
+      reloads older pins;
     - else `savedPins = []` and
       `pinsError = "Pins not loaded: " + (reply && reply.error || "helper failed")`;
     - `pinsLoaded = true`; `applyPins()`.
@@ -161,14 +168,15 @@ the quoted code.
   - `if (!current) return`;
   - `if (!pinsLoaded) { notify("Pins are still loading"); return }`;
   - `var r = Model.togglePin(current.repo, configPins, savedPins); notify(r.notice)`;
-  - if `r.saved`: `savedPins = r.saved; applyPins(); savePins(host, r.saved)`,
+  - if `r.saved`: `savedPins = r.saved`, `sessionPins[host] = r.saved`
+    (copy the map and reassign), `applyPins(); savePins(host, r.saved)`,
     then `list.positionViewAtIndex(cursor, ListView.Contain)` so the moved
     row stays visible.
 - **`savePins(h, names)`:** `pinsQueue[h] = names` (copy the map and
   reassign); `nextSave()`.
 - **`nextSave()`:** if `pinsSave.running`, return. Take the first key of
   `pinsQueue`, remove it, set `pinsSaveStarted = false`, command
-  `["python3", helper, "pins", JSON.stringify({host: h, save: names})]`,
+  `pinsCommand.concat([helper, "pins", JSON.stringify({host: h, save: names})])`,
   `running = true`.
 - **`pinsSave` Process:** same started/failed-start pattern. On finish:
   success needs exit 0 and `Array.isArray(reply.pins)`; else
@@ -318,6 +326,22 @@ the quoted code.
 
 6. **`tests/qml-smoke.py`: the pin checks.**
    - **Harness:**
+     - before starting `quickshell`, write
+       `home/.local/state/omarchy-gitlab-pipelines/pinned.json` with
+       `{"version":1,"hosts":{"gitlab.com":["zz/saved"]}}`. The startup host
+       is `gitlab.com` (no `shell.json`), so the startup timer
+       (`tests/qml-smoke.py:828-831`) can check, after a `waitUntil` on
+       `pinsLoaded` in the first new step, that `savedPins` is
+       `["zz/saved"]`: a real load from the file.
+     - a shared helper at the test item's top level (next to `waitUntil`,
+       `:273`):
+       `function cfg(h, extra) { panel.configure(JSON.stringify({plugins:[Object.assign({id:"olafkfreund.gitlab-pipelines",host:h}, extra || {})]})) }`.
+       Remove the local `cfg` in O9 (`:861`) so O9 uses the shared one
+       unchanged in behaviour.
+     - a delay switch for pin requests: the fake's `pins` branch sleeps
+       1.5 s first when the file `root / 'pins-delay'` exists. Tests
+       create and remove it with a `Process` (`touch`/`rm`); pass its path
+       into QML as an environment variable `PINS_DELAY`.
      - add `'XDG_STATE_HOME': str(home / '.local/state')` to the `env` of
        the `quickshell` call (`tests/qml-smoke.py:1096`). The theme path
        already lives under `home`, so nothing else moves.
@@ -351,19 +375,42 @@ the quoted code.
      - **P8. Save failure:** make the state directory read-only
        (`Process` `chmod 500`), `p` on `o/beta`: wait for a notice starting
        `Pins not saved:`; restore `chmod 700`.
-     - **P9. Host race:** `cfg` host `gitlab.other.org` then at once back
-       to `gitlab.example.org`; wait until `pinsLoaded`; `savedPins`
-       equals the file's `gitlab.example.org` list.
-     - **P10. Order at start:** `panel.configured=false`,
-       `panel.polling.repos=[]`, `savedPins=["o/beta"]`, call
-       `applyPins()` (does nothing), then `cfg` with `projects:["o/alpha"]`:
-       both `o/alpha` and `o/beta` are in `polling.repos`.
-     - **P11. Failed start:** set the `pinsLoad` command to a missing
-       binary (expose `pinsLoadItem`/`pinsSaveItem` as test hooks, like
-       `copyCommand`), `loadPins()`: wait until `pinsLoaded` and
-       `pinsError` starts `Pins not loaded:`; the same for a save, notice
-       `Pins not saved:`. Restore the commands.
-     - **P12. Text:** `footerHint` contains `p pin`; wait until `helpText`
+     - **P9. Distinct lists:** on `gitlab.example.org`, pin `o/beta`
+       (`p`) and wait until the file holds `["o/beta"]` there. `cfg`
+       `gitlab.other.org`, wait until `pinsLoaded`, set repos
+       `three/repo` (checked), pin it, wait until the file holds
+       `["three/repo"]` for `gitlab.other.org` and still `["o/beta"]`
+       for `gitlab.example.org`.
+     - **P10. Host change during a save:** create `pins-delay`. On
+       `gitlab.other.org` unpin `three/repo` (save starts, delayed); at
+       once `cfg` `gitlab.example.org`, wait until `pinsLoaded`, pin
+       `o/delta` (queued). Remove `pins-delay`. Wait until the file holds
+       `[]` for `gitlab.other.org` and `["o/beta","o/delta"]` for
+       `gitlab.example.org`.
+     - **P11. Stale reload (A→B→A):** create `pins-delay`. On
+       `gitlab.example.org` unpin `o/delta` (delayed save). `cfg`
+       `gitlab.other.org` then at once `gitlab.example.org`. Wait until
+       `pinsLoaded`: `savedPins` is `["o/beta"]` (the session list), not
+       the file's older `["o/beta","o/delta"]`. Remove `pins-delay`;
+       wait until the file holds `["o/beta"]`.
+     - **P12. Order at start, both ways:** with the catalogue incomplete
+       (`panel.polling.catalogueComplete=false`):
+       - config first: `panel.configured=false`, `panel.polling.repos=[]`,
+         `savedPins=["o/beta"]`, `applyPins()` (does nothing: `pinned`
+         unchanged), then `cfg` with `projects:["o/alpha"]`: both
+         `o/alpha` and `o/beta` are in `polling.repos`;
+       - load last: `panel.configured=false`, `panel.polling.repos=[]`,
+         `savedPins=[]`, `cfg` with `projects:["o/alpha"]`, then
+         `panel.finishPinsLoad(0, '{"pins":["o/gamma2"]}')` with
+         `pinsLoadHost` equal to `host`: `polling.repos` holds `o/alpha`
+         and `o/gamma2`.
+     - **P13. Failed start:** `panel.pinsCommand=["/nonexistent-python"]`;
+       `panel.pinsLoaded=false`; `panel.loadPins()`: wait until
+       `pinsLoaded` and `pinsError` starts `Pins not loaded:`. Then `p`
+       on an unpinned project: wait for a notice starting
+       `Pins not saved:`. Restore `pinsCommand=["python3"]` and clear
+       `pinsError`.
+     - **P14. Text:** `footerHint` contains `p pin`; wait until `helpText`
        contains `Pin or unpin`.
      - **Restore:** `cfg("gitlab.example.org")` with no pins, clear the
        state file through a save of `[]`, wait until done, `adopt()`.
@@ -413,12 +460,16 @@ node tests/polling.cjs && node tests/model.cjs && python3 -m unittest discover -
 4. **Mutation checks, in the VM copy only:** (a) drop `"pinned"` from the
    active-slot order in `next()`: `polling.cjs` fails; (b) drop the pinned
    term from the `rows()` sort: `model.cjs` and P2 fail; (c) remove the
-   `configured` guard in `applyPins()`: P10 fails.
+   `configured` guard in `applyPins()`: P12 fails; (d) drop the
+   `sessionPins` check in `finishPinsLoad`: P11 fails.
 5. Afterwards: `nixarchy vm stop gltui-32`, then, when stopped,
    `nixarchy vm rm gltui-32`.
 
-Also build the flake checks: `nix build .#checks.x86_64-linux.plugin
-.#checks.x86_64-linux.menu-verbs --no-link`.
+Also build the flake checks:
+
+```sh
+nix build .#checks.x86_64-linux.plugin .#checks.x86_64-linux.menu-verbs --no-link
+```
 
 **Review:** a fresh Opus agent, given only this plan and `git diff`, and
 Codex's read-only review of the diff (`codex review --base <approve-plan sha>`).
@@ -435,6 +486,23 @@ Revert the merge commit and release a patch, or pin the previous tag in
 nixarchy. The state file is only read by this feature; leaving it behind
 is harmless, and deleting `~/.local/state/omarchy-gitlab-pipelines/`
 removes all key pins.
+
+## Review notes
+
+Codex reviewed the draft read-only; agy is out of use (#2748). It
+confirmed the scheduler snippets (it ran the `next()` pick in memory), the
+seed grouping, the orphan cleanup, the model rules, `shownFields` and the
+state-file steps. Its findings, which I checked and folded in above:
+- returning to a host while its save is pending could reload older pins:
+  the session's own lists (`sessionPins`) now win over the file, with a
+  test (P11);
+- `cfg` was local to O9 and host-only: a shared `cfg(host, extra)` helper;
+- P13 set a command that `loadPins()` overwrote: a `pinsCommand` prefix
+  hook, and `pinsLoaded` is reset first;
+- the race tests used empty lists and no save race: distinct lists, a
+  controlled delay, a host change during a save, both start orders, and
+  a real load from a pre-written file;
+- the flake command was split over two lines.
 
 ## Deviations
 
