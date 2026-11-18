@@ -58,6 +58,11 @@ assert.equal(rows[2].info, '1/2 jobs · 2m 0s');
 assert.equal(rows[3].title, 'compile');
 assert.equal(rows[3].status, 'success');
 assert.equal(rows[3].url, 'https://gitlab.com/p/-/jobs/8');
+assert.equal(rows[3].job, '8', 'a job row carries its id');
+const twin = model.rows(repos, expanded, {[runKey]: {jobs: [
+  {id: 11, name: 'lint', stage: 'build', status: 'completed', conclusion: 'success'},
+  {id: 12, name: 'lint', stage: 'build', status: 'completed', conclusion: 'success'}]}}, '', Date.now());
+assert.equal(twin.filter(r => r.kind === 'job').map(r => r.job).join(), '11,12', 'same-named jobs keep their own ids');
 assert.equal(rows[3].parent, rows[2].key);
 assert.equal(rows[5].title, 'test');
 assert.equal(rows[5].status, 'pending');

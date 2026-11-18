@@ -42,10 +42,13 @@ Item {
     property var sessionPins: ({})
     property var pinsCommand: ["python3"]
     property int copySerial: 0
+    property var traceCommand: ["python3", localPath("menu.py"), "trace"]
+    property bool traceStarted: false
+    property int traceSerial: 0
     property bool copyStarted: false
     property string copyLabel: ""
     readonly property string searchHint: "↑↓ select  Enter open  Tab navigate  Esc clear"
-    readonly property string listHint: "↑↓ move  ←→ expand  g/G ends  / search  e failure  y/Y copy  p pin  o GitLab  ? help  q close"
+    readonly property string listHint: "↑↓ move  ←→ expand  g/G ends  / search  e failure  y/Y copy  p pin  t log  o GitLab  ? help  q close"
     readonly property real borderWidth: Math.max(1, Style.space(2))
     property alias filterText: searchField.text
     readonly property bool filtering: searchField.activeFocus
@@ -143,6 +146,7 @@ Item {
         notice = ""
         noticeTimer.stop()
         copySerial++
+        traceSerial++
         Polling.close(polling)
         requestProc.running = false
     }
@@ -203,6 +207,14 @@ Item {
         copyProc.serial = copySerial
         copyProc.command = copyCommand.concat([r.text])
         copyProc.running = true
+    }
+    function trace() {
+        if (!current || current.kind !== "job" || !current.job) { notify("Select a job to open its log"); return }
+        if (traceProc.running) return
+        traceStarted = false
+        traceProc.serial = traceSerial
+        traceProc.command = traceCommand.concat([host, current.repo, current.job])
+        traceProc.running = true
     }
     function toggleHelp() {
         helpOpen = !helpOpen
@@ -463,6 +475,18 @@ Item {
         onRunningChanged: if (!running && !root.copyStarted && serial === root.copySerial) root.notify("Copy failed")
     }
     Process {
+        id: traceProc
+        property int serial: 0
+        onStarted: if (serial === root.traceSerial) root.traceStarted = true
+        onExited: function(code) {
+            if (serial !== root.traceSerial) return
+            if (code === 0) root.close()
+            else root.notify("Could not open a terminal")
+        }
+        // Quickshell 0.3.1: a missing binary emits neither started nor exited, only running=false.
+        onRunningChanged: if (!running && !root.traceStarted && serial === root.traceSerial) root.notify("Could not open a terminal")
+    }
+    Process {
         id: helpProc
         command: ["bash", root.localPath("keybindings.sh"), "--print"]
         stdout: StdioCollector { id: helpOutput }
@@ -542,6 +566,7 @@ Item {
                     else if (plain && event.key === Qt.Key_Q && !shift) root.close()
                     else if (plain && event.key === Qt.Key_E && !shift) root.nextFailure()
                     else if (plain && event.key === Qt.Key_P && !shift) root.togglePin()
+                    else if (plain && event.key === Qt.Key_T && !shift) root.trace()
                     else if (event.key === Qt.Key_Escape) {
                         if (root.filterText) root.filterText = ""
                         else root.close()
