@@ -20,6 +20,12 @@ Esc → Clear filter, then close
 r → Refresh selected project, expanded pipeline and activity
 Shift + R → Rediscover accessible projects
 o → Open selected project, pipeline or job on GitLab
+y → Copy the selected row's GitLab URL
+Shift + Y → Copy the pipeline's commit SHA
+g / G → First or last row
+e → Next failed pipeline, stage or job
+? → Show or hide this help in the panel
+q → Close the panel, or this help
 Ctrl + = / Ctrl + + → Make the panel larger
 Ctrl + - → Make the panel smaller
 Ctrl + 0 → Reset the panel size

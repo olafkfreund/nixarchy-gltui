@@ -148,7 +148,9 @@ def pipeline(row):
     status = state(row["status"])
     return {"id": row["id"], "run_number": row.get("iid"),
             "name": plain(row.get("name") or str(row.get("source") or "").replace("_", " ") or "Pipeline"),
-            "display_title": str(row.get("sha") or "")[:8], "head_branch": plain(row.get("ref") or ""),
+            "display_title": str(row.get("sha") or "")[:8],
+            "sha": row["sha"] if isinstance(row.get("sha"), str) and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", row["sha"]) else "",
+            "head_branch": plain(row.get("ref") or ""),
             "html_url": row.get("web_url") or "", "run_started_at": row.get("started_at") or row.get("created_at"),
             "completed_at": row.get("finished_at"), "updated_at": row.get("updated_at"),
             "status": status, "conclusion": row["status"],

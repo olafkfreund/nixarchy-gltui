@@ -4,7 +4,7 @@ const vm = require('node:vm');
 const model = {};
 vm.createContext(model);
 vm.runInContext(fs.readFileSync('PipelinesModel.js', 'utf8'), model);
-const repos = [{repo: 'group/sub/project', url: 'https://gitlab.com/group/sub/project', runs: [{id: 7, status: 'in_progress', conclusion: 'running', name: 'CI', head_branch: 'main', run_number: 3, html_url: 'https://gitlab.com/p/-/pipelines/7'}]}];
+const repos = [{repo: 'group/sub/project', url: 'https://gitlab.com/group/sub/project', runs: [{id: 7, status: 'in_progress', conclusion: 'running', name: 'CI', head_branch: 'main', run_number: 3, sha: 'a'.repeat(40), html_url: 'https://gitlab.com/p/-/pipelines/7'}]}];
 const runKey = 'group/sub/project:7';
 const expanded = {'repo:group/sub/project': true, [runKey]: true, [runKey + ':stage:build']: true};
 const jobs = [
@@ -25,8 +25,29 @@ assert.equal(rows[3].url, 'https://gitlab.com/p/-/jobs/8');
 assert.equal(rows[3].parent, rows[2].key);
 assert.equal(rows[5].title, 'test');
 assert.equal(rows[5].status, 'pending');
+assert.equal(Object.hasOwn(rows[0], 'sha'), false);
+assert.ok(rows.slice(1).every(row => row.sha === 'a'.repeat(40)));
 assert.equal(model.selection(rows, runKey + ':stage:build', 0), 2);
 assert.equal(model.selection([], 'missing', 5), 0);
+const failures = [
+  {kind:'repo', status:'failed'}, {kind:'run', status:'failed'},
+  {kind:'job', status:'allowed to fail'}, {kind:'stage', status:'error'},
+  {kind:'message', status:'failed'}, {kind:'stage', status:'failed'},
+  {kind:'job', status:'unavailable'}, {kind:'job', status:'failed'}
+];
+assert.equal(model.nextFailure(failures, 0), 1);
+assert.equal(model.nextFailure(failures, 1), 5);
+assert.equal(model.nextFailure(failures, 5), 7);
+assert.equal(model.nextFailure(failures, 7), 1);
+assert.equal(model.nextFailure([{kind:'job', status:'failed'}], 0), 0);
+assert.equal(model.nextFailure([{kind:'run', status:'success'}, {kind:'job', status:'allowed to fail'}], 0), -1);
+assert.equal(model.nextFailure([], 0), -1);
+const copied = (row, what) => JSON.parse(JSON.stringify(model.copyText(row, what)));
+assert.deepEqual(copied({url:'https://gitlab.com/p', sha:'a'.repeat(40)}, 'url'), {text:'https://gitlab.com/p', label:'Copied URL'});
+assert.deepEqual(copied({}, 'url'), {text:'', label:'Nothing to copy'});
+assert.deepEqual(copied({sha:'a'.repeat(40)}, 'sha'), {text:'a'.repeat(40), label:'Copied aaaaaaaa'});
+assert.deepEqual(copied({}, 'sha'), {text:'', label:'No commit for this row'});
+assert.deepEqual(copied(null, 'sha'), {text:'', label:'Nothing to copy'});
 assert.equal(model.rows(repos, {}, details, '', Date.now()).length, 1);
 assert.equal(model.rows(repos, {'repo:group/sub/project': true}, {}, 'main', Date.now()).length, 2);
 assert.equal(model.rows(repos, {'repo:group/sub/project': true}, {}, 'running', Date.now()).length, 2);
@@ -184,6 +205,10 @@ assert.equal(model.syncRows(list, first), false);
 assert.equal(edits, 0, 'Identical polling result must not reset or update delegates');
 assert.equal(model.syncRows(list, [{...first[0],status:'in_progress'}, first[1]]), false);
 assert.equal(backing[0], originalA, 'Status update preserves existing row');
+edits = 0;
+assert.equal(model.syncRows(list, [{...first[0],status:'in_progress',sha:'b'.repeat(40)}, first[1]]), false);
+assert.equal(backing[0].rowData.sha, 'b'.repeat(40), 'SHA-only update refreshes rowData');
+assert.equal(edits, 1);
 assert.equal(model.syncRows(list, [first[1], first[0]]), true);
 assert.equal(backing[1], originalA, 'Reordering moves the row instead of recreating it');
 model.syncRows(list, [first[0]]);

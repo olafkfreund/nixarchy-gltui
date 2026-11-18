@@ -8,7 +8,7 @@ It is the GitLab sibling of [nixarchy-ghtui](https://github.com/olafkfreund/nixa
 
 - Omarchy shell with the panel plugin contract and `qs.Commons` / `qs.Ui` components.
 - [`glab`](https://gitlab.com/gitlab-org/cli), authenticated with `glab auth login` for every host you use. The token needs the `read_api` scope.
-- Python 3, and `xdg-open` for the browser shortcut.
+- Python 3, `xdg-open` for the browser shortcut, and `wl-copy` (wl-clipboard) for the copy keys.
 
 On NixOS, missing dependencies belong in your declarative configuration. Do not install them with pacman or an imperative Nix profile.
 
@@ -166,9 +166,17 @@ The plugin uses your existing `glab` login and never reads, extracts or stores a
 | r | Refresh the selected project and expanded pipeline |
 | Shift + R | Rediscover projects from GitLab |
 | o | Open the selected project, pipeline or job on GitLab |
+| y | Copy the selected row's GitLab URL |
+| Shift + Y | Copy the pipeline's commit SHA |
+| g / G | First or last row |
+| e | Next failed pipeline, stage or job |
+| ? | Show or hide this help in the panel |
+| q | Close the panel, or the help |
 | Ctrl + = / Ctrl + + | Make the panel larger |
 | Ctrl + - | Make it smaller |
 | Ctrl + 0 | Reset the size |
+
+`e` only looks at rows already shown, and never opens a pipeline.
 
 Searching keeps the rows you opened open, and a project that matches only through one of its pipelines opens by itself. Left closes such a project for that search, and clearing the search restores what you had opened.
 

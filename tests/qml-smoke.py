@@ -20,7 +20,7 @@ for scenario in ('fresh', 'managed'):
         root = Path(directory)
         for name in ('Commons', 'Ui'):
             (root / name).symlink_to(shell / name)
-        for name in ('PipelinesPanel.qml', 'PipelinesModel.js', 'Polling.js', 'menu.py', 'menu.example.json'):
+        for name in ('PipelinesPanel.qml', 'PipelinesModel.js', 'Polling.js', 'keybindings.sh', 'menu.py', 'menu.example.json'):
             (root / name).symlink_to(source / name)
         (root / 'gitlab.py').write_text('''import json, sys, time
 request=json.loads(sys.argv[2]); kind=request['kind']
@@ -66,7 +66,7 @@ ShellRoot {
         onFileChanged: reload()
     }
     Timer {
-        interval: 60000; running: true
+        interval: 90000; running: true
         onTriggered: { console.error("CHECK FAILED: timeout stage=" + stage + " " + panel.status()); Qt.quit() }
     }
     property int stage: 0
@@ -260,6 +260,43 @@ ShellRoot {
     }
     function typeText(t) { for (var i=0;i<t.length;i++) tc.keyClick(t[i]) }
     function nokeys(a, label) { eq(Object.keys(a).sort().join(","),"",label) }
+    property double kt: 0
+    property int kcur: 0
+    property int pasteCode: -1
+    Process {
+        id: paste
+        command: ["wl-paste", "-n"]
+        stdout: StdioCollector { id: pasteOut }
+        onExited: function(code) { pasteCode = code }
+    }
+    // Returns true once cond() holds; fails the run after 5 s. Time is wall clock, not ticks.
+    function waitUntil(cond, label) {
+        if (kt===0) kt=Date.now()
+        if (cond()) { kt=0; return true }
+        check(Date.now()-kt<5000,"timeout: " + label)
+        return false
+    }
+    function pasteStart() { pasteCode=-1; paste.running=true }
+    function kP(n) {
+        var u="https://gitlab.example.org/k/one/-/pipelines/" + n
+        return n===1 ? {id:1,name:"Bad",status:"completed",conclusion:"failed",run_number:1,head_branch:"main",sha:"a".repeat(40),html_url:u}
+                     : {id:2,name:"Good",status:"completed",conclusion:"success",run_number:2,head_branch:"main",sha:"b".repeat(40),html_url:u}
+    }
+    function kJ(n) {
+        var u="https://gitlab.example.org/k/one/-/jobs/" + (20+n)
+        return n===1 ? {id:21,name:"lintish",stage:"test",status:"completed",conclusion:"failed",allow_failure:true,html_url:u}
+                     : {id:22,name:"broke",stage:"test",status:"completed",conclusion:"failed",html_url:u}
+    }
+    function kFixture(runs, jobs) {
+        panel.filterText=""
+        panel.polling.repos=[{repo:"k/one",url:"https://gitlab.example.org/k/one",checked:"x",runs:runs}]
+        panel.polling.details={"k/one:2":{jobs:jobs}}
+        panel.expanded=({"repo:k/one":true,"k/one:2":true,"k/one:2:stage:test":true})
+        panel.adopt()
+        listFocus()
+        panel.cursor=0
+    }
+    function kPress(key, mods) { panel.notice=""; listFocus(); pressKey(key, mods) }
     property var esteps: [
         function() {
             var P=panel
@@ -620,6 +657,158 @@ ShellRoot {
             check(m && (+(m[1]||0))*60+(+m[2])>=30,"S5 at least 30 s: " + d)
         },
         function() {
+            // K1: fixture. Rows: repo, P1 (failed), P2, stage test (failed), lintish (allowed), broke (failed).
+            kFixture([kP(1),kP(2)],[kJ(1),kJ(2)])
+            eq(panel.entries.length,6,"K1 six rows")
+        },
+        function() {
+            // K2: g/G, e, Ctrl+e, no failure.
+            pressKey(Qt.Key_G, Qt.ShiftModifier); eq(panel.cursor,5,"K2 G")
+            pressKey(Qt.Key_G); eq(panel.cursor,0,"K2 g")
+            pressKey(Qt.Key_End); eq(panel.cursor,5,"K2 End")
+            pressKey(Qt.Key_Home); eq(panel.cursor,0,"K2 Home")
+            var want=[1,3,5,1]
+            for (var i=0;i<want.length;i++) { pressKey(Qt.Key_E); eq(panel.cursor,want[i],"K2 e step " + i) }
+            panel.cursor=0
+            pressKey(Qt.Key_E, Qt.ControlModifier); eq(panel.cursor,0,"K2 Ctrl+e does nothing")
+            kFixture([kP(2)],[kJ(1)])
+            kPress(Qt.Key_E)
+            eq(panel.cursor,0,"K2 no failure keeps cursor")
+            eq(panel.notice,"No failures in the list","K2 no failure notice")
+            kFixture([kP(1),kP(2)],[kJ(1),kJ(2)])
+        },
+        function() {
+            // K3: copy URL.
+            panel.cursor=1
+            kPress(Qt.Key_Y)
+            kt=0
+        },
+        function() {
+            if (!waitUntil(function() { return panel.notice==="Copied URL" },"K3 notice")) return false
+            pasteStart()
+        },
+        function() {
+            if (!waitUntil(function() { return pasteCode>=0 },"K3 paste")) return false
+            eq(pasteCode,0,"K3 wl-paste exit")
+            eq(pasteOut.text,kP(1).html_url,"K3 clipboard is the URL")
+        },
+        function() {
+            // K4: copy SHA.
+            panel.cursor=5
+            kPress(Qt.Key_Y, Qt.ShiftModifier)
+        },
+        function() {
+            if (!waitUntil(function() { return panel.notice==="Copied bbbbbbbb" },"K4 notice")) return false
+            pasteStart()
+        },
+        function() {
+            if (!waitUntil(function() { return pasteCode>=0 },"K4 paste")) return false
+            eq(pasteCode,0,"K4 wl-paste exit")
+            eq(pasteOut.text,"b".repeat(40),"K4 clipboard is the SHA")
+            panel.cursor=0
+            kPress(Qt.Key_Y, Qt.ShiftModifier)
+            eq(panel.notice,"No commit for this row","K4 repo row notice")
+            pasteStart()
+        },
+        function() {
+            if (!waitUntil(function() { return pasteCode>=0 },"K4 second paste")) return false
+            eq(pasteCode,0,"K4 second wl-paste exit")
+            eq(pasteOut.text,"b".repeat(40),"K4 clipboard unchanged")
+        },
+        function() {
+            // K5: copy failures.
+            panel.cursor=1
+            panel.copyCommand=["gltui-no-such-binary"]
+            kPress(Qt.Key_Y)
+        },
+        function() {
+            if (!waitUntil(function() { return panel.notice==="Copy failed" },"K5 missing binary")) return false
+            panel.copyCommand=["false"]
+            kPress(Qt.Key_Y)
+        },
+        function() {
+            if (!waitUntil(function() { return panel.notice==="Copy failed" },"K5 exit code")) return false
+        },
+        function() {
+            // K6: a late copy result after close and reopen is dropped.
+            panel.copyCommand=["sh","-c","sleep 1","sh"]
+            panel.cursor=1
+            kPress(Qt.Key_Y)
+            pressKey(Qt.Key_Q)
+            check(!panel.opened,"K6 q closes")
+            panel.open("{}")
+            kt=Date.now()+2000
+        },
+        function() {
+            if (Date.now()<kt) return false
+            kt=0
+            eq(panel.notice,"","K6 no late notice")
+            check(!panel.helpOpen,"K6 help closed")
+            panel.copyCommand=["wl-copy","--"]
+            panel.adopt()
+            listFocus()
+        },
+        function() {
+            // K7: help.
+            panel.cursor=2
+            kcur=panel.cursor
+            listFocus()
+            tc.keyClick("?")
+            check(panel.helpOpen && panel.helpItem.visible,"K7 ? opens help")
+        },
+        function() {
+            if (!waitUntil(function() { return panel.helpText.indexOf("Next failed pipeline")>=0 },"K7 help text")) return false
+            for (var i=0;i<30 && panel.zoomPercent<200;i++) pressKey(Qt.Key_Equal, Qt.ControlModifier)
+            eq(panel.zoomPercent,200,"K7 zoom works in help")
+        },
+        function() {
+            if (!waitUntil(function() { return panel.helpFlick.contentHeight>panel.helpFlick.height },"K7 help overflows")) return false
+            pressKey(Qt.Key_J); check(panel.helpFlick.contentY>0,"K7 j scrolls down")
+            pressKey(Qt.Key_K); eq(panel.helpFlick.contentY,0,"K7 k scrolls up")
+            pressKey(Qt.Key_E); eq(panel.cursor,kcur,"K7 e ignored in help")
+            pressKey(Qt.Key_Escape)
+            check(!panel.helpOpen,"K7 Esc closes help")
+            check(panel.opened,"K7 Esc keeps the panel open")
+            eq(panel.cursor,kcur,"K7 cursor unchanged")
+            resetZoom()
+            tc.keyClick("?"); check(panel.helpOpen,"K7 ? reopens help")
+            check(panel.helpFlick.contentY===0,"K7 help reopens at the top")
+            tc.keyClick("?"); check(!panel.helpOpen && panel.opened,"K7 ? closes help only")
+            tc.keyClick("?"); pressKey(Qt.Key_Q); check(!panel.helpOpen && panel.opened,"K7 q closes help only")
+            // close() itself must reset help and the notice.
+            tc.keyClick("?"); panel.notify("x")
+            panel.close()
+            panel.open("{}")
+            check(!panel.helpOpen,"K7 close() resets help")
+            eq(panel.notice,"","K7 close() clears the notice")
+            panel.adopt()
+            listFocus()
+        },
+        function() {
+            // K8: q with a filter closes; q ? g y e type into search.
+            panel.filterText="k"
+            listFocus()
+            panel.notify("x")
+            pressKey(Qt.Key_Q)
+            check(!panel.opened,"K8 q closes with a filter")
+            panel.open("{}")
+            check(!panel.helpOpen,"K8 help closed after reopen")
+            eq(panel.notice,"","K8 no notice after reopen")
+        },
+        function() {
+            if (!waitUntil(function() { return panel.searchItem.parent.parent.activeFocus },"K8 list focus")) return false
+            pressKey(Qt.Key_Slash)
+        },
+        function() {
+            if (!waitUntil(function() { return panel.searchItem.activeFocus },"K8 search focus")) return false
+            typeText("q?gye")
+            eq(panel.filterText,"q?gye","K8 typed into search")
+            check(panel.opened,"K8 panel stays open")
+            eq(panel.footerHint,panel.searchHint,"K8 search hint")
+            pressKey(Qt.Key_Escape)
+            panel.adopt()
+        },
+        function() {
             panel.workerBusy=false
             panel.close()
             panel.polling=Polling.create()
@@ -826,7 +1015,7 @@ ShellRoot {
 }
 ''')
         try:
-            result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=75,
+            result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=110,
                                   env={**os.environ, 'HOME':str(home), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower()})
         except subprocess.TimeoutExpired as error:
             print(error.stdout, error.stderr)
