@@ -37,7 +37,9 @@ run={'id':7,'name':'CI','status':'in_progress','conclusion':'running','run_attem
 if host=='gitlab.other.org': data={} if kind=='run' else [{'repo':'three/repo'}] if kind=='catalogue' else []
 elif kind=='catalogue': data=[{'repo':'one/sub/repo','url':'https://gitlab.example.org/one/sub/repo'},{'repo':'two/repo'}]
 elif kind=='jobs': data=[{'id':8,'name':'compile','stage':'build','status':'in_progress','conclusion':'running'},{'id':9,'name':'unit','stage':'test','status':'queued','conclusion':'created'},{'id':10,'name':'lint','stage':'test','status':'completed','conclusion':'failed','allow_failure':True,'started_at':'2026-01-01T00:00:00Z','completed_at':'2026-01-01T00:01:02Z'}]
-elif kind=='run': data=run
+elif kind=='run':
+    if os.path.exists(os.environ['RUN_DELAY']): time.sleep(1.5)
+    data=dict(run,status='completed',conclusion='success') if os.path.exists(os.environ['RUN_DONE']) else run
 else: data=[run] if request['repo']=='one/sub/repo' and request.get('status','running') in ('recent','running') else []
 print(json.dumps({'requestId':request['requestId'],'data':data,'nextPage':0,'error':'','errorType':'','remaining':4000}))
 ''')
@@ -363,6 +365,44 @@ ShellRoot {
         check(panel.opened,"T6 " + label + " keeps the panel open")
         check(!traceExists(),"T6 " + label + " does not trace")
     }
+    // W1-W10: watching a pipeline. A fresh notify file per check, as for the trace file above.
+    property int notifyN: 0
+    readonly property string notifyOut: Quickshell.env("XDG_STATE_HOME") + "/notify" + notifyN + ".out"
+    FileView { id: notifyFile; path: notifyOut; blockLoading: true; printErrors: false }
+    function notifyScript() { return ["sh","-c",'for a in "$@"; do echo "$a"; done >> "' + notifyOut + '"; exit 0',"sh"] }
+    function notifyHas(text) { notifyFile.reload(); try { return notifyFile.text().indexOf(text)>=0 } catch (e) { return false } }
+    function notifyIdle() { return !panel.notifyBusy && panel.notifyQueue.length===0 }
+    function notifyRm() { notifyN++; panel.notifyCommand=notifyScript() }
+    property double wNow: 0
+    // Each closed lookup gets a clock 31 s later, so it is due and the one-second start gap holds.
+    function wTick() { wNow=Math.max(Date.now(), wNow+31000); return wNow }
+    function wRuns() {
+        var u="https://gitlab.example.org/w/one/-/pipelines/"
+        var live=[[11,5],[13,6],[14,7],[15,8],[16,9],[17,10]].map(function(p) {
+            return {id:p[0],name:"Live",status:"in_progress",conclusion:"running",run_number:p[1],head_branch:"main",html_url:u+p[0]}
+        })
+        return live.concat([{id:12,name:"Done",status:"completed",conclusion:"success",run_number:4,head_branch:"main",html_url:u+"12"}])
+    }
+    function wFixture() {
+        panel.filterText=""
+        panel.polling.repos=[{repo:"w/one",url:"https://gitlab.example.org/w/one",checked:"x",runs:wRuns()}]
+        panel.polling.details={"w/one:11":{jobs:[{id:31,name:"compile",stage:"build",status:"in_progress",conclusion:"running"}]}}
+        panel.expanded=({"repo:w/one":true,"w/one:11":true,"w/one:11:stage:build":true})
+        panel.adopt()
+        listFocus()
+        panel.cursor=0
+    }
+    function wWatch(id) { eq(Polling.watch(panel.polling,"w/one",String(id),Date.now()),"watching","watch " + id); panel.adopt() }
+    // Asks the closed scheduler for its next lookup and answers it with a finished run.
+    function wFeed(conclusion) {
+        var request=Polling.next(panel.polling, wTick())
+        check(request && request.kind==="run" && request.repo==="w/one","closed lookup is a run request: " + JSON.stringify(request))
+        var run=wRuns().filter(function(r) { return String(r.id)===request.run })[0]
+        check(run,"lookup is for a watched run: " + request.run)
+        panel.receivePage(JSON.stringify({requestId:request.requestId,data:Object.assign({},run,{status:"completed",conclusion:conclusion}),nextPage:0,error:"",errorType:"",remaining:4000}), request)
+        return request
+    }
+    function w10Repos() { return [{repo:"one/sub/repo",checked:"x",runs:[{id:7,name:"CI",status:"in_progress",conclusion:"running",run_attempt:"active",head_branch:"main",run_number:1}]}] }
     property var esteps: [
         function() {
             var P=panel
@@ -1304,6 +1344,243 @@ ShellRoot {
             panel.adopt()
         },
         function() {
+            // W1: w on a pipeline row watches and unwatches it.
+            wFixture(); notifyRm()
+            cursorTo("w/one:11")
+            kPress(Qt.Key_W)
+            eq(panel.notice,"Watching #5 in w/one","W1 watch notice")
+            check(panel.entries[panel.cursor].kind==="run" && panel.entries[panel.cursor].watched===true,"W1 row is watched")
+        },
+        function() {
+            if (!waitUntil(function() { var r=rowItem("w/one:11"); return r && arrowOf(r).indexOf("◉")>=0 },"W1 row shows the mark")) return false
+            kPress(Qt.Key_W)
+            eq(panel.notice,"Stopped watching #5","W1 unwatch notice")
+            check(panel.entries[panel.cursor].watched===false,"W1 row is not watched")
+        },
+        function() {
+            // W2: stage and job rows watch their pipeline; project and finished rows do not.
+            wFixture()
+            cursorTo("w/one:11:stage:build"); kPress(Qt.Key_W)
+            eq(panel.notice,"Watching #5 in w/one","W2 stage row watches")
+            check(panel.polling.watches["w/one:11"],"W2 watch exists")
+            cursorTo("w/one:11:31"); kPress(Qt.Key_W)
+            eq(panel.notice,"Stopped watching #5","W2 job row stops")
+            cursorTo("repo:w/one"); kPress(Qt.Key_W)
+            eq(panel.notice,"Select a pipeline to watch","W2 project row")
+            cursorTo("w/one:12"); kPress(Qt.Key_W)
+            eq(panel.notice,"Pipeline already finished","W2 finished run")
+            nokeys(panel.polling.watches,"W2 no watches left")
+        },
+        function() {
+            // W3: the cap.
+            wFixture()
+            var ids=[11,13,14,15,16]
+            ids.forEach(function(id) { eq(Polling.watch(panel.polling,"w/one",String(id),Date.now()),"watching","W3 watch " + id) })
+            panel.adopt()
+            cursorTo("w/one:17"); kPress(Qt.Key_W)
+            eq(panel.notice,"At most 5 watched pipelines","W3 cap")
+            panel.polling.watches=({})
+            panel.adopt()
+        },
+        function() {
+            // W9: modifiers do nothing; w types into the search box.
+            wFixture(); cursorTo("w/one:11")
+            var mods=[Qt.ControlModifier,Qt.AltModifier,Qt.MetaModifier,Qt.ShiftModifier]
+            mods.forEach(function(m) { kPress(Qt.Key_W,m) })
+            nokeys(panel.polling.watches,"W9 modifiers watch nothing")
+            eq(panel.notice,"","W9 modifiers give no notice")
+            pressKey(Qt.Key_Slash)
+        },
+        function() {
+            if (!waitUntil(function() { return panel.searchItem.activeFocus },"W9 search focus")) return false
+            typeText("w")
+            eq(panel.filterText.slice(-1),"w","W9 typed into search")
+            nokeys(panel.polling.watches,"W9 search watches nothing")
+            pressKey(Qt.Key_Escape)
+            panel.filterText=""
+            panel.adopt()
+            panel.notice=""
+            listFocus()
+        },
+        function() {
+            if (!waitUntil(function() { return panel.footerHint.indexOf("w watch")>=0 },"W9 footer hint")) return false
+            panel.toggleHelp()
+        },
+        function() {
+            if (!waitUntil(function() { return panel.helpText.indexOf("Watch or stop")>=0 },"W9 help text")) return false
+            panel.helpOpen=false
+            panel.notice=""
+        },
+        function() {
+            // W4: a watched pipeline finishes while the panel is closed.
+            wFixture(); notifyRm()
+            wWatch(11)
+            panel.close()
+            check(panel.watching,"W4 watching while closed")
+            var request=wFeed("success")
+            eq(request.run,"11","W4 lookup is for the watched run")
+        },
+        function() {
+            if (!waitUntil(function() { return notifyHas("Pipeline passed") && !panel.watching && notifyIdle() },"W4 notification sent and watch ended")) return false
+            check(notifyHas("w/one #5 · main"),"W4 notification body")
+        },
+        function() {
+            // W5: a notification that cannot be sent shows when the panel opens.
+            wFixture()
+            panel.notifyCommand=["sh","-c","exit 1","sh"]
+            wWatch(11)
+            panel.close()
+            wFeed("success")
+        },
+        function() {
+            if (!waitUntil(function() { return panel.missedNotices.length===1 && notifyIdle() },"W5 failed notification recorded")) return false
+            panel.open('{"filter":"x"}')
+            check(panel.notice.indexOf("Pipeline passed")>=0,"W5 missed notification shown on open: " + panel.notice)
+            eq(panel.missedNotices.length,0,"W5 missed list cleared")
+            panel.filterText=""
+            panel.close()
+        },
+        function() {
+            // W5: a missing command is recorded once per notification, and the queue goes on.
+            wFixture()
+            panel.notifyCommand=["gltui-no-such-binary"]
+            wWatch(11); wWatch(13)
+            panel.close()
+            wFeed("failed"); wFeed("failed")
+        },
+        function() {
+            if (!waitUntil(function() { return panel.missedNotices.length===2 && notifyIdle() },"W5 two failed starts recorded")) return false
+            check(panel.missedNotices.every(function(m) { return m.indexOf("Pipeline failed")===0 }),"W5 both recorded: " + panel.missedNotices.join("|"))
+            panel.missedNotices=[]
+        },
+        function() {
+            // W6: a watch that outlives its time ends with a notification, even in a cooldown.
+            if (!panel.opened) panel.open("{}")
+            wFixture(); notifyRm()
+            wWatch(11)
+            check(panel.entries.some(function(r) { return r.key==="w/one:11" && r.watched }),"W6 row is watched")
+            panel.polling.watches["w/one:11"].until=Date.now()-1
+            panel.close()
+            panel.polling.cooldown=Date.now()+3600000
+            panel.workerBusy=false
+            panel.pump()
+            panel.workerBusy=true
+            check(!panel.watching,"W6 watch ended")
+        },
+        function() {
+            if (!waitUntil(function() { return notifyHas("Stopped watching a pipeline") && notifyIdle() },"W6 expiry notification")) return false
+            check(notifyHas("w/one #5: still running after 6 hours"),"W6 body")
+            panel.polling.cooldown=0
+            panel.open("{}")
+            check(panel.entries.some(function(r) { return r.key==="w/one:11" && r.watched===false }),"W6 row is no longer watched")
+            panel.close()
+            var before=panel.polling.requests
+            panel.workerBusy=false
+            panel.pump()
+            panel.workerBusy=true
+            eq(panel.polling.requests,before,"W6 nothing starts while closed")
+        },
+        function() {
+            // W7: a sign-in problem found on close ends the watches with one notification.
+            if (!panel.opened) panel.open("{}")
+            wFixture(); notifyRm()
+            wWatch(11)
+            panel.polling.auth=true
+            panel.close()
+        },
+        function() {
+            if (!waitUntil(function() { return notifyHas("GitLab sign-in needed") && notifyIdle() },"W7 auth notification")) return false
+            check(!panel.watching,"W7 watches ended")
+            clearStops()
+            panel.open("{}")
+        },
+        function() {
+            // W8: a host change ends the watches with a notification.
+            wFixture(); notifyRm()
+            wWatch(11)
+            cfg("gitlab.other.org")
+        },
+        function() {
+            if (!waitUntil(function() { return notifyHas("Stopped watching 1 pipeline") && notifyIdle() },"W8 host notification")) return false
+            check(!panel.watching,"W8 watches ended")
+            cfg("gitlab.example.org")
+        },
+        function() {
+            if (!waitUntil(function() { return panel.host==="gitlab.example.org" && panel.pinsLoaded && panel.pinsLoadHost===panel.host },"W8 host restored")) return false
+            sh('touch "$RUN_DONE"; rm -f "$RUN_DELAY"')
+            kt=Date.now()+500
+        },
+        function() {
+            // W10: through the real pump and the fake helper, a lookup that finishes while the panel is closed.
+            if (Date.now()<kt) return false
+            kt=0
+            notifyRm()
+            panel.close()
+            panel.polling=Polling.create()
+            panel.polling.repos=w10Repos()
+            panel.polling.discover=false
+            panel.polling.catalogueComplete=true
+            panel.polling.catalogueAt=Date.now()
+            panel.expanded=({})
+            panel.filterText=""
+            panel.adopt()
+            eq(Polling.watch(panel.polling,"one/sub/repo","7",Date.now()),"watching","W10 watch")
+            panel.polling.watches["one/sub/repo:7"].checkedAt=0
+            panel.adopt()
+            panel.workerBusy=false
+        },
+        function() {
+            if (!waitUntil(function() { return notifyHas("Pipeline passed") && !panel.watching && !panel.workerBusy && panel.polling.flight===null && notifyIdle() },"W10 finish through the pump")) return false
+            sh('touch "$RUN_DELAY"')
+            kt=Date.now()+500
+        },
+        function() {
+            // W10: the panel opens while a lookup is in flight; the reply is still accepted.
+            if (Date.now()<kt) return false
+            kt=0
+            notifyRm()
+            panel.polling.repos=w10Repos()
+            panel.adopt()
+            eq(Polling.watch(panel.polling,"one/sub/repo","7",Date.now()),"watching","W10 second watch")
+            panel.adopt()
+        },
+        function() {
+            if (!waitUntil(function() { return panel.workerBusy && panel.polling.flight!==null },"W10 delayed lookup in flight")) return false
+            panel.open("{}")
+        },
+        function() {
+            if (!waitUntil(function() { return notifyHas("Pipeline passed") && !panel.watching && notifyIdle() },"W10 reply accepted after open")) return false
+            panel.close()
+        },
+        function() {
+            if (!waitUntil(function() { return !panel.workerBusy && panel.polling.flight===null },"W10 flight clears")) return false
+            zv.wRequests=panel.polling.requests
+            kt=Date.now()+2000
+        },
+        function() {
+            if (Date.now()<kt) return false
+            kt=0
+            eq(panel.polling.requests,zv.wRequests,"W10 nothing starts while closed")
+            sh('rm -f "$RUN_DONE" "$RUN_DELAY"')
+        },
+        function() {
+            // Restore the state the later steps expect.
+            if (!waitUntil(function() { return notifyIdle() },"restore: notify idle")) return false
+            panel.notifyCommand=["notify-send","--app-name=GitLab Pipelines"]
+            panel.polling=Polling.create()
+            panel.polling.repos=zRepos()
+            panel.polling.discover=false
+            panel.polling.catalogueComplete=true
+            panel.polling.catalogueAt=Date.now()
+            panel.polling.watches=({})
+            panel.polling.events=[]
+            panel.workerBusy=true
+            panel.expanded=({})
+            panel.filterText=""
+            if (!panel.opened) panel.open("{}")
+            panel.adopt()
+        },
+        function() {
             // Restore: no pins, empty state file.
             cfg("gitlab.example.org")
             panel.savedPins=[]
@@ -1523,7 +1800,7 @@ ShellRoot {
 ''')
         try:
             result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=140,
-                                  env={**os.environ, 'HOME':str(home), 'XDG_STATE_HOME':str(home / '.local/state'), 'PINS_DELAY':str(root / 'pins-delay'), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower()})
+                                  env={**os.environ, 'HOME':str(home), 'XDG_STATE_HOME':str(home / '.local/state'), 'PINS_DELAY':str(root / 'pins-delay'), 'RUN_DONE':str(root / 'run-done'), 'RUN_DELAY':str(root / 'run-delay'), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower()})
         except subprocess.TimeoutExpired as error:
             print(error.stdout, error.stderr)
             raise

@@ -202,10 +202,11 @@ function merge(expanded, auto, collapsed) {
     return result;
 }
 
-function rows(repos, expanded, details, filter, now, pinned) {
+function rows(repos, expanded, details, filter, now, pinned, watched) {
     var result = [];
     var query = filter.toLowerCase();
     pinned = pinned || {};
+    watched = watched || {};
     repos.slice().sort(function(a, b) { return (!!pinned[b.repo]) - (!!pinned[a.repo]) || (b.active || 0) - (a.active || 0); }).forEach(function(repo) {
         var repoMatch = repoMatches(repo, query);
         var runs = (repo.runs || []).filter(function(run) {
@@ -238,7 +239,8 @@ function rows(repos, expanded, details, filter, now, pinned) {
                 status: state(run), info: duration(run, now), started: run.started_at || run.run_started_at || "",
                 ended: run.completed_at || (run.status === "completed" ? run.updated_at : "") || "",
                 finished: run.completed_at || "", fetched: detail && detail.updated || "",
-                repo: repo.repo, run: String(run.id), url: run.html_url, sha: run.sha || ""});
+                repo: repo.repo, run: String(run.id), url: run.html_url, sha: run.sha || "",
+                watched: !!watched[repo.repo + ":" + run.id]});
             if (!expanded[runKey]) return;
             if (!detail || detail.error) result.push({key: runKey + ":message", parent: runKey, kind: "message", depth: 2,
                 title: detail ? detail.error : "Loading jobs…", subtitle: "", status: detail ? "error" : "queued", info: "", repo: repo.repo, run: String(run.id)});
@@ -288,7 +290,29 @@ function copyText(row, what) {
 
 // ponytail: the fields the delegate reads that can change for a key; add any new one the delegate reads.
 var shownFields = ["title", "subtitle", "status", "info", "checked", "started", "ended", "finished",
-    "fetched", "done", "total", "complete", "serverDuration", "queued", "reason", "sha", "pinned"];
+    "fetched", "done", "total", "complete", "serverDuration", "queued", "reason", "sha", "pinned", "watched"];
+
+function watchNotice(code, repo, number) {
+    if (code === "watching") return "Watching #" + number + " in " + repo;
+    if (code === "unwatched") return "Stopped watching #" + number;
+    if (code === "finished") return "Pipeline already finished";
+    if (code === "cap") return "At most 5 watched pipelines";
+    return "Select a pipeline to watch";
+}
+
+function watchMessage(event, oldHost, newHost) {
+    var w = event.watch || {}, n = event.count;
+    var label = (w.repo + " #" + w.number) + (w.ref ? " · " + w.ref : "");
+    var many = n + " " + (n === 1 ? "pipeline" : "pipelines");
+    if (event.type === "finished") {
+        var word = event.conclusion === "success" ? "passed" : event.conclusion;
+        return {summary: "Pipeline " + word, body: label};
+    }
+    if (event.type === "expired") return {summary: "Stopped watching a pipeline", body: w.repo + " #" + w.number + ": still running after 6 hours"};
+    if (event.type === "unavailable") return {summary: "Pipeline unavailable", body: w.repo + " #" + w.number};
+    if (event.type === "auth") return {summary: "GitLab sign-in needed", body: "Stopped watching " + many + ". Run glab auth login."};
+    return {summary: "Stopped watching " + many, body: "The panel now uses " + newHost + ", not " + oldHost + "."};
+}
 
 // Keep delegates alive when polling changes a status or inserts a running repo.
 // Removing gone rows first keeps one removal from cascading into a move per later row.
