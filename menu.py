@@ -1,4 +1,5 @@
 """Launch menu actions against the running desktop, including after a Nix rebuild."""
+import importlib.util
 import json
 import os
 import re
@@ -12,6 +13,34 @@ from urllib.parse import urlsplit
 
 # Keep source offsets while letting the standard JSON decoder validate values.
 JSONC_TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|//[^\r\n]*|/\*[\s\S]*?\*/|[^\s]')
+LAUNCHER = "omarchy-launch-tui"
+TRACE = 'glab ci trace "$1" -R "$2"; printf "\\nPress Enter to close. "; read -r _'
+
+
+def gitlab_rules():
+    spec = importlib.util.spec_from_file_location("gitlab_rules", Path(__file__).with_name("gitlab.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def trace(host, project, job):
+    rules = gitlab_rules()
+    rules.host_name(host)
+    rules.project_path(project)
+    if not re.fullmatch(r"[1-9][0-9]{0,18}", job):
+        raise ValueError("Invalid job")
+    command = [LAUNCHER, "--app-id=org.omarchy.gitlab-trace", "sh", "-c", TRACE,
+               "sh", job, f"https://{host}/{project}"]
+    proc = subprocess.Popen(command, start_new_session=True, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        code = proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        return 0
+    if code == 0:
+        return 0
+    raise RuntimeError(f"terminal launcher failed (exit {code})")
 
 
 def unique_object(pairs):
@@ -134,11 +163,15 @@ def remote(url):
 def main():
     try:
         args = sys.argv[1:]
+        if args and args[0] == "trace":
+            if len(args) != 4:
+                raise ValueError("Usage: menu.py [keys|toggle|register|open [FILTER]|trace HOST PROJECT JOB]")
+            return trace(*args[1:])
         if args == ["register"]:
             register_menu()
             return 0
         if args not in ([], ["keys"], ["toggle"], ["open"]) and not (len(args) == 2 and args[0] == "open"):
-            raise ValueError("Usage: menu.py [keys|toggle|register|open [FILTER]]")
+            raise ValueError("Usage: menu.py [keys|toggle|register|open [FILTER]|trace HOST PROJECT JOB]")
         payload = {}
         if args and args[0] == "open":
             if len(args) == 2:

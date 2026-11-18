@@ -76,7 +76,7 @@ ShellRoot {
         onFileChanged: reload()
     }
     Timer {
-        interval: 90000; running: true
+        interval: 120000; running: true
         onTriggered: { console.error("CHECK FAILED: timeout stage=" + stage + " ei=" + ei + " " + panel.status()); Qt.quit() }
     }
     property int stage: 0
@@ -332,6 +332,37 @@ ShellRoot {
         panel.cursor=0
     }
     function kPress(key, mods) { panel.notice=""; listFocus(); pressKey(key, mods) }
+    // A fresh file per check: a FileView keeps its last text when a file it loaded is emptied or deleted.
+    property int traceN: 0
+    readonly property string traceOut: Quickshell.env("XDG_STATE_HOME") + "/trace" + traceN + ".out"
+    FileView { id: traceFile; path: traceOut; blockLoading: true; printErrors: false }
+    function traceScript() { return ["sh","-c",'for a in "$@"; do echo "$a"; done > "' + traceOut + '"; exit 0',"sh"] }
+    function traceExists() { traceFile.reload(); try { return traceFile.text()!=="" } catch (e) { return false } }
+    function traceRm() { traceN++; panel.traceCommand=traceScript() }
+    function traceFixture() {
+        kFixture([kP(1),kP(2)],[kJ(1),kJ(2)])
+        panel.traceCommand=traceScript()
+    }
+    function rowOf(kind) { return panel.entries.findIndex(function(e) { return e.kind===kind }) }
+    function tModStart(mod) {
+        traceFixture()
+        panel.cursor=rowOf("job")
+        check(panel.current.kind==="job","T6 cursor on a job")
+        traceRm()
+        kt=Date.now()+300
+    }
+    function tModPress(mod) {
+        if (Date.now()<kt) return false
+        kt=0
+        kPress(Qt.Key_T, mod)
+        kt=Date.now()+1000
+    }
+    function tModEnd(label) {
+        if (Date.now()<kt) return false
+        kt=0
+        check(panel.opened,"T6 " + label + " keeps the panel open")
+        check(!traceExists(),"T6 " + label + " does not trace")
+    }
     property var esteps: [
         function() {
             var P=panel
@@ -1121,6 +1152,158 @@ ShellRoot {
             if (!waitUntil(function() { return panel.footerHint.indexOf("p pin")>=0 },"P14 footer hint")) return false
         },
         function() {
+            // T1: t off a job row says so and starts nothing.
+            traceFixture()
+            traceRm()
+            panel.cursor=rowOf("repo")
+            kPress(Qt.Key_T)
+            eq(panel.notice,"Select a job to open its log","T1 repo row notice")
+            panel.cursor=rowOf("run")
+            kPress(Qt.Key_T)
+            eq(panel.notice,"Select a job to open its log","T1 run row notice")
+            check(panel.opened,"T1 panel stays open")
+            kt=Date.now()+1000
+        },
+        function() {
+            if (Date.now()<kt) return false
+            kt=0
+            check(!traceExists(),"T1 no trace started")
+        },
+        function() {
+            // T2: a stage row and an empty list.
+            traceFixture()
+            panel.cursor=rowOf("stage")
+            kPress(Qt.Key_T)
+            eq(panel.notice,"Select a job to open its log","T2 stage row notice")
+            panel.filterText="gltui-no-match-zzz"
+            panel.adopt()
+            eq(panel.entries.length,0,"T2 empty list")
+            kPress(Qt.Key_T)
+            eq(panel.notice,"Select a job to open its log","T2 empty list notice")
+            check(panel.opened,"T2 panel stays open")
+            panel.filterText=""
+        },
+        function() {
+            // T3: t on a job runs the command with host, repo and job id, then closes.
+            traceFixture()
+            traceRm()
+            panel.cursor=rowOf("job")
+            kcur=panel.cursor
+            kt=Date.now()+300
+        },
+        function() {
+            if (Date.now()<kt) return false
+            kt=0
+            kPress(Qt.Key_T)
+        },
+        function() {
+            if (!waitUntil(function() { return !panel.opened && traceExists() },"T3 panel closes and the file is written")) return false
+            eq(traceFile.text().trim(),panel.host + "\\n" + panel.entries[kcur].repo + "\\n" + panel.entries[kcur].job,"T3 arguments")
+            panel.open("{}")
+        },
+        function() {
+            // T4: a launcher that fails, then one that is missing.
+            traceFixture()
+            panel.traceCommand=["sh","-c","exit 1","sh"]
+            panel.cursor=rowOf("job")
+            kPress(Qt.Key_T)
+        },
+        function() {
+            if (!waitUntil(function() { return panel.notice==="Could not open a terminal" },"T4 exit code")) return false
+            check(panel.opened,"T4 panel stays open")
+            panel.notice=""
+            panel.traceCommand=["gltui-no-such-binary"]
+            kPress(Qt.Key_T)
+        },
+        function() {
+            if (!waitUntil(function() { return panel.notice==="Could not open a terminal" },"T4 missing binary")) return false
+            check(panel.opened,"T4 panel stays open after a missing binary")
+        },
+        function() {
+            // T5: a late result after close and reopen is dropped.
+            traceFixture()
+            panel.traceCommand=["sh","-c","sleep 1","sh"]
+            panel.cursor=rowOf("job")
+            kPress(Qt.Key_T)
+            pressKey(Qt.Key_Q)
+            check(!panel.opened,"T5 q closes")
+            panel.open("{}")
+            kt=Date.now()+2000
+        },
+        function() {
+            if (Date.now()<kt) return false
+            kt=0
+            check(panel.opened,"T5 panel is open")
+            eq(panel.notice,"","T5 no late notice")
+        },
+        function() { tModStart() },
+        function() { return tModPress(Qt.ControlModifier) },
+        function() { return tModEnd("Ctrl") },
+        function() { tModStart() },
+        function() { return tModPress(Qt.AltModifier) },
+        function() { return tModEnd("Alt") },
+        function() { tModStart() },
+        function() { return tModPress(Qt.MetaModifier) },
+        function() { return tModEnd("Meta") },
+        function() { tModStart() },
+        function() { return tModPress(Qt.ShiftModifier) },
+        function() { return tModEnd("Shift") },
+        function() {
+            // T6: t in help does nothing; then plain t is the positive control.
+            traceFixture()
+            panel.cursor=rowOf("job")
+            traceRm()
+            panel.helpOpen=true
+            kPress(Qt.Key_T)
+            kt=Date.now()+1000
+        },
+        function() {
+            if (Date.now()<kt) return false
+            kt=0
+            check(panel.helpOpen && panel.opened,"T6 help stays open")
+            check(!traceExists(),"T6 help does not trace")
+            panel.helpOpen=false
+            kPress(Qt.Key_T)
+        },
+        function() {
+            if (!waitUntil(function() { return !panel.opened && traceExists() },"T6 plain t closes and writes the trace file")) return false
+            panel.open("{}")
+        },
+        function() {
+            // T7: t types into the search box.
+            traceFixture()
+            traceRm()
+            pressKey(Qt.Key_Slash)
+        },
+        function() {
+            if (!waitUntil(function() { return panel.searchItem.activeFocus },"T7 search focus")) return false
+            typeText("t")
+            eq(panel.filterText.slice(-1),"t","T7 typed into search")
+            check(panel.opened,"T7 panel stays open")
+            pressKey(Qt.Key_Escape)
+            panel.filterText=""
+            panel.adopt()
+            check(!traceExists(),"T7 no trace")
+        },
+        function() {
+            // T8: texts.
+            panel.notice=""
+            listFocus()
+            panel.toggleHelp()
+        },
+        function() {
+            if (!waitUntil(function() { return panel.helpText.indexOf("job's log")>=0 },"T8 help text")) return false
+            panel.helpOpen=false
+            panel.notice=""
+            listFocus()
+        },
+        function() {
+            if (!waitUntil(function() { return panel.footerHint.indexOf("t log")>=0 },"T8 footer hint")) return false
+            panel.traceCommand=["python3",panel.localPath("menu.py"),"trace"]
+            panel.filterText=""
+            panel.adopt()
+        },
+        function() {
             // Restore: no pins, empty state file.
             cfg("gitlab.example.org")
             panel.savedPins=[]
@@ -1339,7 +1522,7 @@ ShellRoot {
 }
 ''')
         try:
-            result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=110,
+            result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=140,
                                   env={**os.environ, 'HOME':str(home), 'XDG_STATE_HOME':str(home / '.local/state'), 'PINS_DELAY':str(root / 'pins-delay'), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower()})
         except subprocess.TimeoutExpired as error:
             print(error.stdout, error.stderr)

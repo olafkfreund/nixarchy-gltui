@@ -251,7 +251,7 @@ function rows(repos, expanded, details, filter, now, pinned) {
                     repo: repo.repo, run: String(run.id), url: run.html_url, sha: run.sha || ""});
                 if (!expanded[stageKey]) return;
                 stage.jobs.forEach(function(job) {
-                    result.push({key: runKey + ":" + job.id, parent: stageKey, kind: "job", depth: 3, title: job.name, subtitle: "",
+                    result.push({key: runKey + ":" + job.id, parent: stageKey, kind: "job", job: String(job.id), depth: 3, title: job.name, subtitle: "",
                         status: job.conclusion === "failed" && job.allow_failure ? "allowed to fail" : state(job),
                         info: duration(job, now), started: job.started_at || "", ended: job.completed_at || "",
                         finished: job.completed_at || "", complete: job.status === "completed",

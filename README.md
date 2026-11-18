@@ -8,7 +8,7 @@ It is the GitLab sibling of [nixarchy-ghtui](https://github.com/olafkfreund/nixa
 
 - Omarchy shell with the panel plugin contract and `qs.Commons` / `qs.Ui` components.
 - [`glab`](https://gitlab.com/gitlab-org/cli), authenticated with `glab auth login` for every host you use, or with an environment token (see [Authentication](#authentication)). The token needs the `read_api` scope.
-- Python 3, `xdg-open` for the browser shortcut, and `wl-copy` (wl-clipboard) for the copy keys.
+- Python 3, `xdg-open` for the browser shortcut, `wl-copy` (wl-clipboard) for the copy keys, and a terminal that `xdg-terminal-exec` can start with a command (Omarchy's terminals can) for the log key.
 
 On NixOS, missing dependencies belong in your declarative configuration. Do not install them with pacman or an imperative Nix profile.
 
@@ -182,6 +182,7 @@ If that works, the stale token is in the session's environment. `omarchy-restart
 | y | Copy the selected row's GitLab URL |
 | Shift + Y | Copy the pipeline's commit SHA |
 | p | Pin or unpin the selected project |
+| t | Open the selected job's log in a terminal |
 | g / G | First or last row |
 | e | Next failed pipeline, stage or job |
 | ? | Show or hide this help in the panel |
@@ -222,7 +223,7 @@ Stage status follows GitLab's rules, in this order:
 2. Otherwise failed, if a job failed that is not `allow_failure`.
 3. Otherwise pending, then canceled, then success.
 
-Stage rows show completed/total jobs. Open GitLab for logs.
+Stage rows show completed/total jobs. Press **t** on a job to follow its log in a terminal (`glab ci trace`), or **o** to open it on GitLab. If the terminal launcher fails within two seconds, the panel stays open and says `Could not open a terminal`. A terminal that fails later is not reported by the panel; errors after the terminal opens show in that window.
 
 ## Open on the current repository
 
