@@ -218,6 +218,7 @@ assert.equal(limited.catalogueComplete,true); assert.equal(polling.next(limited,
 // Debounce, same-run navigation, completion reconciliation, final cache and rerun invalidation.
 const s=polling.create(); s.repos=[{repo:'a/b',runs:[{id:7,status:'in_progress',run_attempt:1}],activityAt:0,summaryAt:0,active:1}];
 s.catalogueComplete=true; polling.open(s,0); s.discover=false;
+s.details['a/b:7']={bridges:[],bridgesAt:0};
 polling.select(s,'a/b','7',{'a/b:7':true},0,false);
 assert.equal(polling.next(s,200),null);
 req=polling.next(s,250); assert.equal(req.kind,'jobs');
@@ -360,7 +361,9 @@ test('attempt change between jobs pages restarts the snapshot', () => {
   polling.complete(x,response(request,[{id:1,status:'completed'}],2),100);
   polling.mergeRuns(x,x.repos[0],[{id:7,status:'completed',run_attempt:'t2'}]);
   assert.equal(x.details['a/b:7'],undefined);
-  request=polling.next(x,1000); assert.equal(request.page,1);
+  request=polling.next(x,1000);
+  if(request.kind==='bridges') { polling.complete(x,response(request,[]),1100); request=polling.next(x,2000); }
+  assert.equal(request.kind,'jobs'); assert.equal(request.page,1);
   polling.complete(x,response(request,[{id:2,status:'completed'}]),1100);
   assert.deepEqual(Array.from(x.details['a/b:7'].jobs, job=>job.id),[2]);
   assert.equal(x.details['a/b:7'].finalAttempt,'t2');
@@ -372,12 +375,14 @@ test('active to finished to active discards an in-flight jobs page', () => {
   polling.select(x,'a/b','7',{'a/b:7':true},0,true);
   let request=polling.next(x,0); assert.equal(request.kind,'jobs');
   polling.complete(x,response(request,[{id:1,status:'in_progress'}],2),100);
-  request=polling.next(x,1000); assert.equal(request.page,2);
+  request=polling.next(x,1000);
+  if(request.kind==='bridges') { polling.complete(x,response(request,[]),1100); request=polling.next(x,2000); }
+  assert.equal(request.kind,'jobs'); assert.equal(request.page,2);
   polling.mergeRuns(x,x.repos[0],[{id:7,status:'completed',run_attempt:'t1'}]);
   polling.mergeRuns(x,x.repos[0],[{id:7,status:'in_progress',run_attempt:'active'}]);
   polling.complete(x,response(request,[{id:2,status:'in_progress'}]),1100);
   assert.equal(x.details['a/b:7'],undefined);
-  request=polling.next(x,2000); assert.equal(request.kind,'jobs'); assert.equal(request.page,1);
+  request=polling.next(x,3000); assert.equal(request.kind,'jobs'); assert.equal(request.page,1);
 });
 
 test('manual refresh clears a selected summary retry delay', () => {
@@ -911,11 +916,148 @@ test('an idle selected project wakes for its summary', () => {
 test('an inspected unfinished pipeline wakes for its jobs', () => {
   const x=polling.create(); polling.open(x,0); x.discover=false; x.catalogueComplete=true;
   x.repos=[{repo:'a/b',summaryAt:1000,activityAt:1000,runs:[{id:7,status:'in_progress',run_attempt:'active'}]}];
-  x.details['a/b:7']={jobs:[],jobsAt:1000};
+  x.details['a/b:7']={jobs:[],jobsAt:1000,bridges:[],bridgesAt:1000};
   polling.select(x,'a/b','7',{'a/b:7':true},0,true);
   assert.equal(polling.next(x,2000),null);
   assert.equal(x.wakeAt,6000);
   assert.equal(polling.next(x,6000).kind,'jobs');
+});
+
+function bridgeFixture(run={id:7,status:'completed',run_attempt:1}) {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true; s.catalogueAt=1000000;
+  s.repos=[{repo:'a/b',summaryAt:1000000,activityAt:1000000,runs:[run]}];
+  s.details['a/b:7']={jobs:[],jobsAt:0,finalAttempt:1};
+  polling.select(s,'a/b','7',{'a/b:7':true},0,true);
+  return s;
+}
+function bridge(s,now=0) {
+  const q=polling.next(s,now); assert.equal(q.kind,'bridges'); return q;
+}
+test('bridges seed only for the selected inspected expanded run and keep their due time', () => {
+  const s=bridgeFixture(); polling.seed(s,0);
+  const t=s.tasks['bridges:a/b:7']; assert.equal(t.route,'bridges');
+  t.due=9000; polling.seed(s,1000); assert.equal(t.due,9000); assert.equal(s.wakeAt,9000);
+  polling.select(s,'a/b','7',{},2000,true); polling.seed(s,2000); assert.equal(s.tasks[t.key],undefined);
+  polling.select(s,'a/b','8',{'a/b:8':true},3000,true); polling.seed(s,3000); assert.equal(s.tasks[t.key],undefined);
+  polling.select(s,'', '',{'a/b:7':true},4000,true); polling.seed(s,4000); assert.equal(s.tasks[t.key],undefined);
+});
+test('bridges refresh every 15 seconds while a downstream runs, then stop at finality', () => {
+  const s=bridgeFixture(); let q=bridge(s);
+  polling.complete(s,response(q,[{id:2,status:'completed',downstream:{status:'in_progress'}}]),100);
+  assert.equal(polling.next(s,1000),null); assert.equal(s.tasks['bridges:a/b:7'],undefined);
+  assert.ok(s.wakeAt<=15100);
+  q=bridge(s,15100);
+  polling.complete(s,response(q,[{id:2,status:'completed',downstream:{status:'completed'}}]),15200);
+  polling.seed(s,15200); assert.equal(s.tasks['bridges:a/b:7'],undefined);
+});
+test('manual and scheduled downstreams stop polling; manual refresh restarts it', () => {
+  for(const status of ['manual','scheduled']) {
+    const s=bridgeFixture(); const q=bridge(s);
+    polling.complete(s,response(q,[{id:2,status:'completed',downstream:{status}}]),100);
+    polling.seed(s,20000); assert.equal(s.tasks['bridges:a/b:7'],undefined);
+    polling.manual(s,21000,false); assert.equal(s.tasks['bridges:a/b:7'].due,21000);
+  }
+});
+test('jobs unavailable does not suppress bridges; bridge permission leaves jobs and project alone', () => {
+  const s=bridgeFixture(); s.details['a/b:7']={jobs:[],unavailable:true,error:'jobs denied'};
+  let q=bridge(s); polling.complete(s,{requestId:q.requestId,errorType:'permission',error:'bridges denied'},100);
+  assert.equal(s.repos[0].blocked,undefined); assert.equal(s.details['a/b:7'].unavailable,true);
+  assert.equal(s.details['a/b:7'].error,'jobs denied'); assert.equal(s.details['a/b:7'].bridgesUnavailable,true);
+  assert.equal(s.details['a/b:7'].bridgesAt,100);
+  polling.seed(s,20000); assert.equal(s.tasks['bridges:a/b:7'],undefined);
+  polling.manual(s,21000,false); assert.equal(s.details['a/b:7'].bridgesUnavailable,false);
+  assert.equal(s.details['a/b:7'].bridgesError,'');
+});
+test('bridge network retry keeps cached data and success clears its error', () => {
+  const s=bridgeFixture(); s.details['a/b:7'].bridges=[{id:1,status:'in_progress'}];
+  let q=bridge(s); polling.complete(s,{requestId:q.requestId,errorType:'network',error:'offline'},100);
+  assert.equal(s.details['a/b:7'].bridgesError,'offline'); assert.equal(s.details['a/b:7'].bridges.length,1);
+  assert.equal(s.tasks['bridges:a/b:7'].due,5100);
+  q=bridge(s,5100); polling.complete(s,response(q,[]),5200);
+  assert.equal(s.details['a/b:7'].bridgesError,''); assert.equal(s.details['a/b:7'].bridges.length,0);
+});
+test('route fallback is a new request, then becomes the host preference on success', () => {
+  const s=bridgeFixture(); let q=bridge(s); assert.equal(q.route,'bridges');
+  polling.complete(s,{requestId:q.requestId,errorType:'route',error:'missing'},100);
+  assert.equal(s.bridgeRoute,'bridges'); assert.equal(s.details['a/b:7'].bridgesError,undefined);
+  q=bridge(s,1000); assert.equal(q.route,'trigger_jobs'); assert.equal(s.requests,2);
+  polling.complete(s,response(q,[]),1100); assert.equal(s.bridgeRoute,'trigger_jobs');
+  assert.equal(polling.resetHost(s).bridgeRoute,'bridges');
+});
+test('a second route error is local permission and later pipelines use bridges', () => {
+  const s=bridgeFixture(); let q=bridge(s);
+  polling.complete(s,{requestId:q.requestId,errorType:'route',error:'missing'},100);
+  q=bridge(s,1000); polling.complete(s,{requestId:q.requestId,errorType:'route',error:'still missing'},1100);
+  assert.equal(s.details['a/b:7'].bridgesUnavailable,true); assert.equal(s.repos[0].blocked,undefined);
+  assert.equal(s.bridgeRoute,'bridges');
+  s.repos[0].runs.push({id:8,status:'completed',run_attempt:1}); s.details['a/b:8']={jobs:[],finalAttempt:1};
+  polling.select(s,'a/b','8',{'a/b:8':true},2000,true);
+  assert.equal(bridge(s,2000).route,'bridges');
+});
+test('navigation and collapse discard bridge pages; attempt change restarts page one', () => {
+  for(const expanded of [{}, {'a/b:8':true}]) {
+    const s=bridgeFixture(); const q=bridge(s);
+    polling.complete(s,response(q,[{id:1,status:'completed'}],2),100);
+    polling.select(s,'a/b',expanded['a/b:8']?'8':'7',expanded,200,true);
+    polling.seed(s,200); assert.equal(s.tasks['bridges:a/b:7'],undefined);
+  }
+  const s=bridgeFixture(); let q=bridge(s);
+  polling.complete(s,response(q,[{id:1,status:'completed'}],2),100);
+  polling.mergeRuns(s,s.repos[0],[{id:7,status:'completed',run_attempt:2}]);
+  q=bridge(s,1000); assert.equal(q.page,1);
+  polling.complete(s,response(q,[{id:2,status:'completed'}]),1100);
+  assert.deepEqual(Array.from(s.details['a/b:7'].bridges,x=>x.id),[2]);
+});
+test('jobs and bridges preserve each other in both arrival orders and permission recovery', () => {
+  for(const first of ['jobs','bridges']) {
+    const s=bridgeFixture(); s.details['a/b:7']={};
+    const kinds=first==='jobs'?['jobs','bridges']:['bridges','jobs'];
+    for(const kind of kinds) {
+      const t=polling.ensure(s,kind,'a/b','7','interactive',0); if(kind==='bridges') t.route='bridges';
+      const q=polling.next(s,1000+s.requests*1000); assert.equal(q.kind,kind);
+      polling.complete(s,response(q,kind==='jobs'?[{id:1,status:'completed'}]:[{id:2,status:'completed'}]),1100+s.requests*1000);
+    }
+    assert.equal(s.details['a/b:7'].jobs.length,1); assert.equal(s.details['a/b:7'].bridges.length,1);
+  }
+  const s=bridgeFixture(); s.details['a/b:7'].bridges=[{id:2,status:'completed'}];
+  polling.ensure(s,'bridges','a/b','7','interactive',0).route='bridges';
+  let q=bridge(s); polling.complete(s,{requestId:q.requestId,errorType:'permission',error:'denied'},100);
+  polling.ensure(s,'jobs','a/b','7','interactive',1000);
+  q=polling.next(s,1000); polling.complete(s,{requestId:q.requestId,errorType:'permission',error:'jobs denied'},1100);
+  assert.equal(s.details['a/b:7'].bridgesUnavailable,true);
+  polling.manual(s,2000,false);
+  delete s.tasks['summary:a/b:'];
+  q=polling.next(s,2000); assert.equal(q.kind,'jobs');
+  polling.complete(s,response(q,[{id:1,status:'completed'}]),2100);
+  assert.equal(s.details['a/b:7'].error,''); assert.equal(s.details['a/b:7'].unavailable,false);
+  assert.equal(s.details['a/b:7'].bridges.length,1);
+});
+test('bridges never poll while closed or in watch-only mode', () => {
+  const s=bridgeFixture(); polling.close(s); assert.equal(polling.next(s,0),null);
+  polling.open(s,1000); polling.seed(s,1000); assert.ok(s.tasks['bridges:a/b:7']);
+  polling.close(s); polling.watch(s,'a/b',7,1000);
+  const q=polling.next(s,31000); assert.equal(q.kind,'run');
+  assert.equal(s.tasks['bridges:a/b:7'],undefined);
+});
+test('manual refresh restarts a bridge retry immediately', () => {
+  const s=bridgeFixture(), t=polling.ensure(s,'bridges','a/b','7','interactive',300000);
+  t.route='bridges'; t.failures=3;
+  polling.manual(s,1000,false);
+  assert.equal(t.due,1000); assert.equal(t.failures,0);
+});
+test('a running child costs about 120 bridge requests in 30 minutes', () => {
+  const s=bridgeFixture(); let flight=null, count=0;
+  s.repos[0].summaryAt=2000000; s.repos[0].activityAt=2000000; s.catalogueAt=2000000;
+  for(let now=0;now<1800000;now+=250) {
+    if(flight && now>=flight.end) {
+      polling.complete(s,response(flight.req,[{id:2,status:'completed',downstream:{status:'in_progress'}}]),now);
+      flight=null;
+    }
+    const q=polling.next(s,now);
+    if(q) { assert.equal(q.kind,'bridges'); count++; flight={req:q,end:now+1000}; }
+  }
+  console.log('inspected parent with running child, 30 min bridge requests',count);
+  assert.ok(count>=110 && count<=125);
 });
 
 function watchFixture(count=2) {
