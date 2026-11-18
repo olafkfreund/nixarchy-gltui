@@ -26,6 +26,11 @@ project not yet discovered takes effect when the project appears.
     reaches them. A finished catalogue stays the source of truth: its
     existing cleanup (`complete()`, the `gone` filter) drops a pinned path
     the account cannot see, as it does today for `projects`.
+- **Orphan tasks:** `seed()`'s first loop also deletes a task whose `repo`
+  is set but no longer in `s.repos`, unless it is in flight. Today the
+  catalogue cleanup drops the project but leaves its queued tasks
+  (`Polling.js:257-259`), and a failing one keeps retrying. This matters
+  more once several pins are seeded, and also fixes it for `projects`.
 - **`seed()`:** the activity interval and group for an unselected project
   (`Polling.js:89-90`) become:
 
@@ -49,6 +54,11 @@ project not yet discovered takes effect when the project appears.
     `background` slot still serves discovery and unpinned projects once
     every five starts. Only idle pins slow down under a saturated
     schedule.
+  - **Accepted limit:** if interactive and running tasks are due at every
+    start, no slot reaches `pinned`, and idle pins wait until one frees up.
+    That follows the approved precedence: it needs the selection plus more
+    than about three running projects at once, and it lasts only while
+    they keep running. The README states it, and a test pins it.
 - **Open and reopen:** nothing new. `close()` clears tasks but keeps each
   project's `activityAt`, so on reopen a pin is due only if its last check
   is 60 s old or more. A pin that was never checked is due at once.
@@ -105,7 +115,7 @@ The helper gains a second mode, `pins`, taking one JSON argument as
     keeps the file, and can fix or remove it.
   - It validates `save` with `project_path` and caps nothing: the panel
     owns the cap, and saved pins beyond it stay inactive.
-  - It creates the directory (mode 0700), writes a temporary file in the
+  - It creates the directory (mode 0700, checked by a test), writes a temporary file in the
     same directory, and renames it over the old file (`os.replace`), so a
     crash never leaves a partial file. The file is mode 0600.
   - Success prints `{"pins": [...]}`, the list as written.
@@ -119,14 +129,24 @@ The helper gains a second mode, `pins`, taking one JSON argument as
 - **New properties:** `configPins` (from `shell.json`), `savedPins` (from
   the state file), `pinsLoaded`, and `pinned` (the `names` map from
   `Model.pins`).
+- **Order at start:** pins are applied only once the panel is
+  `configured`. `applyPins()` returns early before that, and
+  `markConfigured()` calls it. So `configure()` seeds `projects` first
+  (its `!polling.repos.length` guard, `PipelinesPanel.qml:240`), and
+  `pin()` then adds only the pins not already there. A state load that
+  finishes first just stores `savedPins`.
 - **Config:** `configure()` reads `entry.pinned` like `projects`. A
   `pinned` value that is not an array counts as `[]`. If `shell.json` lists
   more than 10 valid pins, it logs one `console.warn`. It then calls
   `applyPins()`.
 - **Load:** a `pinsLoad` Process runs `gitlab.py pins {"host":…}` at start
-  and after every host change. On success it sets `savedPins` and
-  `pinsLoaded`. On an error it sets `pinsLoaded`, keeps `savedPins` empty,
-  and shows the error in the footer notice when the panel opens.
+  and after every host change.
+  - A host change first clears `savedPins` and `pinsLoaded`, then loads.
+  - Each load remembers its host. A result for a host other than the
+    current one is ignored, and the current host is loaded again.
+  - On success it sets `savedPins` and `pinsLoaded`. On an error it sets
+    `pinsLoaded`, keeps `savedPins` empty, and shows the error in the
+    footer notice when the panel opens.
 - **`applyPins()`:** computes `Model.pins(configPins, savedPins)`, calls
   `Polling.pin(polling, names)`, then `adopt()` so the list re-sorts.
 - **The `p` key:** a `plain` (no Ctrl, Alt or Meta), unshifted `p` in the
@@ -140,10 +160,19 @@ The helper gains a second mode, `pins`, taking one JSON argument as
     all carry `repo`.
   - The cursor stays on the same row key after the re-sort, as for any
     rebuild.
-- **Save:** a `pinsSave` Process. If a save is running, the panel marks
-  `pinsDirty` and saves again when it exits, with the latest list. A failed
-  save (exit 1 or bad output) shows `Pins not saved: <error>`. The pin
-  stays applied for the session.
+- **Save:** a `pinsSave` Process, one save at a time.
+  - Each save carries its host and list. While one runs, later saves wait
+    in a queue keyed by host, keeping only the latest list per host. When
+    a save exits, the next queued host is saved. A host change therefore
+    never drops another host's pending pins or saves them under the wrong
+    host.
+  - A failed save (exit 1 or bad output) shows `Pins not saved: <error>`.
+    The pin stays applied for the session.
+- **Failed start:** in Quickshell 0.3.1 a process that cannot start emits
+  neither `started` nor `exited` (`PipelinesPanel.qml:381`). Both new
+  Processes use the same `started` flag and `onRunningChanged` check as
+  `requestProc`. A failed load then counts as a load error, and a failed
+  save as a save error, so `pinsLoaded` never stays false.
 - **Display:** a project row with `pinned` shows `★ ` after the expand
   arrow and before the path, in the title's colour, for example
   `▸ ★ group/project`.
@@ -159,7 +188,8 @@ The helper gains a second mode, `pins`, taking one JSON argument as
     its path, the cap and which 10 apply, `Pinned in shell.json`, and that a
     pin needs the project to be visible to the account;
   - the "Refresh and errors" table (`:241-266`) gains the row "idle pinned project:
-    about every 60 s", and the running row notes that it includes pins;
+    about every 60 s", the running row notes that it includes pins, and
+    one sentence states the accepted limit under a busy schedule;
   - the "Keyboard" table (`:165-`) gains `p`.
 - **`keybindings.sh`:** `p` pins or unpins the selected project.
 
@@ -207,7 +237,12 @@ The helper gains a second mode, `pins`, taking one JSON argument as
   - a selected pin gets its summary and no activity check;
   - `pin()` seeds unknown pins before the catalogue completes, and does not
     after it;
-  - reopening within 60 s of a pin's check does not queue it.
+  - reopening within 60 s of a pin's check does not queue it;
+  - a catalogue that omits a seeded pin removes its queued activity task,
+    including one in retry after a network error;
+  - with interactive and running tasks due at every start, idle pins wait
+    (the accepted limit), and they start as soon as the active slot is
+    free.
 - **`tests/model.cjs`:** `validProject`; `pins()` order, duplicates, invalid
   entries and the cap; `togglePin()` for every branch, including a saved
   pin beyond the cap; `rows()` puts pinned first, keeps tie order, sets
@@ -218,6 +253,17 @@ The helper gains a second mode, `pins`, taking one JSON argument as
   unreadable or invalid file, and rejects a bad host or list; the
   `XDG_STATE_HOME` fallback.
 - **`tests/qml-smoke.py`, in the microVM only:**
+  - the harness sets `XDG_STATE_HOME` inside its temporary directory, so
+    the VM user's own state is never touched;
+  - the fake `gitlab.py` passes `pins` requests to the real helper's
+    `pins` code and keeps the API calls fake;
+  - a state load that finishes before `shell.json` still keeps the
+    `projects` seeds, and the reverse order gives the same list;
+  - a delayed load for host A that finishes after a switch to host B does
+    not change B's pins, and a host change during a running save saves
+    both hosts' lists under the right host;
+  - a missing `python3` for the pins processes ends with
+    `pinsLoaded` true and a save-failure notice;
   - with `pinned` in `shell.json` and a saved pin in the state file, both
     rows sort first with `★`;
   - `p` pins a row, which moves to the top, and the state file holds it;
@@ -230,3 +276,27 @@ The helper gains a second mode, `pins`, taking one JSON argument as
   `active` slot, or the sort change, makes a test fail.
 - All existing tests pass, and the flake's `plugin` and `menu-verbs` checks
   build.
+
+## Review notes
+
+Codex reviewed the draft read-only; agy is out of use (#2748). It
+confirmed the scheduler keeps the request limit, spacing and single
+flight, the cap and toggle rules, `shownFields`, the search, the state
+file design and the line references. Its findings, which I checked in the
+code and folded in above:
+- a host change could apply a late load to the wrong host, or lose or
+  misfile a pending save: loads are now tagged by host, and saves queue
+  per host;
+- catalogue cleanup leaves queued tasks of removed projects
+  (`Polling.js:257-259`, the `seed()` loop at `:68-76`): `seed()` now
+  deletes them;
+- a state load before `shell.json` could make `configure()` skip the
+  `projects` seeds: pins apply only once configured;
+- idle pins can wait indefinitely while interactive and running tasks are
+  always due: accepted under the approved precedence, documented and
+  tested;
+- the smoke fake `gitlab.py` reads `request['kind']` (`tests/qml-smoke.py:25`)
+  and the harness inherits `XDG_STATE_HOME`: the fake now passes `pins` to
+  the real code, and the harness isolates the state directory;
+- a failed process start emits no `exited` (`PipelinesPanel.qml:381`):
+  both new Processes handle it as `requestProc` does.
