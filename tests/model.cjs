@@ -144,6 +144,12 @@ assert.equal(model.seconds(3900), '1h 5m');
 assert.equal(model.duration({started_at:'2026-01-01T00:00:00Z', completed_at:'2026-01-01T00:01:02Z'}, now), '1m 2s');
 const at = s => new Date(now - s * 1000).toISOString();
 assert.equal(model.infoText({kind:'repo', info:'2 running', checked:at(10)}, now), '2 running · checked 10s ago');
+assert.equal(model.infoText({kind:'repo', info:'0 running', lastStatus:'failed', lastAt:at(7200), checked:at(180)}, now),
+  '0 running · last failed 2h ago · checked 3m ago');
+assert.equal(model.infoText({kind:'repo', info:'0 running', lastStatus:'success', lastAt:at(60)}, now),
+  '0 running · last success 1m ago');
+assert.equal(model.infoText({kind:'repo', info:'0 running', lastStatus:'success', lastAt:'invalid'}, now),
+  '0 running · last success');
 assert.equal(model.infoText({kind:'repo', info:'not checked', checked:at(10)}, now), 'not checked');
 assert.equal(model.infoText({kind:'repo', info:'archived', checked:at(10)}, now), 'archived');
 assert.equal(model.infoText({kind:'run', status:'success', started:at(70), ended:at(10), finished:at(9)}, now),
@@ -207,6 +213,32 @@ const ranked = model.rows([{repo:'z/idle', checked:'now', active:0}, {repo:'a/un
 assert.equal(ranked[0].title, 'b/running');
 assert.equal(ranked[0].info, '2 running');
 assert.equal(ranked[2].info, 'not checked');
+const completed = (id, conclusion, extra = {}) => ({id, status:'completed', conclusion, ...extra});
+const project = (runs, extra = {}) => model.rows([{repo:'a/b', runs, ...extra}], {}, {}, '', now)[0];
+assert.deepEqual([project([completed(1, 'failed')]).status, model.icon(project([completed(1, 'failed')]).status)], ['failed', '✕']);
+assert.equal(model.icon(project([completed(1, 'success')]).status), '✓');
+assert.equal(project([completed(2, 'failed'), {id:1, status:'in_progress'}]).status, 'running');
+assert.deepEqual([project([completed(2, 'failed')], {error:'forbidden', active:1, summaryAt:0}).status,
+  project([], {error:'forbidden', summaryAt:0}).info], ['error', 'unavailable']);
+assert.equal(project([completed(3, 'failed', {awaitingFinal:true}), completed(2, 'success', {lookupError:true}),
+  completed(1, 'manual')]).status, 'manual');
+assert.equal(model.icon(project([completed(1, 'scheduled')]).status), '◷');
+assert.equal(model.icon(project([completed(1, 'mystery')]).status), '○');
+assert.equal(project([completed(2, 'success', {head_branch:'main'}), completed(8, 'failed', {head_branch:'feature'})]).status, 'failed');
+assert.equal(model.icon(model.rows([{repo:'a/b', runs:[completed(9, 'success', {name:'new'}),
+  completed(1, 'failed', {name:'needle'})]}], {}, {}, 'needle', now)[0].status), '✓');
+assert.equal(project([{id:2, status:'queued'}, completed(1, 'failed', {awaitingFinal:true})]).status, 'neutral');
+assert.equal(project([], {summaryAt:0}).info, 'no pipelines');
+assert.equal(project([], {summaryAt:0, archived:true}).info, 'archived');
+assert.equal(model.rows([{repo:'a/b'}], {}, {}, '', now)[0].info, 'not checked');
+assert.deepEqual([project([completed(2, 'failed', {completed_at:at(20), updated_at:at(30)})]).lastAt,
+  project([completed(2, 'failed', {updated_at:at(30)})]).lastAt], [at(20), at(30)]);
+assert.equal(model.infoText(project([completed(2, 'failed', {updated_at:at(30)})]), now),
+  '0 running · last failed 30s ago');
+assert.equal(model.infoText(project([completed(2, 'failed', {updated_at:'invalid'})]), now),
+  '0 running · last failed');
+assert.deepEqual([project([completed(2, 'failed')], {error:'forbidden'}).lastStatus,
+  project([completed(2, 'failed')], {error:'forbidden'}).lastAt], ['', '']);
 assert.equal(model.rows([{repo:'a/b', description:'find this project'}], {}, {}, 'find this', Date.now()).length, 1);
 const searchRepos = [
   {repo:'needle-project', runs:[{name:'CI'}]},
@@ -256,7 +288,7 @@ model.syncRows(list, [first[0]]);
 assert.equal(list.count, 1);
 assert.equal(backing[0].rowKey, 'a');
 for (const field of ['checked','started','ended','finished','fetched','done','total','complete',
-  'serverDuration','queued','reason','pinned','watched']) {
+  'serverDuration','queued','reason','pinned','watched','lastStatus','lastAt']) {
   const value = field === 'serverDuration' ? 0 : field === 'complete' ? false : 'value';
   model.syncRows(list, [{...first[0], [field]:value}]);
   assert.equal(backing[0].rowData[field], value, field + ' appeared');
