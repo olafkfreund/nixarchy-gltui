@@ -230,7 +230,7 @@ function rows(repos, expanded, details, filter, now, pinned, watched) {
         result.push({key: repoKey, parent: "", kind: "repo", depth: 0, title: repo.repo, pinned: !!pinned[repo.repo],
             subtitle: repo.error || repo.description || "", status: repo.error ? "error" : (active ? "running" : (last ? state(last) : "neutral")),
             info: repo.archived ? "archived" : repo.disabled ? "disabled" : repo.error ? "unavailable" :
-                repo.summaryAt !== undefined && !(repo.runs || []).length ? "no pipelines" : repo.checked || repo.runs ? active + " running" : "not checked",
+                !active && repo.summaryAt !== undefined && !(repo.runs || []).length ? "no pipelines" : repo.checked || repo.runs ? active + " running" : "not checked",
             lastStatus: last ? state(last) : "", lastAt: last ? last.completed_at || last.updated_at || "" : "",
             checked: repo.checked || "", repo: repo.repo, url: repo.url ? repo.url + "/-/pipelines" : ""});
         if (!expanded[repoKey]) return;

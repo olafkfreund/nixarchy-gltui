@@ -386,3 +386,12 @@ console.log('Model: stage hierarchy, aggregation, filtering, progress, selection
   assert.equal(msg({type:'host', count:3}, 'a.org', 'b.org').summary, 'Stopped watching 3 pipelines');
   assert.equal(msg({type:'finished', watch:{...w, ref:'a&b<c>'}, conclusion:'failed'}).body, 'g/p #3 · a&amp;b&lt;c&gt;', 'markup characters are escaped');
 }
+// #36: a running project still names its latest finished pipeline, running first.
+{
+    const t = 1700000000000;
+    const r = model.rows([{repo:'a/r', active:1, checked:new Date(t-180000).toISOString(),
+        runs:[{id:9,status:'in_progress',conclusion:'running'},{id:8,status:'completed',conclusion:'failed',completed_at:new Date(t-7200000).toISOString()}]}],{}, {},'',t)[0];
+    assert.equal(r.status,'running');
+    assert.equal(model.infoText(r,t),'1 running · last failed 2h ago · checked 3m ago');
+    assert.equal(model.rows([{repo:'a/r', active:1, summaryAt:0, runs:[]}],{}, {},'',t)[0].info,'1 running');
+}
