@@ -78,6 +78,12 @@ reviewers:
      `errorType "route"`, error "GitLab has no trigger jobs route"; data via
      `bridge()`, sorted by id, `nextPage` like jobs.
    - `bridge(row, host)` next to `job()` (`:232`), per Decisions.
+   - Tests: bridges endpoint for both routes; missing route → bridges;
+     invalid route and bad run id → `ValueError`; 404 → `route` for bridges
+     only (jobs 404 still permission); `bridge()`: null/non-object
+     downstream → `None`; `iid`/`project_id`/`parent_project_id` kept as
+     ints or `None` (negative, string, missing); project parsed from
+     `web_url`; foreign host or invalid path → `""`; bad sha → `""`.
    → verify: `python3 -m unittest discover -s tests`.
    Traps: never echo URLs or response text into errors; keep 404 →
    permission for every other kind.
@@ -97,9 +103,26 @@ reviewers:
      `trigger_jobs`; jobs success (`:398`) and jobs permission (`:331`)
      merge per Decisions. The reply validity check (`:303-304`) treats
      bridges as a list kind.
-   - Tests: every case in the spec's polling list, including the 30-minute
-     inspected-parent scenario (about 120 bridge requests, printed) and the
-     existing scenarios unchanged (471 in the realistic one).
+   - `next()` (`Polling.js:225`): copy `route` onto the emitted request for
+     bridges tasks (`request.route = t.route`).
+   - Tests, one each: seeded only for the selected, inspected, expanded run;
+     15 s cadence and the future due reaches `wakeAt`; stops when final;
+     keeps going while a downstream runs after the parent finished; a
+     `manual` downstream stops it; jobs unavailable but bridges still
+     seeded; permission error leaves jobs and `blocked` alone; network error
+     sets `bridgesError`, success clears it; route error restarts that task
+     and the emitted request has `route: "trigger_jobs"` (counted in
+     `s.requests`); its success sets `s.bridgeRoute`; a second route error is
+     a permission error for that pipeline only and a later readable pipeline
+     still requests `/bridges`; navigation or collapse during pagination
+     drops the task; a rerun between pages restarts it; both arrival orders
+     (jobs then bridges, bridges then jobs) keep both field sets; jobs
+     completion after a bridges permission error keeps
+     `bridgesUnavailable`; jobs permission error → `r` → jobs success clears
+     `error`/`unavailable` and keeps bridge fields; `r` restarts bridges;
+     no bridges task while closed or in watch-only mode; a 30-minute
+     scenario inspecting a parent with a running child prints its bridge
+     request count (about 120); the existing realistic scenario stays 471.
    → verify: `node tests/polling.cjs` all pass, 0 fail.
    Traps: ES5 only; every exported writer sets `s.wakeAt=0`; `ensure()`
    keeps an existing task's due time; use `restart()` for immediate reruns.
@@ -109,17 +132,29 @@ reviewers:
      rows; bridges error row; loading check per Decisions.
    - `infoText()`: `trigger` branch.
    - `nextFailure()` (`:294`): include `trigger`.
-   - Tests: every case in the spec's model list.
+   - Tests, one each: trigger row for a child (equal project ids), another
+     project (path), unknown project (`"another project"`), both ids
+     missing (not "child"), null downstream (bridge status and
+     "downstream not created or unavailable"); `#iid` used, `#id` when iid
+     is missing; url/sha fallbacks; stage order and done/total with jobs
+     and bridges interleaved by id; a details entry with only bridges still
+     shows "Loading jobs…"; `bridgesError` row; trigger keys distinct from
+     job keys with the same id; `nextFailure` reaches a failed trigger row
+     under a successful stage.
    → verify: `node tests/model.cjs` passes.
+   Depends on step 2's details fields (`bridges`, `bridgesError`).
    Traps: ES5 only (QML `.import`); add any new field the delegate reads to
    `shownFields`.
 
 4. **`PipelinesPanel.qml`, `tests/qml-smoke.py`** (coder).
    - `trace()` (`:252-253`), `toggleWatch()` (`:175-176`): trigger guards.
    - Smoke fake helper (`tests/qml-smoke.py:33-45`): answer kind `bridges`
-     with one bridge (downstream running, other project); add a check that a
-     `trigger` row appears after expanding the run and that `t` and `w`
-     show the two notices.
+     with one bridge in stage `test` (downstream running, other project).
+   - The async block at `tests/qml-smoke.py:1676-1699`: its gate must wait
+     for both `details[...].jobs` and `details[...].bridges` (bridges can
+     create the entry first). Then expand stage `test`, find the `trigger`
+     row, select it, press `t` and `w`, and check the two notices. Keep the
+     existing lint-row checks working (rows shift by one).
    → verify: `python3 -c "import ast,sys; ast.parse(open('tests/qml-smoke.py').read())"`.
    Traps: do **not** run `tests/qml-smoke.py`, quickshell or `notify-send`
    on the host; the lead runs the smoke test in a microVM.
@@ -129,7 +164,13 @@ reviewers:
      `»` trigger rows where pipeline rows are described.
    - `keybindings.sh --print` help: one line for `»` rows.
    - `manifest.json`: 1.12.0.
+   - Wording for the limit: "Downstream and child pipelines show as `»`
+     rows inside the trigger job's stage, with their status. Their own jobs
+     are not shown. The times on a `»` row are the trigger job's. A
+     downstream waiting in manual or scheduled stops refreshing until you
+     press `r`."
    → verify: `bash keybindings.sh --print | grep -n '»'`.
+   Steps 4-5 follow steps 2-3.
 
 ## Tests
 
