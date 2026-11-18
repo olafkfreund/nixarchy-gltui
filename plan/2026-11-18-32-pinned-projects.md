@@ -525,6 +525,8 @@ state-file steps. Its findings, which I checked and folded in above:
   wait on it.
 - **Step 6, watchdog message:** the timeout line now also prints the
   current `ei` step index, to find a stuck step.
+- **Tests, flake:** this repo's flake has only the `plugin` check, and it
+  builds. `menu-verbs` is a nixarchy check; it is built in the pin bump.
 - **Tests, VM:** a VM left idle locks its screen (DPMS off, then a
   password prompt), and every `keyClick` then fails, on `main` too. The
   VM was recreated and the smoke run started right after boot.
