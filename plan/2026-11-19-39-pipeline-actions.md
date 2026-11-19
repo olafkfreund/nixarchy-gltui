@@ -426,6 +426,10 @@ nix build ./ci#checks.x86_64-linux.qml-smoke -L --override-input gltui path:$PWD
 - Step 3: a pipeline with no usable ref gets its own reason, "This
   pipeline has no branch or tag to start from", instead of the
   merge-request reason.
+- Step 4: `missedFailed` (not in the plan's list) keeps a failure that
+  arrived while closed urgent-coloured on reopen. `notify()` clears
+  `actionFailed`; `finishAction` and `open()` set it after their notify.
+  `clock()` formats the cooldown time as HH:MM for the action texts.
 
 ## Rollback
 
