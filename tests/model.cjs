@@ -94,6 +94,70 @@ assert.equal(model.rows(repos, {'repo:group/sub/project': true}, {}, 'main', Dat
 assert.equal(model.rows(repos, {'repo:group/sub/project': true}, {}, 'running', Date.now()).length, 2);
 assert.equal(model.rows(repos, expanded, details, 'missing', Date.now()).length, 0);
 assert.equal(model.rows(repos, expanded, {}, '', Date.now())[2].title, 'Loading jobs…');
+// #37: bridges share their stage with jobs, while their downstream supplies the visible status.
+{
+  const run = 'group/sub/project:7';
+  const open = {'repo:group/sub/project':true, [run]:true, [run + ':stage:build']:true};
+  const at = Date.parse('2026-01-01T00:02:00Z');
+  const bridge = (id, downstream, extra = {}) => ({id, name:'deploy', stage:'build', status:'completed',
+    conclusion:'success', started_at:'2026-01-01T00:00:00Z', completed_at:'2026-01-01T00:01:00Z',
+    html_url:'https://gitlab.com/p/-/jobs/' + id, downstream, ...extra});
+  const child = {id:101, iid:12, project_id:4, parent_project_id:4, status:'running', conclusion:'running',
+    ref:'refs/merge-requests/42/head', project:'group/sub/project', url:'https://gitlab.com/p/-/pipelines/101', sha:'b'.repeat(40)};
+  const show = (bridges, jobs = [], extra = {}) => model.rows(repos, open,
+    {[run]:{jobs, bridges, ...extra}}, '', at);
+  const childRows = show([bridge(8, child)]);
+  const trigger = childRows.find(row => row.kind === 'trigger');
+  assert.equal(trigger.key, run + ':bridge:8');
+  assert.equal(trigger.parent, run + ':stage:build');
+  assert.equal(trigger.depth, 3);
+  assert.equal(trigger.title, '» deploy');
+  assert.equal(trigger.subtitle, 'child · #12 · !42');
+  assert.equal(trigger.status, 'running');
+  assert.equal(trigger.url, child.url);
+  assert.equal(trigger.sha, child.sha);
+  assert.equal(show([bridge(8, {...child, url:''})]).find(r => r.kind === 'trigger').url, 'https://gitlab.com/p/-/jobs/8');
+  assert.equal(trigger.repo, repos[0].repo);
+  assert.equal(trigger.run, '7');
+  assert.equal(model.infoText(trigger, at), 'running · trigger 1m 0s · 1m ago');
+  assert.equal(model.infoText({...trigger, started:'', ended:'', finished:''}, at), 'running');
+  assert.equal(show([bridge(8, {...child, project_id:5, project:'other/project'})]).find(r => r.kind === 'trigger').subtitle,
+    'other/project · #12 · !42');
+  assert.equal(show([bridge(8, {...child, project_id:5, project:''})]).find(r => r.kind === 'trigger').subtitle,
+    'another project · #12 · !42');
+  assert.equal(show([bridge(8, {...child, project_id:null, parent_project_id:null})]).find(r => r.kind === 'trigger').subtitle,
+    'group/sub/project · #12 · !42');
+  assert.equal(show([bridge(8, {...child, project_id:'4', parent_project_id:'4'})]).find(r => r.kind === 'trigger').subtitle,
+    'group/sub/project · #12 · !42');
+  assert.equal(show([bridge(8, {...child, iid:null})]).find(r => r.kind === 'trigger').subtitle,
+    'child · #101 · !42');
+  const missing = show([bridge(8, null)]).find(r => r.kind === 'trigger');
+  assert.equal(missing.subtitle, 'downstream not created or unavailable');
+  assert.equal(missing.status, 'success');
+  assert.equal(missing.url, 'https://gitlab.com/p/-/jobs/8');
+  assert.equal(missing.sha, 'a'.repeat(40));
+  assert.equal(show([bridge(8, null, {conclusion:'failed', allow_failure:true})]).find(r => r.kind === 'trigger').status,
+    'allowed to fail');
+  const mixed = show([bridge(9, child), bridge(7, null)], [
+    {id:8, name:'job', stage:'build', status:'completed', conclusion:'success'}]);
+  assert.deepEqual(plain(mixed.filter(r => r.depth === 3).map(r => r.key)),
+    [run + ':bridge:7', run + ':8', run + ':bridge:9']);
+  assert.deepEqual([mixed[2].status, mixed[2].done, mixed[2].total], ['success', 3, 3]);
+  const orderedStages = show([bridge(6, child, {stage:'test'}), bridge(9, null)],
+    [{id:8, name:'job', stage:'build', status:'completed', conclusion:'success'}]);
+  assert.deepEqual(plain(orderedStages.filter(r => r.kind === 'stage').map(r => r.title)), ['test', 'build']);
+  assert.deepEqual(plain(show([bridge(8, child)], [{id:8, name:'job', stage:'build'}]).filter(r => r.depth === 3).map(r => r.key)),
+    [run + ':8', run + ':bridge:8']);
+  const pending = model.rows(repos, open, {[run]:{bridges:[bridge(8, child)]}}, '', at);
+  assert.equal(pending[2].title, 'Loading jobs…');
+  assert.equal(pending.find(r => r.kind === 'trigger').key, run + ':bridge:8');
+  const errored = show([], [], {bridgesError:'Not allowed'});
+  assert.equal(errored[errored.length - 1].title, 'Downstream pipelines: Not allowed');
+  assert.equal(errored[errored.length - 1].kind, 'message');
+  const failedTrigger = show([bridge(8, {...child, status:'completed', conclusion:'failed'})]);
+  assert.equal(failedTrigger[2].status, 'success');
+  assert.equal(model.nextFailure(failedTrigger, 2), failedTrigger.findIndex(r => r.kind === 'trigger'));
+}
 // Stage aggregation, in GitLab's precedence.
 const agg = (...c) => model.stageStatus(c.map(x => ({conclusion: x.replace('?', ''), allow_failure: x.endsWith('?')})));  // '?' = allow_failure
 assert.equal(agg('failed', 'running'), 'running');

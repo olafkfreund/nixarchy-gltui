@@ -9,7 +9,7 @@ function create() {
         rateFailures:0, auth:false, tasks:{}, flight:null, repos:[], details:{}, selected:"", inspected:"",
         stableAt:0, expanded:{}, pinned:{}, catalogueAt:0, catalogueComplete:false, discover:true, periodic:false,
         error:"", catalogueError:"", requests:0, lastRequest:"", lastStarted:0, wakeAt:0, seeds:0,
-        watches:{}, queued:{}, events:[]};
+        watches:{}, queued:{}, events:[], bridgeRoute:"bridges"};
 }
 function resetHost(s) {
     return Object.assign(create(),{opened:s.opened,starts:s.starts,serial:s.serial,generation:s.generation+1});
@@ -120,8 +120,14 @@ function manual(s, now, catalogue) {
         r.idle=0; r.blocked = false; r.error = ""; s.stableAt = now;
         restart(s,ensure(s, "summary", r.repo, "", "interactive", now),now);
         if (s.inspected && s.expanded[r.repo + ":" + s.inspected]) {
-            if (s.details[r.repo+":"+s.inspected]) s.details[r.repo+":"+s.inspected].unavailable=false;
+            if (s.details[r.repo+":"+s.inspected]) {
+                s.details[r.repo+":"+s.inspected].unavailable=false;
+                s.details[r.repo+":"+s.inspected].bridgesUnavailable=false;
+                s.details[r.repo+":"+s.inspected].bridgesError="";
+            }
             restart(s,ensure(s, "jobs", r.repo, s.inspected, "interactive", now),now);
+            var bridgeTask=ensure(s, "bridges", r.repo, s.inspected, "interactive", now);
+            restart(s,bridgeTask,now); bridgeTask.route=s.bridgeRoute;
         }
     }
 }
@@ -136,7 +142,7 @@ function seed(s, now) {
         if (owner && owner.blocked && !watched) { delete s.tasks[id]; return; }
         if (t.repo && !owner && !watched) { delete s.tasks[id]; return; }
         if ((t.kind === "summary" && t.repo !== s.selected) ||
-            (t.kind === "jobs" && (t.repo !== s.selected || t.run !== s.inspected || !s.expanded[t.repo + ":" + t.run])))
+            ((t.kind === "jobs" || t.kind === "bridges") && (t.repo !== s.selected || t.run !== s.inspected || !s.expanded[t.repo + ":" + t.run])))
             delete s.tasks[id];
     });
     if (!s.discover && s.catalogueComplete && !s.catalogueError) {
@@ -178,10 +184,20 @@ function seed(s, now) {
         if (selected && s.inspected && s.expanded[r.repo + ":" + s.inspected]) {
             var run = runFor(s,r.repo,s.inspected), detail = s.details[r.repo + ":" + s.inspected];
             var attempt = run && (run.run_attempt || 1);
-            if (detail && detail.unavailable) return;
-            var final = run && run.status === "completed" && detail && detail.finalAttempt === attempt;
-            if (!final && now >= age(detail && detail.jobsAt,5000)) ensure(s,"jobs",r.repo,s.inspected,"interactive",age(detail && detail.jobsAt,5000));
-            else if (!final) wake=Math.min(wake,age(detail && detail.jobsAt,5000));
+            var jobsFinal = detail && (detail.unavailable || run && run.status === "completed" && detail.finalAttempt === attempt);
+            if (!jobsFinal && !(detail && detail.unavailable) && now >= age(detail && detail.jobsAt,5000)) ensure(s,"jobs",r.repo,s.inspected,"interactive",age(detail && detail.jobsAt,5000));
+            else if (!jobsFinal && !(detail && detail.unavailable)) wake=Math.min(wake,age(detail && detail.jobsAt,5000));
+            // Only a snapshot taken after the parent finished can be final: a trigger may start a downstream just before.
+            var final = run && run.status === "completed" && jobsFinal && detail && detail.bridges && detail.bridgesAttempt === attempt &&
+                detail.bridges.every(function(bridge) { return bridge.status==="completed" && (!bridge.downstream || bridge.downstream.status==="completed") });
+            if (!(detail && detail.bridgesUnavailable) && !final) {
+                var bridgeDue=age(detail && detail.bridgesAt,15000);
+                if (now >= bridgeDue) {
+                    var bridgeTask=ensure(s,"bridges",r.repo,s.inspected,"interactive",bridgeDue);
+                    if (!bridgeTask.route) bridgeTask.route=s.bridgeRoute;
+                }
+                else wake=Math.min(wake,bridgeDue);
+            }
         }
     });
     wake=Math.min(wake,seedWatches(s,now));
@@ -224,6 +240,7 @@ function next(s, now) {
     s.slot++; s.starts.push(now); s.requests++; s.lastStarted=now; s.lastRequest=t.kind + (t.repo ? " " + t.repo : "");
     var request = {kind:t.kind,repo:t.repo,run:t.run,page:t.page,requestId:++s.serial};
     if (t.kind === "summary") request.status = phases[t.phase];
+    if (t.kind === "bridges") request.route = t.route;
     s.flight = {key:t.key, request:request, generation:s.generation};
     return request;
 }
@@ -248,8 +265,11 @@ function mergeRuns(s,r,incoming) {
     incoming.forEach(function(run) {
         if (run.status!=="queued") delete s.queued[r.repo+":"+run.id];
         var old=runFor(s,r.repo,run.id);
-        var jobs=s.tasks[key("jobs",r.repo,run.id)];
-        if (old && (old.run_attempt || 1)!==(run.run_attempt || 1) && jobs) restart(s,jobs,s.clock || 0);
+        var jobs=s.tasks[key("jobs",r.repo,run.id)], bridges=s.tasks[key("bridges",r.repo,run.id)];
+        if (old && (old.run_attempt || 1)!==(run.run_attempt || 1)) {
+            if (jobs) restart(s,jobs,s.clock || 0);
+            if (bridges) restart(s,bridges,s.clock || 0);
+        }
         if (s.opened && old && old.status!=="completed" && run.status==="completed" && s.selected===r.repo && s.inspected===String(run.id) && s.expanded[r.repo+":"+run.id])
             ensure(s,"jobs",r.repo,run.id,"interactive",s.clock || 0);
     });
@@ -311,6 +331,10 @@ function complete(s,reply,now) {
     }
     if (t.restart) { restart(s,t,now); delete t.restart; return true; }
     var r=repoFor(s,t.repo);
+    if (t.kind==="bridges" && reply.errorType==="route") {
+        if (t.route==="bridges") { restart(s,t,now); t.route="trigger_jobs"; return true; }
+        reply=Object.assign({},reply,{errorType:"permission",error:"Pipeline unavailable or read_api scope missing"});
+    }
     if (reply.errorType || reply.error) {
         var watched=t.kind==="run" && s.watches[t.repo+":"+t.run];
         if (watched) watched.checkedAt=now;
@@ -327,15 +351,17 @@ function complete(s,reply,now) {
         if (reply.errorType==="permission") {
             if (watched) { s.events.push({type:"unavailable",watch:watched}); delete s.watches[t.repo+":"+t.run]; }
             if (t.kind==="catalogue") { s.discover=false; s.catalogueError=s.error; }
-            if (r && t.kind!=="jobs" && t.kind!=="run") { r.blocked=true; r.error=s.error; }
+            if (r && t.kind!=="jobs" && t.kind!=="bridges" && t.kind!=="run") { r.blocked=true; r.error=s.error; }
             else if (r && t.kind==="jobs") s.details[t.repo+":"+t.run]=Object.assign({},s.details[t.repo+":"+t.run] || {},{error:s.error,jobsAt:now,unavailable:true});
+            else if (r && t.kind==="bridges") s.details[t.repo+":"+t.run]=Object.assign({},s.details[t.repo+":"+t.run] || {},{bridgesError:s.error,bridgesAt:now,bridgesUnavailable:true});
             else if (r) { var failed=runFor(s,t.repo,t.run); if(failed){ failed.awaitingFinal=false; delete failed.followupAt; failed.lookupError=s.error; } }
             delete s.tasks[t.key];
         } else {
             t.failures++; t.due=reply.errorType==="rate" ? s.cooldown : now+Math.min(300000,5000*Math.pow(2,t.failures-1));
             // Retry a failed snapshot from page one; keep already published cache data.
             t.page=1; t.phase=0; t.items=[]; t.all=[];
-            if (r) r.error=s.error;
+            if (r && t.kind==="bridges" && reply.errorType==="network") s.details[t.repo+":"+t.run]=Object.assign({},s.details[t.repo+":"+t.run] || {},{bridgesError:s.error});
+            if (r && t.kind!=="bridges") r.error=s.error;
         }
         return true;
     }
@@ -395,8 +421,13 @@ function complete(s,reply,now) {
         r.summaryAt=now;
     } else if (r && t.kind==="jobs") {
         var run=runFor(s,t.repo,t.run);
-        s.details[t.repo+":"+t.run]={jobs:t.items,updated:new Date(now).toISOString(),jobsAt:now,
-            finalAttempt:run && run.status==="completed" && t.items.every(function(job) { return job.status==="completed" }) ? run.run_attempt || 1 : 0};
+        s.details[t.repo+":"+t.run]=Object.assign({},s.details[t.repo+":"+t.run] || {},{jobs:t.items,updated:new Date(now).toISOString(),jobsAt:now,error:"",unavailable:false,
+            finalAttempt:run && run.status==="completed" && t.items.every(function(job) { return job.status==="completed" }) ? run.run_attempt || 1 : 0});
+    } else if (r && t.kind==="bridges") {
+        var run=runFor(s,t.repo,t.run);
+        s.details[t.repo+":"+t.run]=Object.assign({},s.details[t.repo+":"+t.run] || {},{bridges:t.items,bridgesAt:now,bridgesError:"",bridgesUnavailable:false,
+            bridgesAttempt:run && run.status==="completed" ? run.run_attempt || 1 : 0});
+        if (t.route==="trigger_jobs") s.bridgeRoute=t.route;
     }
     delete s.tasks[t.key]; settle(s,now); return true;
 }

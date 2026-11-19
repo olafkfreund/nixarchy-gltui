@@ -172,6 +172,7 @@ function infoText(row, now) {
     var parts = [row.status];
     if (row.kind === "run") parts.push(live, ago(row.finished, now));
     else if (row.kind === "stage") parts.push(row.done + "/" + row.total + " jobs", live);
+    else if (row.kind === "trigger") parts.push(live ? "trigger " + live : "", ago(row.finished, now));
     else if (row.kind === "job") {
         if (row.status === "failed" || row.status === "allowed to fail") parts.push(reasonText(row.reason));
         parts.push(row.complete && typeof row.serverDuration === "number" ? seconds(Math.round(row.serverDuration)) : live);
@@ -256,9 +257,11 @@ function rows(repos, expanded, details, filter, now, pinned, watched) {
                 repo: repo.repo, run: String(run.id), url: run.html_url, sha: run.sha || "",
                 watched: !!watched[repo.repo + ":" + run.id]});
             if (!expanded[runKey]) return;
-            if (!detail || detail.error) result.push({key: runKey + ":message", parent: runKey, kind: "message", depth: 2,
-                title: detail ? detail.error : "Loading jobs…", subtitle: "", status: detail ? "error" : "queued", info: "", repo: repo.repo, run: String(run.id)});
-            stages((detail && detail.jobs) || []).forEach(function(stage) {
+            if (!detail || detail.error || !detail.jobs) result.push({key: runKey + ":message", parent: runKey, kind: "message", depth: 2,
+                title: detail && detail.error ? detail.error : "Loading jobs…", subtitle: "", status: detail && detail.error ? "error" : "queued", info: "", repo: repo.repo, run: String(run.id)});
+            var entries = ((detail && detail.jobs) || []).concat((detail && detail.bridges) || []);
+            entries.sort(function(a, b) { return Number(a.id) - Number(b.id); });
+            stages(entries).forEach(function(stage) {
                 var stageKey = runKey + ":stage:" + stage.name;
                 var done = stage.jobs.filter(function(job) { return job.status === "completed"; }).length;
                 result.push({key: stageKey, parent: runKey, kind: "stage", depth: 2, title: stage.name, subtitle: "",
@@ -267,6 +270,21 @@ function rows(repos, expanded, details, filter, now, pinned, watched) {
                     repo: repo.repo, run: String(run.id), url: run.html_url, sha: run.sha || ""});
                 if (!expanded[stageKey]) return;
                 stage.jobs.forEach(function(job) {
+                    if (Object.prototype.hasOwnProperty.call(job, "downstream")) {
+                        var downstream = job.downstream;
+                        var child = downstream && typeof downstream.project_id === "number" && downstream.project_id >= 0 && downstream.project_id % 1 === 0 &&
+                            typeof downstream.parent_project_id === "number" && downstream.parent_project_id >= 0 && downstream.parent_project_id % 1 === 0 &&
+                            downstream.project_id === downstream.parent_project_id;
+                        var status = downstream ? state(downstream) : state(job);
+                        result.push({key: runKey + ":bridge:" + job.id, parent: stageKey, kind: "trigger", depth: 3,
+                            title: "» " + job.name, subtitle: downstream ? (child ? "child" : downstream.project || "another project") +
+                                " · #" + (downstream.iid || downstream.id) + " · " + shortRef(downstream.ref) : "downstream not created or unavailable",
+                            status: status === "failed" && job.allow_failure ? "allowed to fail" : status,
+                            info: duration(job, now), started: job.started_at || "", ended: job.completed_at || "",
+                            finished: job.completed_at || "", repo: repo.repo, run: String(run.id),
+                            url: downstream && downstream.url || job.html_url, sha: downstream ? downstream.sha : run.sha || ""});
+                        return;
+                    }
                     result.push({key: runKey + ":" + job.id, parent: stageKey, kind: "job", job: String(job.id), depth: 3, title: job.name, subtitle: "",
                         status: job.conclusion === "failed" && job.allow_failure ? "allowed to fail" : state(job),
                         info: duration(job, now), started: job.started_at || "", ended: job.completed_at || "",
@@ -277,6 +295,8 @@ function rows(repos, expanded, details, filter, now, pinned, watched) {
                         sha: run.sha || ""});
                 });
             });
+            if (detail && detail.bridgesError) result.push({key: runKey + ":bridges-message", parent: runKey, kind: "message", depth: 2,
+                title: "Downstream pipelines: " + detail.bridgesError, subtitle: "", status: "error", info: "", repo: repo.repo, run: String(run.id)});
         });
         if (more) result.push(more);
     });
@@ -291,7 +311,7 @@ function selection(rows, key, previous) {
 function nextFailure(rows, cursor) {
     for (var offset = 1; offset <= rows.length; offset++) {
         var i = (cursor + offset) % rows.length;
-        if (rows[i].status === "failed" && ["run", "stage", "job"].indexOf(rows[i].kind) >= 0) return i;
+        if (rows[i].status === "failed" && ["run", "stage", "job", "trigger"].indexOf(rows[i].kind) >= 0) return i;
     }
     return -1;
 }
