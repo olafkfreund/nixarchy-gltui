@@ -157,7 +157,7 @@ as it does `status` and `route`. `mrs` is the single key `mrs::`.
 
 ### Model (`PipelinesModel.js`)
 
-- **`mrRows(mrs, filter, now, host)`** → rows with `kind:"mr"`,
+- **`mrRows(mrs, filter, now, host, selectedKey)`** → rows with `kind:"mr"`,
   `key:"mr:<project_id>!<iid>"`, `title` `"<project> !<iid> <title>"` (with
   `Draft · ` first when draft), `subtitle` the source branch, and `status`
   from the pipeline (`state()`), or `neutral` with `info` "not checked", "no
@@ -249,6 +249,9 @@ into; `hidden` relies on GitLab omitting the field). `keybindings.sh` gets
      `error="Merge request unavailable"` (before the generic 403/404
      branch). The "run" object check stays as is.
    - `project()` (line 317): add `"id"` (positive int, else `ValueError`).
+     Update the existing fixtures that build projects without an id:
+     the catalogue test around `tests/test_gitlab.py:409` (input rows and
+     the expected parsed list) and the `project()` call around line 580.
    - Tests in `tests/test_gitlab.py` next to the existing page tests: both
      endpoints; bad `project`/`iid` (0, "1/2", "../x", bool) refused; page 2
      refused for `mrs`; `merge_request` plain-text title and branch, draft
@@ -279,7 +282,7 @@ into; `hidden` relies on GitLab omitting the field). `keybindings.sh` gets
      its own case in `tests/polling.cjs`, using injected `now`.
    - Check: `node tests/polling.cjs` and `node tests/model.cjs` (0 fail).
    - Traps:
-     - `seed()` only runs when `now >= s.wakeAt` (`next()`, line 237); a
+     - `seed()` only runs when `now >= s.wakeAt` (`next()`, line 234); a
        deadline left out of `wake` silently stalls the view.
      - `seed()` deletes tasks with a `repo` and no owner (line 152): the
        new tasks keep `repo:""`.
@@ -292,9 +295,10 @@ into; `hidden` relies on GitLab omitting the field). `keybindings.sh` gets
    - Add `mrRows(mrs, filter, now, host)` per Decisions › Model, the `more`
      row and its dashboard URL, and `mr`/`more` cases in `accessibleName`
      (line 185) and wherever `infoText`/`subtitleText` switch on `kind`.
-   - `mrRows` takes the per-row refresh target from the same numbers as the
-     scheduler; pass `selectedKey` as a fifth argument for the selected
-     targets.
+   - `selectedKey` is the scheduler's status key `"<project_id>!<iid>"`
+     (the same value as `polling.mrSelected`, without the row key's `mr:`
+     prefix); it picks the selected refresh targets (10 s / 60 s) for the
+     age text. Test selected and unselected thresholds.
    - Tests: the model list in Tests › Required cases.
    - Check: `node tests/model.cjs` (0 fail).
    - Traps: `browsable(url, host)` returns false without a host (line 9);
@@ -310,6 +314,8 @@ into; `hidden` relies on GitLab omitting the field). `keybindings.sh` gets
      `status()` fields, `listHint` and the view hint.
    - `copy()` and `openBrowser()` (lines 352, 599) must use the row's
      already-checked `url` for `mr`/`more` rows.
+   - Call `Model.mrRows(polling.mrs, filterText, now, host, polling.mrSelected)`
+     in `rebuild()`; `selectMr` gets the row key without its `mr:` prefix.
    - Check: `node tests/model.cjs`, `node tests/polling.cjs`; the QML is
      checked by step 5 in the VM.
    - Traps:
@@ -319,11 +325,18 @@ into; `hidden` relies on GitLab omitting the field). `keybindings.sh` gets
        their precedence; `m` in the search field is text.
 
 5. **Smoke stage** — `tests/qml-smoke.py`.
-   - Fake helper (lines 25-48): add `mrs` (two merge requests, one in
-     `one/sub/repo` with `project_id` 1, one in an outside project with
-     `project_id` 99) and `mr` (head pipeline 7 in project 1 for the first;
-     absent `head_pipeline` for the second). The catalogue fixture gets
-     `id` values. The other host returns `[]` for `mrs`.
+   - Fake helper (lines 25-48) emits already-parsed `data`, bypassing the
+     real parsers, so its replies are in the normalized shape:
+     - `mrs`: a list of `merge_request()` entries — `!1` in `one/sub/repo`
+       (`project_id` 1) and `!2` in `outside/repo` (`project_id` 99).
+     - `mr`: `{iid, project_id, pipeline, pipelineState}`. For `!1`,
+       `pipelineState:"ok"` and pipeline 7 with `project_id` 1. For `!2`,
+       `pipelineState:"ok"` and a visible pipeline with `project_id` 99,
+       which is not in the catalogue, to prove the "Project not in your
+       list" refusal. Hidden and none states are covered by the Python and
+       model tests.
+     - The catalogue fixture rows get `id` 1 and 2. The other host returns
+       `[]` for `mrs`.
    - New steps before the final `QML_CHECKS_PASSED` step, covering the smoke list in Tests › Required cases.
    - Check, in the headless VM only:
 
