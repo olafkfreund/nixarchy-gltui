@@ -1217,6 +1217,75 @@ test('a matching reply that is no longer wanted still clears the flight', () => 
 });
 
 
+test('touch creates a run task and clears a backed-off snapshot', () => {
+  const s=polling.create(); s.repos=[{repo:'a/b',summaryAt:9000}];
+  polling.touch(s,'a/b','7',10000);
+  assert.equal(s.tasks['run:a/b:7'].due,10000);
+  assert.equal(s.repos[0].summaryAt,undefined);
+  const task=s.tasks['run:a/b:7']; task.due=50000; task.failures=3; task.page=2; task.items=[{id:1}];
+  polling.touch(s,'a/b','7',11000);
+  assert.equal(task.due,11000); assert.equal(task.failures,0);
+  assert.equal(task.page,1); assert.equal(task.items.length,0);
+  assert.equal(s.tasks['summary:a/b:'],undefined,'touch does not create a summary task');
+  s.expanded['a/b:7']=true;
+  polling.touch(s,'a/b','7',12000);
+  assert.equal(s.tasks['jobs:a/b:7'].due,12000);
+});
+
+test('touch restarts in-flight run, summary and paged jobs without publishing stale data', () => {
+  for (const kind of ['run','summary','jobs']) {
+    const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+    s.repos=[{repo:'a/b',summaryAt:0,runs:[{id:7,status:'in_progress',conclusion:'running'}]}];
+    s.selected='a/b'; s.inspected='7'; s.expanded={'a/b:7':true};
+    s.details['a/b:7']={jobs:[{id:1}],jobsAt:0};
+    const task=polling.ensure(s,kind,'a/b',kind==='summary'?'':'7','interactive',1000);
+    if(kind==='jobs') { task.page=2; task.items=[{id:1}]; }
+    s.wakeAt=Infinity;
+    const request=polling.next(s,1000); assert.equal(request.kind,kind);
+    polling.touch(s,'a/b','7',1100);
+    assert.equal(task.restart,true);
+    const stale=kind==='run' ? {id:7,status:'completed',conclusion:'failed'} :
+      kind==='summary' ? [{id:99,status:'completed'}] : [{id:2,status:'completed'}];
+    assert.equal(polling.complete(s,response(request,stale),1200),true);
+    assert.equal(task.page,1); assert.equal(task.due,1200);
+    assert.equal(task.restart,undefined);
+    assert.equal(s.repos[0].runs[0].conclusion,'running');
+    assert.equal(s.repos[0].runs.some(run=>run.id===99),false);
+    assert.equal(s.details['a/b:7'].jobs[0].id,1);
+  }
+});
+
+test('touch does not settle a watched pipeline from a stale run reply', () => {
+  const s=watchFixture(1); s.discover=false; s.catalogueComplete=true;
+  const request=polling.next(s,30000); assert.equal(request.kind,'run');
+  polling.touch(s,'x/y','1',30100);
+  polling.complete(s,response(request,{id:1,status:'completed',conclusion:'failed'}),30200);
+  assert.ok(s.watches['x/y:1']); assert.equal(s.events.length,0);
+  assert.equal(s.tasks['run:x/y:1'].due,30200);
+});
+
+test('write metadata cools polling without changing read errors, tasks or starts', () => {
+  const s=polling.create(); s.error='offline'; s.auth=true; s.repos=[{repo:'a/b',blocked:true}];
+  const task=polling.ensure(s,'run','a/b','7','interactive',5000);
+  s.starts.push(1000); s.wakeAt=5000;
+  polling.noteWrite(s,{ok:true,remaining:0,resetAt:120000},2000);
+  assert.equal(s.cooldown,120000); assert.equal(s.wakeAt,0);
+  assert.equal(s.error,'offline'); assert.equal(s.auth,true); assert.equal(s.repos[0].blocked,true);
+  assert.equal(s.tasks[task.key],task); assert.equal(s.starts.length,1); assert.equal(s.starts[0],1000);
+  polling.noteWrite(s,{errorType:'rate'},120000);
+  assert.equal(s.cooldown,180000); assert.equal(s.rateFailures,1);
+});
+
+test('a write pauses reads for one second without consuming the read budget', () => {
+  const s=polling.create(); polling.open(s,0);
+  s.discover=true; polling.writeStarted(s,5000);
+  assert.equal(polling.next(s,5999),null);
+  assert.equal(s.starts.length,0); assert.equal(s.writeAt,5000);
+  assert.equal(polling.resetHost(s).writeAt,5000);
+  const request=polling.next(s,6000); assert.equal(request.kind,'catalogue');
+  assert.equal(s.starts.length,1);
+});
+
 // Measurement (#35): 137 projects (5 active within a day, 15 within a week, 117 older), org/r0 selected, 1s responses.
 // Baseline before #35: realistic 30 min 713 requests (idle 408); realistic 2 h 2830 (idle 1632); queued 30 min 1800 (lookups 1413).
 function scenario({duration, queued=0}) {

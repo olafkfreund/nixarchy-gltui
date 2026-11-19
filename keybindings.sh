@@ -26,6 +26,11 @@ p → Pin or unpin the selected project
 t → Open the selected job's log in a terminal
 » → Trigger row: downstream pipeline status (no log, no watch)
 w → Watch or stop watching the selected pipeline
+a → Retry the selected failed or canceled pipeline or job (needs "actions": true)
+c → Cancel the selected running or queued pipeline or job (needs "actions": true)
+x → Play the selected manual job (needs "actions": true)
+n → Start a new pipeline on the selected pipeline's branch or tag (needs "actions": true)
+y / Esc → Confirm or cancel an action
 g / G → First or last row
 e → Next failed pipeline, stage, job or » row
 ? → Show or hide this help in the panel

@@ -2,6 +2,7 @@
 import argparse
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import tempfile
 import tomllib
@@ -44,6 +45,16 @@ elif kind=='run':
 else: data=[run] if request['repo']=='one/sub/repo' and request.get('status','running') in ('recent','running') else []
 print(json.dumps({'requestId':request['requestId'],'data':data,'nextPage':0,'error':'','errorType':'','remaining':4000}))
 ''')
+        (root / 'actions.log').write_text('')
+        (root / 'action.sh').write_text('''#!/bin/sh
+reply=$1
+delay=$2
+for task; do :; done
+printf '%s\\n' "$task" >> ACTION_LOG
+id=$(printf '%s\\n' "$task" | sed -n 's/.*"requestId":\\([0-9]*\\).*/\\1/p')
+sleep "$delay"
+printf '%s\\n' "$reply" | sed "s/@ID@/$id/g"
+'''.replace('ACTION_LOG', shlex.quote(str(root / 'actions.log'))))
         home = root / 'home'
         home.mkdir()
         theme = home / '.local/state/omarchy/current/theme'
@@ -80,7 +91,7 @@ ShellRoot {
         onFileChanged: reload()
     }
     Timer {
-        interval: 120000; running: true
+        interval: 180000; running: true
         onTriggered: { console.error("CHECK FAILED: timeout stage=" + stage + " ei=" + ei + " " + panel.status()); Qt.quit() }
     }
     property int stage: 0
@@ -101,6 +112,46 @@ ShellRoot {
     function screenW() { return panel.cardItem.parent.width }
     function screenH() { return panel.cardItem.parent.height }
     function near(a, b, label) { check(Math.abs(a-b)<=1, label + ": " + a + " vs " + b) }
+    readonly property string actionRepo: "actions/" + "long-project-name-".repeat(5)
+    property var actionSaved: null
+    property int actionBase: 0
+    property double actionAt: 0
+    FileView { id: actionLog; path: Quickshell.env("ACTION_LOG"); blockLoading: true; printErrors: false }
+    function actionLines() {
+        actionLog.reload()
+        var t=actionLog.text().trim()
+        return t ? t.split("\\n").map(function(line) { return JSON.parse(line) }) : []
+    }
+    function actionReply(ok, type, message, delay, extra) {
+        var reply={requestId:"@ID@",ok:ok,error:message || "",errorType:type || "",remaining:4000}
+        if (extra) Object.assign(reply,extra)
+        panel.actionCommand=["sh",Quickshell.env("ACTION_SCRIPT"),JSON.stringify(reply).replace('"@ID@"','@ID@'),String(delay || 0)]
+    }
+    function actionFixture() {
+        var repo=actionRepo
+        panel.filterText=""
+        panel.polling.repos=[{repo:repo,checked:"x",summaryAt:Date.now(),runs:[
+            {id:1,run_number:1,name:"Failed",status:"completed",conclusion:"failed",head_branch:"main",ref:"main",source:"push"},
+            {id:2,run_number:2,name:"Running",status:"in_progress",conclusion:"running",head_branch:"main",ref:"main",source:"push"},
+            {id:3,run_number:3,name:"MR",status:"completed",conclusion:"failed",head_branch:"main",ref:"main",source:"merge_request_event"},
+            {id:4,run_number:4,name:"Good",status:"completed",conclusion:"success",head_branch:"main",ref:"main",source:"push"}]}]
+        panel.polling.details[repo+":2"]={jobs:[
+            {id:21,name:"Failed job",stage:"test",status:"completed",conclusion:"failed"},
+            {id:22,name:"Running job",stage:"test",status:"in_progress",conclusion:"running"},
+            {id:23,name:"Manual job",stage:"test",status:"completed",conclusion:"manual"},
+            {id:24,name:"Good job",stage:"test",status:"completed",conclusion:"success"}]}
+        panel.expanded=({})
+        panel.expanded["repo:"+repo]=true
+        panel.expanded[repo+":2"]=true
+        panel.expanded[repo+":2:stage:test"]=true
+        panel.polling.cooldown=0
+        panel.polling.lastStarted=0
+        panel.polling.writeAt=0
+        panel.adopt()
+        listFocus()
+    }
+    function actionPress(row,key) { cursorTo(row); listFocus(); pressKey(key) }
+    function actionSent(label) { return waitUntil(function() { return actionLines().length>actionBase && !panel.actionBusy },label) }
     property var zsteps: [
         function() {
             // Fixture: a fresh 40-project state under a one-hour cooldown, so no request starts during the zoom stages.
@@ -217,6 +268,257 @@ ShellRoot {
             panel.close()
             panel.open("{}")
             check(panel.zoomPercent===130,"zoom survives close and open")
+        },
+        function() {
+            // Actions use a separate fake process and a frozen polling fixture.
+            actionSaved={polling:panel.polling,expanded:panel.expanded,filter:panel.filterText,
+                workerBusy:panel.workerBusy,host:panel.host,command:panel.actionCommand}
+            panel.polling=Polling.create()
+            panel.polling.discover=false
+            panel.polling.catalogueComplete=true
+            panel.polling.catalogueAt=Date.now()
+            panel.workerBusy=true
+            resetZoom()
+            cfg("gitlab.example.org")
+            actionFixture()
+            actionReply(true,"","",0)
+            actionBase=actionLines().length
+            ;[Qt.Key_A,Qt.Key_C,Qt.Key_X,Qt.Key_N].forEach(function(key) {
+                actionPress(actionRepo+":1",key)
+                eq(panel.notice,'Actions are off: set "actions": true for this plugin in shell.json',"A off key")
+                check(!panel.confirm,"A off leaves no confirmation")
+            })
+            eq(actionLines().length,actionBase,"A off sent nothing")
+            cfg("gitlab.example.org",{actions:true})
+            check(panel.status().indexOf('"actionsOn":true')>=0,"A setting enabled")
+            check(panel.listHint.indexOf("a/c/x/n act")>=0,"A hint advertises actions")
+        },
+        function() {
+            // Each action key is accepted on its raw status and refused on another.
+            var yes=[[actionRepo+":1",Qt.Key_A,"retry-pipeline"],[actionRepo+":2",Qt.Key_C,"cancel-pipeline"],
+                [actionRepo+":2:21",Qt.Key_A,"retry-job"],[actionRepo+":2:22",Qt.Key_C,"cancel-job"],
+                [actionRepo+":2:23",Qt.Key_X,"play-job"],[actionRepo+":2",Qt.Key_N,"new-pipeline"]]
+            yes.forEach(function(c) {
+                actionPress(c[0],c[1])
+                check(panel.confirm && panel.confirm.action===c[2],"A allowed " + c[2])
+                eq(panel.footerHint,panel.confirm.text,"A footer confirms " + c[2])
+                pressKey(Qt.Key_Escape)
+                check(!panel.confirm && panel.notice==="Nothing was sent","A Esc cancels")
+            })
+            var no=[[actionRepo+":4",Qt.Key_A,"Only a failed or canceled pipeline can be retried"],
+                [actionRepo+":1",Qt.Key_C,"Only a running or queued pipeline can be canceled"],
+                [actionRepo+":2:24",Qt.Key_A,"Only a failed or canceled job can be retried"],
+                [actionRepo+":2:23",Qt.Key_C,"Only a running or queued job can be canceled"],
+                [actionRepo+":2:24",Qt.Key_X,"Only a manual job can be played"],
+                [actionRepo+":3",Qt.Key_N,"Merge-request pipelines cannot be started from the panel"]]
+            no.forEach(function(c) { actionPress(c[0],c[1]); eq(panel.notice,c[2],"A refused key"); check(!panel.confirm,"A refusal has no confirmation") })
+            ;[Qt.Key_A,Qt.Key_C,Qt.Key_X,Qt.Key_N].forEach(function(key) {
+                actionPress("repo:"+actionRepo,key)
+                eq(panel.notice,"Select a pipeline or job","A repo row refused")
+            })
+            eq(actionLines().length,actionBase,"A notices sent nothing")
+        },
+        function() {
+            actionPress(actionRepo+":1",Qt.Key_A)
+            check(panel.confirm && panel.footerHint===panel.confirm.text,"A footer shows whole confirmation")
+            var cursor=panel.cursor
+            pressKey(Qt.Key_Slash); check(!panel.searchItem.activeFocus && panel.cursor===cursor,"A slash swallowed")
+            pressKey(Qt.Key_Return); check(panel.confirm,"A Enter cannot confirm")
+            pressKey(Qt.Key_Y,Qt.ShiftModifier); check(panel.confirm,"A Shift+y cannot confirm")
+            // With the search box focused, Esc still cancels the confirmation and y types nothing.
+            panel.searchItem.forceActiveFocus()
+            pressKey(Qt.Key_Escape)
+            check(!panel.confirm && panel.notice==="Nothing was sent" && panel.filterText==="","A Esc in search cancels")
+            listFocus()
+            actionPress(actionRepo+":1",Qt.Key_A)
+            var repeated={key:Qt.Key_Y,modifiers:Qt.NoModifier,isAutoRepeat:true,accepted:false}
+            panel.confirmKey(repeated); check(repeated.accepted && panel.confirm,"A auto-repeat y swallowed")
+            panel.confirmKey({key:Qt.Key_Y,modifiers:Qt.NoModifier,isAutoRepeat:false,accepted:false})
+            check(!panel.confirm && panel.actionBusy,"A plain y sends")
+        },
+        function() {
+            if (!actionSent("A first write")) return false
+            eq(actionLines().length,actionBase+1,"A repeated y sent once")
+            eq(actionLines()[actionBase].action,"retry-pipeline","A retry request")
+            check(panel.notice.indexOf("Retry requested:")===0,"A success text")
+            check(panel.polling.tasks["run:"+actionRepo+":1"],"A success touches run lookup")
+            actionBase=actionLines().length
+            actionPress(actionRepo+":1",Qt.Key_A)
+            // Reordering the visible rows must not change the captured target.
+            panel.polling.repos[0].runs.reverse()
+            panel.adopt()
+            pressKey(Qt.Key_Y)
+        },
+        function() {
+            if (!actionSent("A reordered write")) return false
+            var sent=actionLines()[actionBase]
+            eq(sent.repo,actionRepo,"A target repo pinned")
+            eq(sent.run,"1","A target run pinned")
+            actionBase=actionLines().length
+            actionPress(actionRepo+":2",Qt.Key_C)
+            actionAt=Date.now()
+            pressKey(Qt.Key_Y)
+            check(panel.pendingAction && panel.actionBusy,"A second write waits")
+            eq(actionLines().length,actionBase,"A spacing has no early write")
+            var before=panel.polling.requests
+            panel.workerBusy=false; panel.pump(); panel.workerBusy=true
+            eq(panel.polling.requests,before,"A read waits behind write")
+        },
+        function() {
+            if (!actionSent("A spaced write")) return false
+            check(Date.now()-actionAt>=750,"A writes spaced by about one second")
+            eq(actionLines().length,actionBase+1,"A second write sent")
+            actionBase=actionLines().length
+            panel.polling.cooldown=Date.now()+60000
+            actionPress(actionRepo+":1",Qt.Key_A)
+            check(panel.notice.indexOf("GitLab paused until ")===0 && !panel.confirm,"A cooldown refuses")
+            eq(actionLines().length,actionBase,"A cooldown sent nothing")
+            panel.polling.cooldown=0
+        },
+        function() {
+            panel.polling.lastStarted=Date.now()
+            actionPress(actionRepo+":1",Qt.Key_A)
+            pressKey(Qt.Key_Y)
+            check(panel.pendingAction && !panel.confirm,"A close-before-send is waiting")
+            panel.close()
+            check(!panel.pendingAction,"A close drops pending write")
+            actionAt=Date.now()
+        },
+        function() {
+            if (Date.now()-actionAt<1200) return false
+            eq(actionLines().length,actionBase,"A close during wait sent nothing")
+            panel.open("{}")
+            panel.polling.lastStarted=Date.now()
+            actionPress(actionRepo+":1",Qt.Key_A)
+            pressKey(Qt.Key_Y)
+            check(panel.pendingAction && !panel.confirm,"A host-before-send is waiting")
+            cfg("gitlab.other.org",{actions:true})
+            check(!panel.pendingAction && !panel.actionBusy,"A host change drops wait")
+            eq(actionLines().length,actionBase,"A host-before-send sent nothing")
+            cfg("gitlab.example.org",{actions:true})
+            actionFixture()
+            actionReply(true,"","",1.2)
+            actionPress(actionRepo+":1",Qt.Key_A)
+            pressKey(Qt.Key_Y)
+        },
+        function() {
+            if (!waitUntil(function() { return actionLines().length===actionBase+1 && panel.actionBusy },"A slow write started")) return false
+            cfg("gitlab.other.org",{actions:true})
+            panel.polling.discover=false; panel.polling.catalogueComplete=true
+            panel.workerBusy=true
+            actionAt=panel.polling.requests
+        },
+        function() {
+            if (!waitUntil(function() { return !panel.actionBusy },"A old-host result")) return false
+            check(panel.notice.indexOf("on gitlab.example.org: Retry requested:")===0,"A old-host result labelled")
+            eq(panel.polling.requests,actionAt,"A other-host polling untouched")
+            eq(Object.keys(panel.polling.tasks).length,0,"A other-host tasks untouched")
+            actionBase=actionLines().length
+            cfg("gitlab.example.org",{actions:true})
+            actionFixture()
+            actionPress(actionRepo+":1",Qt.Key_A)
+            pressKey(Qt.Key_Y)
+        },
+        function() {
+            if (!waitUntil(function() { return actionLines().length===actionBase+1 && panel.actionBusy },"A second slow write started")) return false
+            cfg("gitlab.other.org",{actions:true})
+            cfg("gitlab.example.org",{actions:true})
+            panel.workerBusy=true
+        },
+        function() {
+            if (!waitUntil(function() { return !panel.actionBusy },"A roundtrip host result")) return false
+            check(panel.notice.indexOf("on gitlab.example.org: Retry requested:")===0,"A epoch labels A-B-A result")
+            eq(Object.keys(panel.polling.tasks).length,0,"A roundtrip leaves new polling untouched")
+            actionBase=actionLines().length
+            actionFixture()
+            actionPress(actionRepo+":1",Qt.Key_A)
+            pressKey(Qt.Key_Y)
+        },
+        function() {
+            if (!waitUntil(function() { return actionLines().length===actionBase+1 && panel.actionBusy },"A close-running started")) return false
+            panel.close()
+            check(panel.actionBusy,"A close keeps process running")
+        },
+        function() {
+            if (!waitUntil(function() { return !panel.actionBusy && panel.missedAction!=="" },"A closed result")) return false
+            panel.open("{}")
+            check(panel.notice.indexOf("Retry requested:")===0,"A missed result shown on reopen")
+            eq(panel.missedAction,"","A missed result consumed")
+            actionAt=Date.now()
+        },
+        function() {
+            if (Date.now()-actionAt<9000) return false
+            check(panel.notice.indexOf("Retry requested:")===0,"A missed result lasts nearly 10 s")
+        },
+        function() {
+            if (Date.now()-actionAt<10500) return false
+            eq(panel.notice,"","A missed result expires after 10 s")
+            actionBase=actionLines().length
+            actionFixture()
+            actionPress(actionRepo+":1",Qt.Key_A)
+            pressKey(Qt.Key_Y)
+        },
+        function() {
+            if (!waitUntil(function() { return actionLines().length===actionBase+1 && panel.actionBusy },"A setting-off write started")) return false
+            cfg("gitlab.example.org",{actions:false})
+            check(panel.actionBusy,"A setting off keeps process running")
+        },
+        function() {
+            if (!waitUntil(function() { return !panel.actionBusy },"A setting-off result")) return false
+            check(panel.notice.indexOf("Retry requested:")===0,"A setting-off result still arrives")
+            cfg("gitlab.example.org",{actions:true})
+            actionFixture()
+            actionReply(false,"scope","Needs a token with the api scope",0)
+            actionBase=actionLines().length
+            actionPress(actionRepo+":1",Qt.Key_A); pressKey(Qt.Key_Y)
+        },
+        function() {
+            if (!actionSent("A scope result")) return false
+            eq(panel.notice,"Needs a token with the api scope","A scope text")
+            check(panel.actionFailed,"A scope is urgent")
+            actionReply(false,"refused","GitLab refused: denied",0)
+            actionBase=actionLines().length
+            actionPress(actionRepo+":1",Qt.Key_A); pressKey(Qt.Key_Y)
+        },
+        function() {
+            if (!actionSent("A refused result")) return false
+            eq(panel.notice,"GitLab refused: denied","A refused text")
+            actionReply(false,"unknown","Outcome unknown; check GitLab before retrying",0)
+            actionBase=actionLines().length
+            actionPress(actionRepo+":1",Qt.Key_A); pressKey(Qt.Key_Y)
+        },
+        function() {
+            if (!actionSent("A unknown result")) return false
+            eq(panel.notice,"Outcome unknown; check GitLab before retrying","A unknown text")
+            // Long project names wrap at both compact zoom and a narrow card width.
+            panel.zoomPercent=75
+            actionPress(actionRepo+":1",Qt.Key_A)
+            check(panel.confirm && panel.footerHint===panel.confirm.text,"A long confirmation present")
+        },
+        function() {
+            var h=panel.hintItem
+            check(h.text===panel.confirm.text && h.wrapMode===Text.Wrap,"A 75% text wraps")
+            check(h.contentWidth<=h.width+1,"A 75% text fits its width")
+            panel.cardItem.width=Commons.Style.space(300)
+        },
+        function() {
+            var h=panel.hintItem
+            check(h.text===panel.confirm.text && h.lineCount>1,"A narrow text wraps onto several lines")
+            check(h.contentWidth<=h.width+1,"A narrow text fits its width")
+            var bottom=h.mapToItem(panel.cardItem,0,h.height).y
+            check(bottom<=panel.cardItem.height+1,"A narrow footer stays inside the card: " + bottom + " vs " + panel.cardItem.height)
+            panel.cardItem.width=Qt.binding(function() { return Math.min(panel.zs(Commons.Style.space(900)), screenW()-Commons.Style.gapsOut*2) })
+            pressKey(Qt.Key_Escape)
+            panel.zoomPercent=100
+            cfg(actionSaved.host)
+            panel.polling=actionSaved.polling
+            panel.expanded=actionSaved.expanded
+            panel.filterText=actionSaved.filter
+            panel.workerBusy=actionSaved.workerBusy
+            panel.actionCommand=actionSaved.command
+            panel.adopt()
+            listFocus()
+            check(!panel.actionsOn && !panel.confirm && !panel.actionBusy,"A setting and fixture restored")
         },
         function() {
             if (!panel.searchItem.parent.parent.activeFocus) return false
@@ -1880,8 +2182,8 @@ ShellRoot {
 }
 ''')
         try:
-            result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=140,
-                                  env={**os.environ, 'HOME':str(home), 'XDG_STATE_HOME':str(home / '.local/state'), 'PINS_DELAY':str(root / 'pins-delay'), 'RUN_DONE':str(root / 'run-done'), 'RUN_DELAY':str(root / 'run-delay'), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower()})
+            result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=200,
+                                  env={**os.environ, 'HOME':str(home), 'XDG_STATE_HOME':str(home / '.local/state'), 'PINS_DELAY':str(root / 'pins-delay'), 'RUN_DONE':str(root / 'run-done'), 'RUN_DELAY':str(root / 'run-delay'), 'ACTION_SCRIPT':str(root / 'action.sh'), 'ACTION_LOG':str(root / 'actions.log'), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower()})
         except subprocess.TimeoutExpired as error:
             print(error.stdout, error.stderr)
             raise

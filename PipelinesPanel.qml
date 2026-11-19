@@ -48,7 +48,20 @@ Item {
     property bool copyStarted: false
     property string copyLabel: ""
     readonly property string searchHint: "↑↓ select  Enter open  Tab navigate  Esc clear"
-    readonly property string listHint: "↑↓ move  ←→ expand  g/G ends  / search  e failure  y/Y copy  p pin  t log  w watch  o GitLab  ? help  q close"
+    readonly property string listHint: "↑↓ move  ←→ expand  g/G ends  / search  e failure  y/Y copy  p pin  t log  w watch" +
+        (actionsOn ? "  a/c/x/n act" : "") + "  o GitLab  ? help  q close"
+    property bool actionsOn: false
+    property var confirm: null
+    property var pendingAction: null
+    property bool actionBusy: false
+    property int actionId: 0
+    property int actionSerial: 0
+    property bool actionStarted: false
+    property bool actionFailed: false
+    property int hostEpoch: 0
+    property string missedAction: ""
+    property bool missedFailed: false
+    property var actionCommand: ["python3", localPath("gitlab.py"), "act"]
     readonly property real borderWidth: Math.max(1, Style.space(2))
     property alias filterText: searchField.text
     readonly property bool filtering: searchField.activeFocus
@@ -126,6 +139,12 @@ Item {
         else pendingOpen = pendingOpen.concat([payload])
         if (pinsError) { notify(pinsError); pinsError = "" }
         showMissed()
+        if (missedAction) {
+            // Keep missed watch notices from showMissed() beside the action result.
+            notify((notice ? notice + " · " : "") + missedAction, 10000)
+            actionFailed = missedFailed
+            missedAction = ""
+        }
         selectionChanged(true)
         pump()
         Qt.callLater(function() { keys.forceActiveFocus() })
@@ -191,6 +210,7 @@ Item {
         Polling.close(polling)
         if (polling.events.length) { drainEvents(); adopt() }
         requestProc.running = false
+        dropAction("")
     }
     function toggle() { opened ? close() : open("{}") }
     function status() {
@@ -198,7 +218,8 @@ Item {
             checked: checkedCount, discoveryComplete: discoveryComplete, error: error, updated: updated,
             requests: polling.requests, inFlight: workerBusy, cooldown: polling.cooldown,
             lastRequest: polling.lastRequest, lastStarted: polling.lastStarted,
-            filter: filterText, editing: filtering, selected: current ? current.key : "", scrollY: list.contentY})
+            filter: filterText, editing: filtering, selected: current ? current.key : "", scrollY: list.contentY,
+            actionsOn: actionsOn, confirm: confirm ? confirm.text : "", actionBusy: actionBusy})
     }
 
     function rebuild(resetSelection) {
@@ -239,7 +260,95 @@ Item {
         list.positionViewAtIndex(i, ListView.Contain)
         selectionChanged(false)
     }
-    function notify(t) { notice = t; noticeTimer.restart() }
+    function notify(t, ms) { actionFailed = false; notice = t; noticeTimer.interval = ms || 2000; noticeTimer.restart() }
+    onActionsOnChanged: if (!actionsOn) dropAction("Actions are off")
+
+    function clock(t) {
+        var d = new Date(t)
+        return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2)
+    }
+    function pausedText() { return "GitLab paused until " + clock(polling.cooldown) + "; try again then" }
+    function rawJob(row) {
+        var d = polling.details[row.repo + ":" + row.run]
+        return ((d && d.jobs) || []).filter(function(j) { return String(j.id) === row.job })[0]
+    }
+    function startAction(key) {
+        if (!actionsOn) { notify("Actions are off: set \"actions\": true for this plugin in shell.json"); return }
+        if (actionBusy) { notify("An action is already running"); return }
+        var row = current
+        var run = row && (row.kind === "run" || row.kind === "job") ? Polling.runFor(polling, row.repo, row.run) : null
+        var job = row && row.kind === "job" ? rawJob(row) : null
+        var a = Model.actionFor(key, row, row && row.kind === "job" ? job : run)
+        if (!a.action) { notify(a.reason); return }
+        if (row.kind === "job" && !run) { notify("Select the row again"); return }
+        if (Date.now() < polling.cooldown) { notify(pausedText()); return }
+        var d = Model.describe(a.action, row.repo, run, job)
+        var jobAction = a.action.slice(-3) === "job"
+        confirm = {action: a.action, host: host, epoch: hostEpoch, repo: row.repo, run: String(row.run),
+            job: jobAction ? String(row.job) : "", ref: a.action === "new-pipeline" ? String(run.ref) : "",
+            source: a.action === "new-pipeline" ? String(run.source || "") : "", text: d.confirm, done: d.done}
+    }
+    function confirmAction() {
+        pendingAction = confirm
+        confirm = null
+        actionBusy = true
+        sendAction()
+    }
+    function confirmKey(e) {
+        e.accepted = true
+        if (e.key === Qt.Key_Y && e.modifiers === Qt.NoModifier && !e.isAutoRepeat) confirmAction()
+        else if (e.key === Qt.Key_Escape) dropAction("Nothing was sent")
+    }
+    function dropAction(text) {
+        confirm = null
+        pendingAction = null
+        actionWait.stop()
+        actionBusy = actionProc.running
+        if (text) notify(text)
+    }
+    function sendAction() {
+        var t = pendingAction
+        if (!t) return
+        if (!actionsOn) { dropAction("Actions are off"); return }
+        if (t.host !== host || t.epoch !== hostEpoch) { dropAction("Host changed; nothing was sent"); return }
+        if (Date.now() < polling.cooldown) { dropAction(pausedText()); return }
+        var wait = 1000 - (Date.now() - Math.max(polling.lastStarted || 0, polling.writeAt || 0))
+        if (wait > 0) { actionWait.interval = wait; actionWait.restart(); return }
+        actionId = ++actionSerial
+        actionStarted = false
+        var task = {action: t.action, host: t.host, repo: t.repo, run: t.run, requestId: actionId}
+        if (t.job) task.job = t.job
+        if (t.ref) { task.ref = t.ref; task.source = t.source }
+        actionProc.command = actionCommand.concat([JSON.stringify(task)])
+        actionProc.epoch = t.epoch
+        actionProc.host = t.host
+        actionProc.requestId = actionId
+        actionProc.target = t
+        pendingAction = null
+        actionProc.running = true
+        Polling.writeStarted(polling, Date.now())
+    }
+    // Reads only the snapshot on actionProc: close, setting off and a host change may have cleared the rest.
+    function finishAction(code, text) {
+        var target = actionProc.target
+        var r = Model.actionReply(text, code, actionProc.requestId)
+        actionBusy = false
+        var same = actionProc.epoch === hostEpoch
+        if (same) {
+            Polling.noteWrite(polling, r, Date.now())
+            if (r.ok) Polling.touch(polling, target.repo, target.run, Date.now())
+            adopt(); pump()
+        }
+        var msg = r.error || "GitLab helper failed; see the shell log"
+        if (r.ok) {
+            msg = target.done
+            if (same && Date.now() < polling.cooldown) msg += " · refresh waits until " + clock(polling.cooldown)
+            if (r.created && r.created.iid) msg += " · new pipeline #" + r.created.iid
+        }
+        if (!same) msg = "on " + actionProc.host + ": " + msg
+        if (opened) { notify(msg, 10000); actionFailed = !r.ok }
+        else { missedAction = msg; missedFailed = !r.ok }
+    }
     function copy(what) {
         var r = Model.copyText(current, what)
         if (!r.text) { notify(r.label); return }
@@ -374,7 +483,10 @@ Item {
             var configuredHost = entry && typeof entry.host === "string" ? entry.host : "gitlab.com"
             if (!/^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$/.test(configuredHost)) throw new Error("invalid host " + configuredHost)
             var hostChanged = configuredHost !== host
+            actionsOn = !!entry && entry.actions === true
             if (hostChanged) {
+                hostEpoch++
+                dropAction("Host changed; nothing was sent")
                 savedPins = []; pinsLoaded = false
                 var n = Object.keys(polling.watches || {}).length
                 if (n) {
@@ -518,6 +630,19 @@ Item {
         onRunningChanged: if (!running && !root.pinsSaveStarted) root.finishPinsSave(127, "")
     }
     Timer { id: noticeTimer; interval: 2000; onTriggered: root.notice = "" }
+    Timer { id: actionWait; repeat: false; onTriggered: root.sendAction() }
+    Process {
+        id: actionProc
+        property int epoch
+        property string host
+        property int requestId
+        property var target
+        stdout: StdioCollector { id: actionOut }
+        onStarted: root.actionStarted = true
+        onExited: function(code) { root.finishAction(code, actionOut.text) }
+        // Quickshell 0.3.1: a failed start emits neither started nor exited, only running=false.
+        onRunningChanged: if (!running && !root.actionStarted) root.finishAction(127, "")
+    }
     Process {
         id: notifyProc
         property var message
@@ -611,6 +736,7 @@ Item {
                 anchors.bottomMargin: card.contentBottomInset
                 focus: true
                 Keys.onPressed: function(event) {
+                    if (root.confirm) { root.confirmKey(event); return }
                     if (root.zoomKey(event)) { event.accepted = true; return }
                     event.accepted = true
                     if (root.helpOpen) {
@@ -633,6 +759,8 @@ Item {
                     else if (plain && event.key === Qt.Key_P && !shift) root.togglePin()
                     else if (plain && event.key === Qt.Key_T && !shift) root.trace()
                     else if (plain && event.key === Qt.Key_W && !shift) root.toggleWatch()
+                    else if (plain && !shift && [Qt.Key_A, Qt.Key_C, Qt.Key_X, Qt.Key_N].indexOf(event.key) >= 0)
+                        root.startAction(String.fromCharCode(event.key).toLowerCase())
                     else if (event.key === Qt.Key_Escape) {
                         if (root.filterText) root.filterText = ""
                         else root.close()
@@ -675,6 +803,7 @@ Item {
                         selectionColor: Commons.Color.menu.selectedBackground
                         selectedTextColor: Commons.Color.menu.selectedText
                         Keys.onPressed: function(event) {
+                            if (root.confirm) { root.confirmKey(event); return }
                             if (root.zoomKey(event)) { event.accepted = true; return }
                             if (event.key === Qt.Key_Up || event.key === Qt.Key_Down) {
                                 root.move(event.key === Qt.Key_Up ? -1 : 1)
@@ -833,11 +962,12 @@ Item {
                             Accessible.role: Accessible.StaticText
                             Accessible.name: hint.text
                             width: parent.width - (zoomLabel.visible ? zoomLabel.implicitWidth + root.zs(Style.spacing.sm) : 0)
-                            text: root.notice || root.cooldownText || (root.filtering ? root.searchHint : root.listHint)
-                            color: Commons.Color.menu.text
+                            text: root.confirm ? root.confirm.text : (root.notice || root.cooldownText || (root.filtering ? root.searchHint : root.listHint))
+                            color: root.actionFailed && root.notice ? Commons.Color.urgent : Commons.Color.menu.text
                             opacity: 0.65
                             font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.caption) }
-                            elide: Text.ElideRight
+                            wrapMode: root.confirm ? Text.Wrap : Text.NoWrap
+                            elide: root.confirm ? Text.ElideNone : Text.ElideRight
                             textFormat: Text.PlainText
                         }
                         Text {

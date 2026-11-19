@@ -472,3 +472,51 @@ console.log('Model: stage hierarchy, aggregation, filtering, progress, selection
     assert.equal(model.infoText(r,t),'1 running · last failed 2h ago · checked 3m ago');
     assert.equal(model.rows([{repo:'a/r', active:1, summaryAt:0, runs:[]}],{}, {},'',t)[0].info,'1 running');
 }
+// #39: pipeline and job actions.
+{
+  const run = {kind:'run'}, job = {kind:'job'};
+  const af = (k, row, conclusion, extra) => plain(model.actionFor(k, row, {conclusion, ref:'main', source:'push', ...extra}));
+  const active = ['created','waiting_for_resource','preparing','pending','running','scheduled'];
+  const every = ['failed','canceled','success','manual','skipped',...active];
+  for (const [k, row, ok, action] of [['a',run,['failed','canceled'],'retry-pipeline'], ['a',job,['failed','canceled'],'retry-job'],
+      ['c',run,active,'cancel-pipeline'], ['c',job,active,'cancel-job'], ['x',job,['manual'],'play-job']])
+    for (const c of every) assert.deepEqual(af(k, row, c), ok.includes(c) ? {action} : {reason:af(k, row, c).reason}, k + row.kind + c);
+  for (const c of every) assert.equal(af('n', run, c).action, 'new-pipeline');
+  assert.equal(af('x', run, 'manual').reason, 'Only a manual job can be played');
+  assert.equal(af('a', run, 'success').reason, 'Only a failed or canceled pipeline can be retried');
+  assert.equal(af('a', job, 'success').reason, 'Only a failed or canceled job can be retried');
+  assert.equal(af('c', run, 'success').reason, 'Only a running or queued pipeline can be canceled');
+  assert.equal(af('c', job, 'manual').reason, 'Only a running or queued job can be canceled');
+  assert.equal(af('n', job, 'failed').reason, 'Select a pipeline to start a new one');
+  for (const kind of ['repo','stage','trigger','more','message'])
+    for (const k of 'acxn') assert.equal(af(k, {kind}, 'failed').reason, 'Select a pipeline or job');
+  assert.equal(plain(model.actionFor('a', run, null)).reason, 'Select the row again');
+  assert.equal(af('n', run, 'failed', {source:'merge_request_event', ref:'main'}).reason, 'Merge-request pipelines cannot be started from the panel');
+  assert.equal(af('n', run, 'failed', {ref:'refs/merge-requests/3/head'}).reason, 'Merge-request pipelines cannot be started from the panel');
+  assert.equal(af('n', run, 'failed', {ref:''}).reason, 'This pipeline has no branch or tag to start from');
+  assert.equal(af('n', run, 'failed', {ref:'refs/merge-requests/3/head', head_branch:'main'}).action, undefined, 'a plain head_branch does not hide the MR ref');
+  assert.equal(af('n', run, 'failed', {source:'merge_request_event', head_branch:'main'}).action, undefined);
+
+  const p = {run_number:7, name:'CI', head_branch:'main'}, j = {id:99, name:'build'};
+  assert.deepEqual(plain(model.describe('retry-pipeline', 'g/p', p)), {confirm:'Retry pipeline #7 CI (main) in g/p? y yes · Esc no', done:'Retry requested: pipeline #7 CI (main) in g/p'});
+  assert.equal(model.describe('cancel-pipeline', 'g/p', p).confirm, 'Cancel pipeline #7 CI (main) in g/p? Cannot be undone. y yes · Esc no');
+  assert.equal(model.describe('retry-job', 'g/p', p, j).confirm, 'Retry job build (job 99) of #7 in g/p? y yes · Esc no');
+  assert.equal(model.describe('cancel-job', 'g/p', p, j).confirm, 'Cancel job build (job 99) of #7 in g/p? Cannot be undone. y yes · Esc no');
+  assert.equal(model.describe('play-job', 'g/p', p, j).confirm, 'Play manual job build (job 99) of #7 in g/p with its default variables? y yes · Esc no');
+  assert.deepEqual(plain(model.describe('new-pipeline', 'g/p', p)), {confirm:'Start a new pipeline on main in g/p with default variables? y yes · Esc no', done:'New pipeline requested on main in g/p'});
+  assert.equal(model.describe('play-job', 'g/p', p, j).done, 'Play requested: job build (job 99) of #7 in g/p');
+  const long = 'x'.repeat(40), longRepo = 'group/' + 'sub/'.repeat(20) + 'project';
+  const cutText = model.describe('retry-pipeline', longRepo, {run_number:1, name:long, head_branch:long});
+  assert.ok(cutText.confirm.includes('x'.repeat(29) + '…') && !cutText.confirm.includes('x'.repeat(30)));
+  assert.ok(cutText.confirm.includes(longRepo), 'the project path is not cut');
+  assert.ok(model.describe('retry-job', 'g/p', p, {id:1, name:long}).confirm.includes('x'.repeat(29) + '…'));
+
+  const ok = JSON.stringify({requestId:5, ok:true});
+  assert.deepEqual(plain(model.actionReply('', 127, 5)), {errorType:'setup', error:'python3 not found'});
+  const unknown = {requestId:5, errorType:'unknown', error:'Outcome unknown; check GitLab before retrying'};
+  assert.deepEqual(plain(model.actionReply('', 1, 5)), unknown);
+  assert.deepEqual(plain(model.actionReply('not json', 0, 5)), unknown);
+  assert.deepEqual(plain(model.actionReply(ok, 0, 6)), {...unknown, requestId:6});
+  assert.deepEqual(plain(model.actionReply('[1]', 0, 5)), unknown);
+  assert.deepEqual(plain(model.actionReply(ok, 0, 5)), {requestId:5, ok:true});
+}

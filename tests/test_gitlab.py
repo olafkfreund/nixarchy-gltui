@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 from unittest.mock import patch
+from urllib.parse import unquote
 import gitlab
 
 
@@ -150,6 +151,142 @@ class PinsTest(unittest.TestCase):
                 self.assertEqual(value, expected)
 
 
+class ActionTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        env = patch.dict(os.environ, {"HOME": temp.name})
+        env.start()
+        self.addCleanup(env.stop)
+        self.config = Path(temp.name) / ".config/omarchy/shell.json"
+        self.config.parent.mkdir(parents=True)
+        self.task = {"requestId": 4, "host": "GitLab.com", "repo": "g/sub/p", "run": "7"}
+
+    def enable(self, **changes):
+        self.config.write_text(json.dumps({"plugins": [{"id": "olafkfreund.gitlab-pipelines",
+                                                     "actions": True, **changes}]}))
+
+    def test_endpoints_and_request_arguments(self):
+        base = "projects/g%2Fsub%2Fp"
+        cases = [("retry-pipeline", {}, base + "/pipelines/7/retry"),
+                 ("cancel-pipeline", {}, base + "/pipelines/7/cancel"),
+                 ("retry-job", {"job": 9}, base + "/jobs/9/retry"),
+                 ("cancel-job", {"job": 9}, base + "/jobs/9/cancel"),
+                 ("play-job", {"job": 9}, base + "/jobs/9/play"),
+                 ("new-pipeline", {"ref": "main"}, base + "/pipeline?ref=main")]
+        self.enable()
+        for action, extra, endpoint in cases:
+            with self.subTest(action=action), patch.object(gitlab, "request", return_value=reply({"id": 8})) as request:
+                task = {**self.task, "action": action, **extra}
+                self.assertEqual(gitlab.write_endpoint(task), endpoint)
+                self.assertTrue(gitlab.write_action(task)["ok"])
+                request.assert_called_once_with(endpoint, "GitLab.com", "POST")
+        child = unittest.mock.Mock()
+        child.communicate.return_value = ("", "")
+        child.poll.return_value = 0
+        with patch.object(gitlab.subprocess, "Popen", return_value=child) as popen:
+            gitlab.request("projects/g%2Fp/pipeline?ref=main", "gitlab.com", "POST")
+        self.assertEqual(popen.call_args.args[0], ["glab", "api", "--hostname", "gitlab.com",
+                                                   "--include", "--method", "POST", "projects/g%2Fp/pipeline?ref=main"])
+
+    def test_invalid_actions_ids_and_refs(self):
+        for changes in ({"action": "delete"}, {"action": "retry-pipeline", "run": "../7"},
+                        {"action": "retry-job", "job": 0}, {"action": "retry-job", "job": True},
+                        {"action": "new-pipeline", "ref": ""},
+                        {"action": "new-pipeline", "ref": "a" * 256},
+                        {"action": "new-pipeline", "ref": "refs/merge-requests/2/head"},
+                        {"action": "new-pipeline", "ref": "a\n"},
+                        {"action": "new-pipeline", "ref": "a\x7f"},
+                        {"action": "new-pipeline", "ref": "main", "source": "merge_request_event"}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                gitlab.write_endpoint({**self.task, **changes})
+        ref = "café&#%+/branch"
+        endpoint = gitlab.write_endpoint({**self.task, "action": "new-pipeline", "ref": ref})
+        self.assertEqual(unquote(endpoint.split("ref=", 1)[1]), ref)
+
+    def test_gate_never_requests_when_disabled(self):
+        task = {**self.task, "action": "retry-pipeline"}
+        with patch.object(gitlab, "request") as request:
+            for contents in (None, json.dumps({"plugins": [{"id": "olafkfreund.gitlab-pipelines", "actions": False}]}),
+                             json.dumps({"plugins": [{"id": "olafkfreund.gitlab-pipelines", "actions": True,
+                                                      "host": "elsewhere.test"}]}), "{bad"):
+                with self.subTest(contents=contents):
+                    if contents is None:
+                        self.config.unlink(missing_ok=True)
+                    else:
+                        self.config.write_text(contents)
+                    result = gitlab.write_action(task)
+                    self.assertEqual((result["errorType"], result["error"]),
+                                     ("disabled", "Actions are off in shell.json"))
+            request.assert_not_called()
+        # A non-string host means gitlab.com, as the panel reads it.
+        self.enable(host=None)
+        with patch.object(gitlab, "request", return_value=reply({"id": 8})):
+            self.assertTrue(gitlab.write_action(task)["ok"])
+
+    def test_replies(self):
+        self.enable()
+        task = {**self.task, "action": "retry-pipeline"}
+        cases = [("429 Too Many Requests", {"message": "Wait"}, "", "rate"),
+                 ("403 Forbidden", {"message": "rate limit exceeded"}, "", "rate"),
+                 ("401 Unauthorized", {"message": "No"}, "", "auth"),
+                 ("403 Forbidden", {"error": "insufficient_scope", "error_description": "more", "scope": "api"}, "", "scope"),
+                 ("403 Forbidden", {"error": "insufficient_scope", "message": "Denied"}, "", "scope"),
+                 ("403 Forbidden", {"message": "Denied"}, "", "refused"),
+                 ("400 Bad Request", {"message": {"base": ["one", "two"]}}, "", "refused"),
+                 ("404 Not Found", {"message": "Gone"}, "", "refused"),
+                 ("409 Conflict", {"message": "Busy"}, "", "refused"),
+                 ("422 Unprocessable", {"message": "Invalid"}, "", "refused"),
+                 ("302 Found", {}, "", "refused"),
+                 ("401 Unauthorized", {}, "Ratelimit-Remaining: 0\r\n", "rate"),
+                 ("503 Unavailable", {}, "Retry-After: 30\r\n", "rate"),
+                 ("503 Unavailable", {"message": "Error"}, "", "unknown")]
+        for status, body, headers, kind in cases:
+            with self.subTest(status=status, body=body), patch.object(gitlab, "request", return_value=reply(body, status, headers)):
+                result = gitlab.write_action(task)
+                self.assertEqual(result["errorType"], kind)
+                self.assertFalse(result["ok"])
+                if body.get("message") == {"base": ["one", "two"]}:
+                    self.assertEqual(result["error"], "GitLab refused: one; two")
+        with patch.object(gitlab, "request", return_value=reply({"id": 8, "iid": 6}, headers="Ratelimit-Remaining: 0\r\nRatelimit-Reset: 1700000000\r\n")):
+            result = gitlab.write_action({**task, "action": "retry-job", "job": 9})
+            self.assertEqual((result["ok"], result["remaining"], result["resetAt"], result["created"]),
+                             (True, 0, 1700000000000, {"id": 8, "iid": 6}))
+        with patch.object(gitlab, "request", return_value=reply({"id": 11, "iid": 7})):
+            self.assertEqual(gitlab.write_action({**task, "action": "new-pipeline", "ref": "main"})["created"],
+                             {"id": 11, "iid": 7})
+        for response in [("", "run glab auth login", 1), ("", "failed", 1),
+                         ("HTTP/2.0 200 OK\n\nnot json", "", 0)]:
+            with self.subTest(response=response), patch.object(gitlab, "request", return_value=response):
+                self.assertEqual(gitlab.write_action(task)["errorType"],
+                                 "auth" if "auth login" in response[1] else "unknown")
+        for failure, kind in [(FileNotFoundError(), "setup"), (subprocess.TimeoutExpired("glab", 25), "unknown")]:
+            with self.subTest(kind=kind), patch.object(gitlab, "request", side_effect=failure):
+                self.assertEqual(gitlab.write_action(task)["errorType"], kind)
+        # A proxy's non-JSON error page is still classified by status.
+        for response, kind in [(("HTTP/2.0 429 Too Many Requests\n\n<html>Slow down</html>", "", 1), "rate"),
+                               (("HTTP/2.0 403 Forbidden\n\nForbidden", "", 1), "refused")]:
+            with self.subTest(response=response), patch.object(gitlab, "request", return_value=response):
+                self.assertEqual(gitlab.write_action(task)["errorType"], kind)
+        with patch.object(gitlab, "request", return_value=("HTTP/2.0 403 Forbidden\n\n<html>no</html>", "", 1)):
+            self.assertEqual(gitlab.write_action(task)["error"], "GitLab refused: HTTP 403")
+
+    def test_ref_keeps_control_free_raw_text(self):
+        ref = "café\u200b&#%+/branch"
+        value = gitlab.pipeline({**PIPELINE, "ref": ref})
+        self.assertEqual(value["ref"], ref)
+        self.assertNotEqual(value["head_branch"], ref)
+
+    def test_main_validation_and_disabled(self):
+        for task, expected, code in [({**self.task, "action": "bad"}, "setup", 1),
+                                     ({**self.task, "action": "retry-pipeline"}, "disabled", 0)]:
+            with self.subTest(task=task), patch.object(sys, "argv", ["gitlab.py", "act", json.dumps(task)]), \
+                    patch.object(gitlab, "request") as request, contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(gitlab.main(), code)
+                self.assertEqual(json.loads(output.getvalue())["errorType"], expected)
+                request.assert_not_called()
+
+
 class NormaliseTest(unittest.TestCase):
     def test_status_mapping(self):
         for raw, expected in [("running", "in_progress"), ("canceling", "in_progress"), ("created", "queued"),
@@ -214,7 +351,8 @@ class NormaliseTest(unittest.TestCase):
     def test_pipeline_fields_and_attempt(self):
         running = gitlab.pipeline(PIPELINE)
         self.assertEqual(running, {"id": 7, "run_number": 3, "name": "merge request event", "display_title": "01234567", "sha": "",
-                                   "head_branch": "main", "html_url": PIPELINE["web_url"],
+                                   "head_branch": "main", "ref": "main", "source": "merge_request_event",
+                                   "html_url": PIPELINE["web_url"],
                                    "run_started_at": "2026-01-01T00:00:00Z", "completed_at": None,
                                    "updated_at": "2026-01-01T00:05:00Z", "status": "in_progress",
                                    "conclusion": "running", "run_attempt": "active"})

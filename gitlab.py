@@ -1,4 +1,4 @@
-"""Read-only GitLab pipeline data, using glab's existing authentication."""
+"""GitLab pipeline data and a closed set of pipeline and job actions, using glab's existing authentication."""
 import argparse
 import json
 import math
@@ -22,6 +22,9 @@ JOINERS = "\u200c\u200d"
 IN_PROGRESS = ("running", "canceling")
 QUEUED = ("created", "waiting_for_resource", "preparing", "pending", "waiting_for_callback")
 SEGMENT = r"[A-Za-z0-9_.][A-Za-z0-9_.-]*"
+ACTIONS = {"retry-pipeline": (False, "retry"), "cancel-pipeline": (False, "cancel"),
+           "retry-job": (True, "retry"), "cancel-job": (True, "cancel"),
+           "play-job": (True, "play"), "new-pipeline": (False, "")}
 
 
 class DeadlineExceeded(Exception):
@@ -110,9 +113,10 @@ def host_name(value):
     return value
 
 
-def request(endpoint, host="gitlab.com"):
+def request(endpoint, host="gitlab.com", method=None):
     child = subprocess.Popen(
-        ["glab", "api", "--hostname", host_name(host), "--include", endpoint],
+        ["glab", "api", "--hostname", host_name(host), "--include"] +
+        (["--method", method] if method else []) + [endpoint],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     try:
@@ -122,6 +126,13 @@ def request(endpoint, host="gitlab.com"):
             child.kill()
             child.wait()
     return stdout, stderr, child.returncode
+
+
+def numeric_id(value, label):
+    number = str(value)
+    if not re.fullmatch(r"[0-9]+", number) or int(number) < 1:
+        raise ValueError(f"Invalid {label} ID")
+    return number
 
 
 def page_endpoint(task):
@@ -137,9 +148,7 @@ def page_endpoint(task):
         return f"projects?membership=true&per_page=100&page={number}"
     base = "projects/" + quote(project_path(task.get("repo")), safe="") + "/pipelines"
     if task["kind"] in ("jobs", "bridges", "run"):
-        run = str(task.get("run", ""))
-        if not re.fullmatch(r"[0-9]+", run) or int(run) < 1:
-            raise ValueError("Invalid pipeline ID")
+        run = numeric_id(task.get("run", ""), "pipeline")
         if task["kind"] == "run":
             return f"{base}/{run}"
         if task["kind"] == "bridges":
@@ -179,6 +188,20 @@ def http_reply(stdout):
     return status, headers, text
 
 
+def limits(headers, result):
+    if headers.get("ratelimit-remaining", "").isdigit():
+        result["remaining"] = int(headers["ratelimit-remaining"])
+    if headers.get("ratelimit-reset", "").isdigit():
+        result["resetAt"] = int(headers["ratelimit-reset"]) * 1000
+    retry = headers.get("retry-after", "")
+    if retry:
+        try:
+            result["retryAt"] = ((datetime.now(timezone.utc).timestamp() + int(retry)) * 1000
+                                 if retry.isdigit() else parsedate_to_datetime(retry).timestamp() * 1000)
+        except (ValueError, TypeError, OverflowError):
+            pass
+
+
 def next_page(headers, page):
     value = headers.get("x-next-page", "")
     if not value:
@@ -209,6 +232,12 @@ def plain(value):
     return "".join(c for c in text if c in JOINERS or unicodedata.category(c) not in ("Cc", "Cf"))
 
 
+def valid_ref(value):
+    return (isinstance(value, str) and 1 <= len(value) <= 255 and
+            not value.startswith("refs/merge-requests/") and
+            all(ord(char) >= 32 and ord(char) != 127 for char in value))
+
+
 def pipeline_total(headers, count):
     """X-Total, or -1 ("more, count unknown") when GitLab omits it above 10,000 but X-Next-Page is set."""
     value = headers.get("x-total")
@@ -227,6 +256,8 @@ def pipeline(row):
             "display_title": str(row.get("sha") or "")[:8],
             "sha": row["sha"] if isinstance(row.get("sha"), str) and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", row["sha"]) else "",
             "head_branch": plain(row.get("ref") or ""),
+            "ref": row.get("ref") if valid_ref(row.get("ref")) else "",
+            "source": row.get("source") if isinstance(row.get("source"), str) and re.fullmatch(r"[a-z_]{1,40}", row["source"]) else "",
             "html_url": row.get("web_url") or "", "run_started_at": row.get("started_at") or row.get("created_at"),
             "completed_at": row.get("finished_at"), "updated_at": row.get("updated_at"),
             "status": status, "conclusion": row["status"],
@@ -291,6 +322,99 @@ def project(row):
             "archived": bool(row.get("archived")), "disabled": row.get("builds_access_level") == "disabled"}
 
 
+def write_endpoint(task):
+    if not isinstance(task, dict) or task.get("action") not in ACTIONS:
+        raise ValueError("Invalid action")
+    if type(task.get("requestId")) is not int or task["requestId"] < 1:
+        raise ValueError("Invalid request identity")
+    host_name(task.get("host", "gitlab.com"))
+    action = task["action"]
+    base = "projects/" + quote(project_path(task.get("repo")), safe="")
+    if action == "new-pipeline":
+        ref = task.get("ref")
+        if not valid_ref(ref) or task.get("source") == "merge_request_event":
+            raise ValueError("Invalid pipeline ref")
+        return base + "/pipeline?ref=" + quote(ref, safe="")
+    if ACTIONS[action][0]:
+        return base + "/jobs/" + numeric_id(task.get("job"), "job") + "/" + ACTIONS[action][1]
+    return base + "/pipelines/" + numeric_id(task.get("run"), "pipeline") + "/" + ACTIONS[action][1]
+
+
+def actions_enabled(host):
+    try:
+        config = json.loads((Path(os.environ["HOME"]) / ".config/omarchy/shell.json").read_text())
+        entries = config.get("plugins", [])
+        return isinstance(entries, list) and any(
+            isinstance(entry, dict) and entry.get("id") == "olafkfreund.gitlab-pipelines" and
+            entry.get("actions") is True and
+            (entry.get("host") if isinstance(entry.get("host"), str) else "gitlab.com").lower() == host.lower() for entry in entries)
+    except (KeyError, OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def message_text(body):
+    def strings(value):
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, dict):
+            return [part for item in value.values() for part in strings(item)]
+        if isinstance(value, list):
+            return [part for item in value for part in strings(item)]
+        return []
+
+    value = body.get("message", body.get("error", "")) if isinstance(body, dict) else body
+    return plain("; ".join(strings(value)))[:120]
+
+
+def write_action(task):
+    endpoint = write_endpoint(task)
+    host = task.get("host", "gitlab.com")
+    result = {"requestId": task["requestId"], "action": task["action"], "httpStatus": 0,
+              "ok": False, "error": "", "errorType": "", "retryAt": 0,
+              "remaining": None, "resetAt": 0, "created": None}
+    if not actions_enabled(host):
+        result.update(errorType="disabled", error="Actions are off in shell.json")
+        return result
+    try:
+        stdout, stderr, code = request(endpoint, host, "POST")
+        if not stdout.strip() and "auth login" in stderr.lower():
+            result.update(errorType="auth", error="Authenticate with glab auth login")
+            return result
+        status, headers, raw_body = http_reply(stdout)
+        result["httpStatus"] = status
+        limits(headers, result)
+        try:
+            body = json.loads(raw_body) if raw_body.strip() else None
+        except ValueError:
+            # A proxy's HTML or text error page still has a status worth classifying (a bare 429 must pause polling).
+            if 200 <= status < 300:
+                raise
+            body = None
+        message = message_text(body)
+        if 200 <= status < 300:
+            result["ok"] = True
+            if task["action"] in ("new-pipeline", "retry-job") and isinstance(body, dict) and ("id" in body or "iid" in body):
+                result["created"] = {"id": body.get("id"), "iid": body.get("iid")}
+        elif status == 429 or result["remaining"] == 0 or result["retryAt"] or "rate limit" in message.lower():
+            result.update(errorType="rate", error="GitLab rate limit")
+        elif status == 401:
+            result.update(errorType="auth", error="Authenticate with glab auth login")
+        elif status == 403 and isinstance(body, dict) and any(
+                "insufficient_scope" in str(body.get(key, "")).lower() for key in ("error", "message")):
+            result.update(errorType="scope", error="Needs a token with the api scope")
+        elif 400 <= status < 500:
+            result.update(errorType="refused", error="GitLab refused: " + (message or f"HTTP {status}"))
+        elif 300 <= status < 400:
+            result.update(errorType="refused", error="GitLab redirected the request; the project may have moved")
+        else:
+            result.update(errorType="unknown", error="Outcome unknown; check GitLab before retrying")
+    except FileNotFoundError:
+        result.update(errorType="setup", error="Install glab (GitLab CLI)")
+    except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+        result.update(errorType="unknown", error="Outcome unknown; check GitLab before retrying")
+    return result
+
+
 def read_page(task):
     endpoint = page_endpoint(task)
     result = {"requestId": task["requestId"], "httpStatus": 0, "nextPage": 0,
@@ -303,17 +427,7 @@ def read_page(task):
             return result
         status, headers, raw_body = http_reply(stdout)
         result["httpStatus"] = status
-        if headers.get("ratelimit-remaining", "").isdigit():
-            result["remaining"] = int(headers["ratelimit-remaining"])
-        if headers.get("ratelimit-reset", "").isdigit():
-            result["resetAt"] = int(headers["ratelimit-reset"]) * 1000
-        retry = headers.get("retry-after", "")
-        if retry:
-            try:
-                result["retryAt"] = ((datetime.now(timezone.utc).timestamp() + int(retry)) * 1000
-                                     if retry.isdigit() else parsedate_to_datetime(retry).timestamp() * 1000)
-            except (ValueError, TypeError, OverflowError):
-                pass
+        limits(headers, result)
         try:
             body = json.loads(raw_body) if raw_body.strip() else None
         except ValueError:
@@ -366,7 +480,7 @@ def read_page(task):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("page", "pins"))
+    parser.add_argument("mode", choices=("page", "pins", "act"))
     parser.add_argument("request")
     args = parser.parse_args()
     if args.mode == "pins":
@@ -389,11 +503,13 @@ def main():
     task = None
     try:
         task = json.loads(args.request)
-        data = read_page(task)
+        data = write_action(task) if args.mode == "act" else read_page(task)
         print(json.dumps(data))
     except (ValueError, DeadlineExceeded) as exc:
-        message = str(exc) if isinstance(exc, ValueError) else "GitLab request timed out"
-        error = {"error": message, "errorType": "network" if isinstance(exc, DeadlineExceeded) else "setup"}
+        message = str(exc) if isinstance(exc, ValueError) else ("Outcome unknown; check GitLab before retrying"
+                                                              if args.mode == "act" else "GitLab request timed out")
+        error = {"error": message, "errorType": ("unknown" if args.mode == "act" else "network")
+                 if isinstance(exc, DeadlineExceeded) else "setup"}
         if isinstance(task, dict) and type(task.get("requestId")) is int and task["requestId"] > 0:
             error["requestId"] = task["requestId"]
         print(json.dumps(error))
