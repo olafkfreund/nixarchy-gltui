@@ -430,6 +430,13 @@ nix build ./ci#checks.x86_64-linux.qml-smoke -L --override-input gltui path:$PWD
   arrived while closed urgent-coloured on reopen. `notify()` clears
   `actionFailed`; `finishAction` and `open()` set it after their notify.
   `clock()` formats the cooldown time as HH:MM for the action texts.
+- Step 5: the action steps add about 25 s of real waits (spacing, the
+  10 s reopen notice), so the smoke harness's overall QML timer goes from
+  120 s to 180 s and the per-scenario `quickshell` timeout from 140 s to
+  200 s. A full VM run now takes about 270 s for both scenarios, inside
+  `ci/qml-smoke.nix`'s 600 s wait. The reachability probe failed as
+  expected in the first scenario (a failed check ends the run) and was
+  removed before the passing run.
 
 ## Rollback
 
