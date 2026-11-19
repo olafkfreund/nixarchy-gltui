@@ -92,13 +92,14 @@ pkgs.testers.runNixOSTest {
     for sub in ("Commons", "Ui"):
         rc, _ = machine.execute("test -d " + tree + "/shell/" + sub)
         assert rc == 0, "readiness: " + tree + "/shell/" + sub + " is missing"
-    for path in (
-        "~/.local/state/omarchy/current/theme/colors.toml",
-        "~/.config/omarchy/shell.toml",
-        "~/.config/fontconfig",
-    ):
-        machine.wait_until_succeeds("su - omarchy -c 'test -e " + path + "'", timeout=120)
-    print("readiness: shell tree, theme colors, shell.toml and fontconfig present")
+    # The harness reads colors.toml; it only symlinks shell.toml and fontconfig,
+    # which a fresh user may not have yet, so those are reported, not required.
+    machine.wait_until_succeeds(
+        "su - omarchy -c 'test -e ~/.local/state/omarchy/current/theme/colors.toml'", timeout=120)
+    for path in ("~/.config/omarchy/shell.toml", "~/.config/fontconfig"):
+        rc, _ = machine.execute("su - omarchy -c 'test -e " + path + "'")
+        print("readiness: " + path + (" present" if rc == 0 else " absent (harness links it dangling)"))
+    print("readiness: shell tree and theme colors present")
 
     # hypridle would lock the idle VM mid-test.
     machine.execute("pkill -x hypridle")

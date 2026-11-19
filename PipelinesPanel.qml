@@ -721,6 +721,8 @@ Item {
                         textFormat: Text.PlainText
                         // The strip changes the list's height; keep the cursor row in view.
                         function keepCursor() {
+                            // The Column can resize the list after this callLater; the list's next height change repositions too.
+                            list.keepOnResize = true
                             Qt.callLater(function() {
                                 // forceLayout: the Column may not have resized the list yet when this runs.
                                 if (root.opened && root.cursor >= 0 && root.cursor < list.count) { list.forceLayout(); list.positionViewAtIndex(root.cursor, ListView.Contain) }
@@ -740,7 +742,12 @@ Item {
                         model: visibleRows
                         boundsBehavior: Flickable.StopAtBounds
                         // The footer settles after the zoom's callLater, which shrinks the list a few px; keep the cursor row contained.
-                        onHeightChanged: if (zoomSettle.running && root.opened && root.cursor >= 0 && root.cursor < count) positionViewAtIndex(root.cursor, ListView.Contain)
+                        property bool keepOnResize: false
+                        onHeightChanged: {
+                            var keep = zoomSettle.running || keepOnResize
+                            keepOnResize = false
+                            if (keep && root.opened && root.cursor >= 0 && root.cursor < count) positionViewAtIndex(root.cursor, ListView.Contain)
+                        }
                         delegate: Rectangle {
                             required property var rowData
                             readonly property var modelData: rowData
