@@ -72,6 +72,28 @@ function latest(runs) {
     return found;
 }
 
+function barCounts(repos) {
+    var running=0, failed=0;
+    repos.forEach(function(repo) {
+        if (repo.archived || repo.disabled || repo.blocked || repo.error) return;
+        running+=repo.active === undefined ? (repo.runs || []).filter(function(run) { return run.status === "in_progress"; }).length : repo.active;
+        var last=latest(repo.runs || []);
+        if (last && last.conclusion==="failed") failed++;
+    });
+    return {running:running,failed:failed};
+}
+
+function barStatus(polling, configError, host, instance, now) {
+    var counts=barCounts(polling.repos);
+    var reason=configError || (polling.auth ? polling.error : polling.catalogueError) || "";
+    var state=configError || polling.auth || polling.catalogueError ? "stopped" :
+        polling.cooldown>now ? "rate" : polling.countsAt===undefined ? "none" : "ok";
+    return {version:1,instance:instance,host:host,
+        state:state,
+        running:counts.running,failed:counts.failed,countsAt:polling.countsAt===undefined ? 0 : polling.countsAt,
+        cooldownUntil:state==="rate" ? polling.cooldown : 0,reason:reason,writtenAt:now};
+}
+
 function group(status) {
     switch (status) {
     case "running": case "canceling": return "running";
