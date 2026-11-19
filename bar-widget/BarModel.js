@@ -11,7 +11,8 @@ function view(text, now, vertical) {
     }
     var running=count(status.running), failed=count(status.failed);
     var countsAt=count(status.countsAt), cooldownUntil=count(status.cooldownUntil);
-    var reason=String(status.reason || "").slice(0,120);
+    var reason=typeof status.reason==="string" ? status.reason.slice(0,120) : "";
+    var host=typeof status.host==="string" ? status.host.slice(0,100) : "";
     var state=status.state;
     if (state==="rate" && cooldownUntil<=now) state=countsAt>0 ? "ok" : "none";
     if (state==="none") return none;
@@ -30,7 +31,7 @@ function view(text, now, vertical) {
     else {
         if (state==="rate") lines.push("GitLab paused until "+clock(cooldownUntil));
         if (state==="ok" || countsAt>0) {
-            lines.push("GitLab Pipelines"+(status.host ? " · "+status.host : ""));
+            lines.push("GitLab Pipelines"+(host ? " · "+host : ""));
             lines.push(running+" running "+(running===1 ? "pipeline" : "pipelines")+", "+failed+" failed "+(failed===1 ? "project" : "projects"));
             if (countsAt>0) lines.push("Project counts from "+clock(countsAt)+"; watched pipelines are live");
         }

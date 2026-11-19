@@ -80,7 +80,7 @@ Item {
     property string statusInstance: ""
     property string lastStatus: ""
     property string pendingStatus: ""
-    onStatusPathChanged: lastStatus = ""
+    onStatusPathChanged: { lastStatus = ""; pendingStatus = "" }
     property string updated: ""
     property var polling: Polling.create()
     readonly property bool watching: Object.keys(polling.watches || {}).length > 0
@@ -705,6 +705,10 @@ Item {
         if (statusPath) {
             var payload = Model.barStatus(polling, "", host, statusInstance, Date.now())
             payload.state = "none"
+            var writtenAt = payload.writtenAt
+            delete payload.writtenAt
+            pendingStatus = JSON.stringify(payload)
+            payload.writtenAt = writtenAt
             statusFile.setText(JSON.stringify(payload) + "\n")
         }
     }
@@ -789,6 +793,7 @@ Item {
         id: statusFile
         path: root.statusPath
         atomicWrites: true
+        blockWrites: true
         printErrors: false
         onSaved: root.lastStatus = root.pendingStatus
     }
@@ -797,7 +802,7 @@ Item {
         watchChanges: true
         printErrors: false
         onLoaded: root.configure(text())
-        onLoadFailed: root.markConfigured()
+        onLoadFailed: { root.configError = ""; root.markConfigured(); root.publishStatus() }
         onFileChanged: reload()
     }
     Timer { interval: root.opened ? 100 : 1000; running: root.opened || root.watching; repeat: true; onTriggered: root.pump() }

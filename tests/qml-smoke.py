@@ -63,7 +63,6 @@ print(json.dumps({'requestId':request['requestId'],'data':data,'total':len(data)
         toggle = root / 'bin' / 'omarchy-shell'
         toggle.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$TOGGLE_LOG"\n')
         toggle.chmod(0o755)
-        (root / 'bad-status').mkdir()
         (root / 'action.sh').write_text('''#!/bin/sh
 reply=$1
 delay=$2
@@ -726,6 +725,7 @@ ShellRoot {
     property double widgetCountsAt: 0
     property int widgetRequests: 0
     property double widgetWrittenAt: 0
+    property string widgetLastStatus: ""
     function widgetStatus() {
         widgetFile.reload()
         try { return JSON.parse(widgetFile.text()) } catch (e) { return null }
@@ -828,10 +828,11 @@ ShellRoot {
         function() {
             if (!waitUntil(function() { var s=widgetStatus(); return s && s.state==="ok" && s.countsAt===widgetCountsAt && s.running===0 && widgetA.statusView.state==="ok" && widgetA.statusView.label.indexOf("●")<0 },"closed watch publishes finish")) return false
             eq(widgetStatus().countsAt,widgetCountsAt,"closed run leaves project count time unchanged")
-            var p=widgetPanelLoader.item
-            p.statusPath=Quickshell.env("BAD_STATUS_PATH")
+            widgetLastStatus=widgetPanelLoader.item.lastStatus
+            sh('rm -f "$WIDGET_STATUS_PATH" && mkdir "$WIDGET_STATUS_PATH"')
         },
         function() {
+            if (!waitUntil(function() { return !shp.running },"make status path unwritable")) return false
             var p=widgetPanelLoader.item
             p.polling.repos[0].active=3
             p.adopt()
@@ -840,16 +841,20 @@ ShellRoot {
         function() {
             var p=widgetPanelLoader.item
             if (Date.now()-widgetWaitAt<600) return false
-            eq(p.lastStatus,"","failed save leaves no recorded status")
-            p.statusPath=Quickshell.env("WIDGET_STATUS_PATH")
+            eq(p.lastStatus,widgetLastStatus,"failed save leaves last recorded status unchanged")
+            sh('rmdir "$WIDGET_STATUS_PATH"')
         },
-        function() { widgetPanelLoader.item.publishStatus() },
+        function() {
+            if (!waitUntil(function() { return !shp.running },"make status path writable")) return false
+            widgetPanelLoader.item.publishStatus()
+        },
         function() {
             if (!waitUntil(function() { var s=widgetStatus(); return s && s.running===3 && widgetA.statusView.label.indexOf("●3")>=0 },"retry after unwritable path")) return false
             widgetPanelLoader.active=false
         },
         function() {
             if (!waitUntil(function() { return !widgetPanelLoader.item },"widget panel destruction")) return false
+            if (!waitUntil(function() { var s=widgetStatus(); return s && s.state==="none" },"panel destruction writes none")) return false
             widgetWriter.setText(JSON.stringify(widgetPayload("ok",Date.now(),0))+"\\n")
         },
         function() {
@@ -858,6 +863,10 @@ ShellRoot {
         },
         function() {
             if (!waitUntil(function() { return !shp.running && widgetA.statusView.state==="none" && widgetB.statusView.state==="none" },"deleted status file")) return false
+            widgetWriter.setText(JSON.stringify(widgetPayload("ok",Date.now(),0))+"\\n")
+        },
+        function() {
+            if (!waitUntil(function() { return widgetA.statusView.state==="ok" && widgetB.statusView.state==="ok" },"status restored before empty write")) return false
             widgetWriter.setText("")
         },
         function() {
@@ -890,6 +899,7 @@ ShellRoot {
         },
         function() {
             if (!waitUntil(function() { toggleLog.reload(); return toggleLog.text().trim()!=="" },"left click toggle process")) return false
+            eq(toggleLog.text().trim().split("\\n").length,1,"only one click toggles")
             eq(toggleLog.text().trim(),"shell toggle olafkfreund.gitlab-pipelines {}","toggle argument list")
             stage=13
         }
@@ -2560,7 +2570,7 @@ ShellRoot {
 ''')
         try:
             result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=200,
-                                  env={**os.environ, 'HOME':str(home), 'XDG_STATE_HOME':str(home / '.local/state'), 'PINS_DELAY':str(root / 'pins-delay'), 'RUN_DONE':str(root / 'run-done'), 'RUN_DELAY':str(root / 'run-delay'), 'MR_DELAY':str(root / 'mr-delay'), 'ACTION_SCRIPT':str(root / 'action.sh'), 'ACTION_LOG':str(root / 'actions.log'), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower(), 'STATUS_PATH':str(root / 'status.json'), 'WIDGET_STATUS_PATH':str(root / 'widget-status.json'), 'BAD_STATUS_PATH':str(root / 'bad-status'), 'TOGGLE_LOG':str(root / 'omarchy-shell.log'), 'WIDGET_AVAILABLE':'1' if widget_available else '0', 'PATH':f"{root / 'bin'}:{os.environ.get('PATH', '')}"})
+                                  env={**os.environ, 'HOME':str(home), 'XDG_STATE_HOME':str(home / '.local/state'), 'PINS_DELAY':str(root / 'pins-delay'), 'RUN_DONE':str(root / 'run-done'), 'RUN_DELAY':str(root / 'run-delay'), 'MR_DELAY':str(root / 'mr-delay'), 'ACTION_SCRIPT':str(root / 'action.sh'), 'ACTION_LOG':str(root / 'actions.log'), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower(), 'STATUS_PATH':str(root / 'status.json'), 'WIDGET_STATUS_PATH':str(root / 'widget-status.json'), 'TOGGLE_LOG':str(root / 'omarchy-shell.log'), 'WIDGET_AVAILABLE':'1' if widget_available else '0', 'PATH':f"{root / 'bin'}:{os.environ.get('PATH', '')}"})
         except subprocess.TimeoutExpired as error:
             print(error.stdout, error.stderr)
             raise

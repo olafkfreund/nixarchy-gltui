@@ -55,6 +55,7 @@ Ui.BarWidget {
         active: root.statusView.active
         dimmed: root.statusView.dimmed
         tooltipText: root.statusView.tooltip
+        pressFeedbackButtons: Qt.LeftButton
         Accessible.name: root.statusView.accessible
         onPressed: function(button) { if (button === Qt.LeftButton) root.toggle() }
     }
