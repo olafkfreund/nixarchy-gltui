@@ -163,8 +163,12 @@ branch `feat/39-pipeline-actions`. Line numbers are from `main` at
      ```
 
    - Traps: never build an endpoint from task text other than validated
-     IDs and the encoded ref. Keep the `read_page` output byte-for-byte
-     the same, since existing tests pin it. Do not touch `pins`.
+     IDs and the encoded ref. The read output changes only by the two new
+     pipeline fields `ref` and `source`: update the exact dictionary in
+     `test_pipeline_fields_and_attempt` (`tests/test_gitlab.py:214-220`) to
+     include them (`"ref": "main"`, and `"source"` from the fixture), and
+     keep every other field and all read-error behaviour unchanged. Do not
+     touch `pins`.
 2. **Polling** — `Polling.js`, `tests/polling.cjs`.
    - `create()` gets `writeAt:0`; `resetHost` keeps `writeAt`, as it keeps
      `starts`.
@@ -180,8 +184,9 @@ branch `feat/39-pipeline-actions`. Line numbers are from `main` at
        the summary task if `s.tasks[key("summary", repo, "")]` exists;
      - if `s.expanded[repo + ":" + run]`:
        `restart(s, ensure(s, "jobs", repo, run, "interactive", now), now)`.
-   - Export the new functions the way the existing ones are (check the end
-     of the file and `tests/polling.cjs`'s loader).
+   - Declare ordinary top-level functions. The QML `import` and the Node
+     VM loaders (`tests/polling.cjs:17-19`, `tests/model.cjs:4-6`) expose
+     them automatically. Do not add `module.exports`: it breaks QML.
    - Tests in `tests/polling.cjs`, covering the spec's polling verification
      list:
      - a new task, and an existing backed-off task due now;
@@ -239,7 +244,7 @@ branch `feat/39-pipeline-actions`. Line numbers are from `main` at
      dropAction("Actions are off")`.
    - `close()` (line 184): add `dropAction("")`. It does not touch
      `actionProc`.
-   - `open()`, after `showMissed()` (line 116): `if (missedAction) {
+   - `open()`, after `showMissed()` (line 128): `if (missedAction) {
      notify(missedAction, 10000); missedAction = "" }`.
    - `notify(t, ms)` (line 242): `noticeTimer.interval = ms || 2000`
      before the restart.
@@ -250,6 +255,10 @@ branch `feat/39-pipeline-actions`. Line numbers are from `main` at
      4. `confirm = {…, text: d.confirm, done: d.done, epoch: hostEpoch, host: host}`.
    - `confirmAction()`:
      - `pendingAction = confirm; confirm = null; actionBusy = true; sendAction()`.
+   - The task sent is built from `pendingAction` only:
+     `{action, host, repo, run, job, ref, source, requestId: actionId}`,
+     where `job`, `ref` and `source` are included only when the action
+     needs them.
    - `sendAction()`:
      1. re-check `actionsOn`, the host and epoch, and the cooldown; on
         failure call `dropAction(reason)`;
@@ -258,34 +267,46 @@ branch `feat/39-pipeline-actions`. Line numbers are from `main` at
      3. otherwise `actionId = ++actionSerial`, `actionStarted = false`;
      4. set `actionProc.command = actionCommand.concat([JSON.stringify(task)])`,
         `actionProc.epoch = pendingAction.epoch`,
+        `actionProc.host = pendingAction.host`,
+        `actionProc.requestId = actionId`,
         `actionProc.target = pendingAction`;
-     5. start it, and call `Polling.writeStarted(polling, Date.now())`.
+     5. clear `pendingAction`, start the process, and call
+        `Polling.writeStarted(polling, Date.now())`.
    - `dropAction(text)`:
      - clear `confirm` and `pendingAction`, stop `actionWait`;
      - set `actionBusy = actionProc.running`;
      - `notify(text)` if `text` is set.
-   - `finishAction(code, text)`:
-     1. compute `r = Model.actionReply(text, code, actionId)`;
-     2. set `actionBusy = false; pendingAction = null`;
-     3. if the epoch matches: `Polling.noteWrite(polling, r, Date.now())`,
-        and on `r.ok` also `Polling.touch(polling, target.repo, target.run, Date.now())`,
+   - `finishAction(code, text)` reads only the snapshot on `actionProc`
+     (`target`, `epoch`, `host`, `requestId`), never `pendingAction` or
+     `confirm`, because close, setting off and a host change may have
+     cleared those while the process ran:
+     1. compute `r = Model.actionReply(text, code, actionProc.requestId)`;
+     2. set `actionBusy = false`;
+     3. if `actionProc.epoch === hostEpoch`: `Polling.noteWrite(polling, r, Date.now())`,
+        and on `r.ok` also `Polling.touch(polling, actionProc.target.repo, actionProc.target.run, Date.now())`,
         then `adopt(); pump()`;
      4. build the message: on success `target.done`, plus
         ` · refresh waits until HH:MM` during a cooldown, plus
         ` · new pipeline #N` when `created.iid` is set; otherwise `r.error`.
-        Prefix `on <host>: ` when the epoch differs;
+        Prefix `on <actionProc.host>: ` when the epoch differs;
      5. if `opened`, `notify(msg, 10000)` and set `actionFailed = !r.ok`;
         otherwise `missedAction = msg`.
-   - `Process actionProc`: `property int epoch`, `property var target`,
+   - `Process actionProc`: `property int epoch`, `property string host`,
+     `property int requestId`, `property var target`,
      `stdout: StdioCollector`, `onStarted: actionStarted = true`,
      `onExited: finishAction(code, out.text)`, and
      `onRunningChanged: if (!running && !actionStarted) finishAction(127, "")`,
      the pattern at lines 505-512.
    - `Timer actionWait { repeat: false; onTriggered: sendAction() }`.
    - Key handler (line 613):
-     - first, when `confirm` is set: plain `y` and `!event.isAutoRepeat` →
-       `confirmAction()`; Esc → `dropAction("Nothing was sent")`; accept
-       every event and return;
+     - first, when `confirm` is set, call `confirmKey(event)` and return.
+       `confirmKey(e)` is a plain function (so the smoke test can call it
+       with an event-shaped object): it sets `e.accepted = true`; if
+       `e.key === Qt.Key_Y && e.modifiers === Qt.NoModifier &&
+       !e.isAutoRepeat` → `confirmAction()`; if `e.key === Qt.Key_Escape`
+       → `dropAction("Nothing was sent")`; anything else does nothing.
+       It must run before the existing `plain` variable (line 626), which
+       allows Shift; confirmation requires no modifier at all.
      - then, in navigation mode next to `w` (line 635): plain `a`/`c`/`x`/`n`
        without shift → `startAction`.
    - Footer (line 836):
@@ -311,24 +332,39 @@ branch `feat/39-pipeline-actions`. Line numbers are from `main` at
        keys.
      - Keep `Accessible.name: hint.text` working.
 5. **Smoke stage** — `tests/qml-smoke.py`.
-   - Add a new async stage after the existing ones. It sets
+   - Add the action steps to the final step list, before its last step
+     (the one that logs `QML_CHECKS_PASSED` and calls `Qt.quit()`,
+     `tests/qml-smoke.py:221-226`). Anything after that step never runs.
+     The steps set
      `panel.actionCommand` to a `sh` script that appends its last argument
      to a temp file and prints a chosen JSON reply after an optional
      delay.
    - It drives keys with `tc.keyClick`, and covers the spec's smoke list:
      - setting off; each key allowed and refused; the footer text;
-     - Esc; Enter and an auto-repeat `y` not confirming; repeated `y`
-       sending once;
+     - Esc; Enter not confirming; Shift+`y` not confirming; repeated `y`
+       sending once; auto-repeat tested by calling
+       `panel.confirmKey({key: Qt.Key_Y, modifiers: Qt.NoModifier,
+       isAutoRepeat: true, accepted: false})` (Qt Quick Test's `keyPress`
+       has no auto-repeat argument), and the same object with
+       `isAutoRepeat: false` confirming;
      - a reorder while confirming still sending the pinned target;
      - host change before sending; host change after sending (A→B and
        A→B→A) giving a host-prefixed result with B's polling untouched;
      - cooldown refusal; the 1 s spacing for two writes in a row and for a
        read during the wait; close during the wait sending nothing;
+     - close, setting off and host change while an action is running: the
+       result still arrives, from the process snapshot;
      - success text and `touch`; the `scope`, `refused` and `unknown` texts;
      - a result after close shown on reopen for 10 s; `/` swallowed;
-     - long-path wrap at 75% zoom.
+     - long-path wrap at 75% zoom and at the narrow card width, reusing
+       the width override at `tests/qml-smoke.py:202-211`: the whole
+       confirmation is inside the card (`!hint.truncated`, `hint.x +
+       hint.width <= card width`, the full text present), then restore the
+       width binding.
    - Restore the fixture and the setting at the end, as E11 does.
-   - Check: in the headless VM, not on the host desktop.
+   - Check: in the headless VM, not on the host desktop. Add a temporary
+     `check(false, "probe")` inside the new steps once, to prove they are
+     reached in both scenarios (not committed).
 
      ```bash
      nix build ./ci#checks.x86_64-linux.qml-smoke -L --override-input gltui path:/mnt/code/Source-home/GitHub/nixarchy-gltui-39
@@ -358,13 +394,12 @@ branch `feat/39-pipeline-actions`. Line numbers are from `main` at
    - `keybindings.sh`: four key lines and `y / Esc → Confirm or cancel an
      action`.
    - `manifest.json`: `1.14.0`.
-   - Check:
+   - Check: each new line is present, and the printed sheet and the README
+     diff read correctly:
 
      ```bash
-     bash keybindings.sh --print | grep -c "act\|Confirm"
+     for k in '^a →' '^c →' '^x →' '^n →' '^y / Esc →'; do bash keybindings.sh --print | grep -q "$k" || echo "missing $k"; done
      ```
-
-     Then read the README diff.
    - Traps: README line numbers shift after edits, so anchor by heading.
 
 ## Tests
