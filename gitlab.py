@@ -136,7 +136,7 @@ def numeric_id(value, label):
 
 
 def page_endpoint(task):
-    if not isinstance(task, dict) or task.get("kind") not in ("catalogue", "activity", "summary", "jobs", "bridges", "run"):
+    if not isinstance(task, dict) or task.get("kind") not in ("catalogue", "activity", "summary", "jobs", "bridges", "run", "mrs", "mr"):
         raise ValueError("Invalid page operation")
     number = task.get("page", 1)
     if type(number) is not int or number < 1 or number > 100000:
@@ -146,6 +146,12 @@ def page_endpoint(task):
     host_name(task.get("host", "gitlab.com"))
     if task["kind"] == "catalogue":
         return f"projects?membership=true&per_page=100&page={number}"
+    if task["kind"] == "mrs":
+        if number != 1:
+            raise ValueError("Invalid page number")
+        return "merge_requests?scope=created_by_me&state=opened&order_by=updated_at&sort=desc&per_page=50"
+    if task["kind"] == "mr":
+        return f"projects/{numeric_id(task.get('project'), 'project')}/merge_requests/{numeric_id(task.get('iid'), 'merge request')}"
     base = "projects/" + quote(project_path(task.get("repo")), safe="") + "/pipelines"
     if task["kind"] in ("jobs", "bridges", "run"):
         run = numeric_id(task.get("run", ""), "pipeline")
@@ -265,6 +271,45 @@ def pipeline(row):
             "run_attempt": (row.get("updated_at") or 1) if status == "completed" else "active"}
 
 
+def merge_request(row):
+    if not isinstance(row, dict) or any(type(row.get(key)) is not int or row[key] < 1 for key in ("id", "iid", "project_id")):
+        raise ValueError("Invalid merge request entry")
+    project = ""
+    reference = row.get("references")
+    full = reference.get("full") if isinstance(reference, dict) else None
+    if isinstance(full, str) and full.endswith(f"!{row['iid']}"):
+        try:
+            project = project_path(full[:-(len(str(row["iid"])) + 1)])
+        except ValueError:
+            pass
+    if not project and isinstance(row.get("web_url"), str):
+        try:
+            path, separator, _ = urlsplit(row["web_url"]).path.lstrip("/").partition("/-/")
+            if separator:
+                project = project_path(path)
+        except ValueError:
+            pass
+    return {"id": row["id"], "iid": row["iid"], "project_id": row["project_id"],
+            "project": project, "title": plain(row.get("title") or ""),
+            "source_branch": plain(row.get("source_branch") or ""),
+            "draft": bool(row.get("draft") or row.get("work_in_progress")),
+            "web_url": row.get("web_url") or "", "updated_at": row.get("updated_at")}
+
+
+def mr_detail(row):
+    if not isinstance(row, dict) or any(type(row.get(key)) is not int or row[key] < 1 for key in ("iid", "project_id")):
+        raise ValueError("Invalid merge request detail")
+    result = {"iid": row["iid"], "project_id": row["project_id"], "pipeline": None,
+              "pipelineState": "hidden" if "head_pipeline" not in row else "none"}
+    if row.get("head_pipeline") is not None:
+        head = row["head_pipeline"]
+        if not isinstance(head, dict) or type(head.get("project_id")) is not int or head["project_id"] < 1:
+            raise ValueError("Invalid head pipeline project ID")
+        result["pipeline"] = {**pipeline(head), "project_id": head["project_id"]}
+        result["pipelineState"] = "ok"
+    return result
+
+
 def job(row):
     entry(row)
     def number(value):
@@ -317,7 +362,9 @@ def bridge(row, host):
 def project(row):
     if not isinstance(row, dict):
         raise ValueError("Invalid project entry")
-    return {"repo": project_path(row.get("path_with_namespace")), "description": plain(row.get("description") or ""),
+    if type(row.get("id")) is not int or row["id"] < 1:
+        raise ValueError("Invalid project ID")
+    return {"id": row["id"], "repo": project_path(row.get("path_with_namespace")), "description": plain(row.get("description") or ""),
             "url": row.get("web_url") or "", "lastActivity": row.get("last_activity_at") or "",
             "archived": bool(row.get("archived")), "disabled": row.get("builds_access_level") == "disabled"}
 
@@ -442,6 +489,8 @@ def read_page(task):
                 result.update(errorType="auth", error="Authenticate with glab auth login")
             elif status == 404 and task["kind"] == "bridges":
                 result.update(errorType="route", error="GitLab has no trigger jobs route")
+            elif status in (403, 404) and task["kind"] in ("mrs", "mr"):
+                result.update(errorType="permission", error="Merge request unavailable")
             elif status in (403, 404):
                 result.update(errorType="permission", error="Project unavailable or read_api scope missing")
             elif 300 <= status < 400:
@@ -450,7 +499,11 @@ def read_page(task):
                 result.update(errorType="network", error="GitLab request failed")
             return result
         kind = task["kind"]
-        if kind == "run":
+        if kind == "mr":
+            if not isinstance(body, dict) or str(body.get("iid")) != str(task["iid"]):
+                raise ValueError("Invalid merge request response")
+            result["data"] = mr_detail(body)
+        elif kind == "run":
             if not isinstance(body, dict) or str(body.get("id")) != str(task["run"]):
                 raise ValueError("Invalid pipeline response")
             result["data"] = pipeline(body)
@@ -459,13 +512,17 @@ def read_page(task):
                 raise ValueError("Invalid list response")
             if kind == "catalogue":
                 result["data"] = [project(row) for row in body]
+            elif kind == "mrs":
+                result["data"] = [merge_request(row) for row in body]
             elif kind == "jobs":
                 result["data"] = sorted((job(row) for row in body), key=lambda row: row["id"])
             elif kind == "bridges":
                 result["data"] = sorted((bridge(row, task.get("host", "gitlab.com")) for row in body), key=lambda row: row["id"])
             else:
                 result["data"] = [pipeline(row) for row in body]
-            if kind in ("catalogue", "jobs", "bridges"):
+            if kind == "mrs":
+                result["total"] = pipeline_total(headers, len(body))
+            elif kind in ("catalogue", "jobs", "bridges"):
                 result["nextPage"] = next_page(headers, task.get("page", 1))
             elif kind == "activity" or task.get("status") in PHASES:
                 # One page per unfinished status (#15, ghtui #30); X-Total says how many were left out.

@@ -53,7 +53,9 @@ class ValidationTest(unittest.TestCase):
                  ({"kind": "bridges", "repo": "g/sub/p", "run": 7, "route": "bridges", "page": 3},
                   base + "/7/bridges?per_page=100&page=3"),
                  ({"kind": "bridges", "repo": "g/sub/p", "run": 7, "route": "trigger_jobs", "page": 3},
-                  base + "/7/trigger_jobs?per_page=100&page=3")]
+                  base + "/7/trigger_jobs?per_page=100&page=3"),
+                 ({"kind": "mrs"}, "merge_requests?scope=created_by_me&state=opened&order_by=updated_at&sort=desc&per_page=50"),
+                 ({"kind": "mr", "project": 42, "iid": "7"}, "projects/42/merge_requests/7")]
         for task, expected in cases:
             with self.subTest(task=task):
                 self.assertEqual(gitlab.page_endpoint({"requestId": 1, **task}), expected)
@@ -66,6 +68,12 @@ class ValidationTest(unittest.TestCase):
                      {"kind": "summary", "repo": "a/b", "status": "success", "requestId": 1}]:
             with self.subTest(task=task), self.assertRaises(ValueError):
                 gitlab.page_endpoint(task)
+        for field in ("project", "iid"):
+            for value in (0, "1/2", "../x", True):
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    gitlab.page_endpoint({"kind": "mr", "project": 42, "iid": 7, field: value, "requestId": 1})
+        with self.assertRaises(ValueError):
+            gitlab.page_endpoint({"kind": "mrs", "page": 2, "requestId": 1})
 
 
 class PinsTest(unittest.TestCase):
@@ -406,12 +414,12 @@ class PageTest(unittest.TestCase):
             self.assertEqual(gitlab.read_page({"kind": "catalogue", "requestId": 1})["errorType"], "network")
 
     def test_catalogue_and_jobs(self):
-        projects = [{"path_with_namespace": "g/sub/p", "description": None, "web_url": "https://gitlab.com/g/sub/p",
+        projects = [{"id": 42, "path_with_namespace": "g/sub/p", "description": None, "web_url": "https://gitlab.com/g/sub/p",
                      "last_activity_at": "2026-01-02T00:00:00Z", "archived": False, "builds_access_level": "disabled",
                      "owner": {"name": "leak"}}]
         with patch.object(gitlab, "request", return_value=reply(projects)):
             data = gitlab.read_page({"kind": "catalogue", "requestId": 1})["data"]
-        self.assertEqual(data, [{"repo": "g/sub/p", "description": "", "url": "https://gitlab.com/g/sub/p",
+        self.assertEqual(data, [{"id": 42, "repo": "g/sub/p", "description": "", "url": "https://gitlab.com/g/sub/p",
                                  "lastActivity": "2026-01-02T00:00:00Z", "archived": False, "disabled": True}])
         jobs = [{"id": 9, "name": "test", "stage": "test", "status": "failed", "allow_failure": True,
                  "runner": {"description": "leak"}},
@@ -422,6 +430,41 @@ class PageTest(unittest.TestCase):
         self.assertEqual(data[0]["completed_at"], "2026-01-01T00:02:00Z")
         self.assertEqual((data[1]["conclusion"], data[1]["allow_failure"]), ("failed", True))
         self.assertNotIn("leak", json.dumps(data))
+
+    def test_merge_requests_and_details(self):
+        row = {"id": 9, "iid": 7, "project_id": 42, "references": {"full": "g/p!7"},
+               "title": "Fix\u202e bug", "source_branch": "feat\nbranch", "draft": True,
+               "web_url": "https://gitlab.com/g/p/-/merge_requests/7", "updated_at": "2026-01-01T00:00:00Z"}
+        with patch.object(gitlab, "request", return_value=reply([row], headers="X-Next-Page: 2\r\n")):
+            result = gitlab.read_page({"kind": "mrs", "requestId": 1})
+        self.assertEqual((result["data"][0]["project"], result["data"][0]["title"],
+                          result["data"][0]["source_branch"], result["data"][0]["draft"], result["total"]),
+                         ("g/p", "Fix bug", "feat branch", True, -1))
+        self.assertEqual(gitlab.merge_request({**row, "draft": False, "work_in_progress": True})["draft"], True)
+        self.assertEqual(gitlab.merge_request({**row, "references": {"full": "../x!7"}})["project"], "g/p")
+        self.assertEqual(gitlab.merge_request({**row, "references": {"full": "../x!7"}, "web_url": "https://gitlab.com/../x/-/merge_requests/7"})["project"], "")
+        for field in ("id", "iid", "project_id"):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                gitlab.merge_request({**row, field: 0})
+        detail = {"iid": 7, "project_id": 42}
+        self.assertEqual(gitlab.mr_detail(detail)["pipelineState"], "hidden")
+        self.assertEqual(gitlab.mr_detail({**detail, "head_pipeline": None})["pipelineState"], "none")
+        parsed = gitlab.mr_detail({**detail, "head_pipeline": {**PIPELINE, "project_id": 99}})
+        self.assertEqual((parsed["pipelineState"], parsed["pipeline"]["project_id"], parsed["pipeline"]["run_started_at"]),
+                         ("ok", 99, PIPELINE["created_at"]))
+        for value in (0, True, "99"):
+            with self.subTest(project_id=value), self.assertRaises(ValueError):
+                gitlab.mr_detail({**detail, "head_pipeline": {**PIPELINE, "project_id": value}})
+        task = {"kind": "mr", "project": 42, "iid": 7, "requestId": 1}
+        with patch.object(gitlab, "request", return_value=reply({**detail, "head_pipeline": None})):
+            self.assertEqual(gitlab.read_page(task)["data"]["pipelineState"], "none")
+        with patch.object(gitlab, "request", return_value=reply({**detail, "iid": 8})):
+            self.assertEqual(gitlab.read_page(task)["errorType"], "network")
+        for kind in ("mrs", "mr"):
+            for status in ("403 Forbidden", "404 Not Found"):
+                with self.subTest(kind=kind, status=status), patch.object(gitlab, "request", return_value=reply({"message": "private"}, status=status)):
+                    result = gitlab.read_page({"kind": kind, "requestId": 1, "project": 42, "iid": 7})
+                    self.assertEqual((result["errorType"], result["error"]), ("permission", "Merge request unavailable"))
 
     def test_bridge_malformed_url_keeps_row(self):
         row = {"id": 5, "status": "success", "name": "deploy", "stage": "test",
@@ -577,8 +620,12 @@ class PlainTextTest(unittest.TestCase):
         self.assertEqual((pipeline["head_branch"], pipeline["name"]), ("maingnp.exe", "CI"))
         job = gitlab.job({"id": 1, "name": "unit\u202e", "stage": "te\nst", "status": "success"})
         self.assertEqual((job["name"], job["stage"]), ("unit", "te st"))
-        project = gitlab.project({"path_with_namespace": "g/p", "description": "safe\u2066text"})
+        project = gitlab.project({"id": 42, "path_with_namespace": "g/p", "description": "safe\u2066text"})
         self.assertEqual(project["description"], "safetext")
+        self.assertEqual(project["id"], 42)
+        for value in (0, True, "42"):
+            with self.subTest(id=value), self.assertRaises(ValueError):
+                gitlab.project({"id": value, "path_with_namespace": "g/p"})
 
 
 class HardeningTest(unittest.TestCase):
