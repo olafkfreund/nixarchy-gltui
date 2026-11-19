@@ -7,7 +7,8 @@ SUPER ALT + P → Open or close GitLab Pipelines
 SUPER CTRL ALT + P → GitLab Pipelines keybindings
 ↓ / j → Next row (j only outside search editing)
 ↑ / k → Previous row (k only outside search editing)
-Enter / Space / → / l → Expand or collapse project, pipeline or stage
+Enter / Space / → / l → Expand or collapse project, pipeline or stage; on a merge request, jump to its pipeline
+m → My merge requests (toggle with projects)
 ← / h → Collapse or select parent
 Page Down / Page Up → Move eight rows
 Home / End → First or last row

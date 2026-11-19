@@ -168,7 +168,7 @@ If that works, the stale token is in the session's environment. `omarchy-restart
 | Key | Action |
 | --- | --- |
 | ↑ / ↓ or k / j | Select a row |
-| Enter / Space / → / l | Expand or collapse a project, pipeline or stage |
+| Enter / Space / → / l | Expand or collapse a project, pipeline or stage; on a merge request, jump to its pipeline |
 | ← / h | Collapse, or move to parent |
 | Page Up / Down, Home / End | Move through long lists |
 | / | Filter projects and pipelines |
@@ -176,6 +176,7 @@ If that works, the stale token is in the session's environment. `omarchy-restart
 | Enter while filtering | Expand selected result and resume navigation |
 | Tab while filtering | Resume navigation without expanding |
 | Esc | Clear filter, then close |
+| m | Switch between projects and My merge requests |
 | r | Refresh the selected project and expanded pipeline |
 | Shift + R | Rediscover projects from GitLab |
 | o | Open the selected project, pipeline or job on GitLab |
@@ -268,6 +269,17 @@ A remote on a different host than the panel's shows a notice instead of filterin
 - Changing `host`, restarting the shell or logging out ends all watches (the last two silently).
 - A notification that cannot be sent shows in the footer the next time the panel opens.
 
+## My merge requests
+
+**m** switches the panel between projects and your open merge requests, and back. The panel reopens in the last view until the shell restarts. Each view keeps its own search text and selected row.
+
+- **What is listed.** Open merge requests you created, newest update first, at most 50 across all projects. When there are more, the last row says `N more on GitLab` (or `more on GitLab` when the count is unknown); **o** opens your merge request dashboard and **y** copies its link. It is read from the list, not the project catalogue, so projects outside your project list appear too.
+- **Rows.** Each row shows `project !number title`, with `Draft · ` first for drafts, and the source branch below. The status is the merge request's head pipeline. A row is in one of four states: a pipeline (status icon), `no pipeline`, `pipeline hidden` (GitLab does not show pipelines of that project to you), or `unavailable` (no access to the merge request). Rows not yet looked up say `not checked`. A row not refreshed within its target below adds `checked 2m ago`. Search matches title, project, branch and status.
+- **Keys.** **Enter**, **→**, **l** or **Space** jumps to the pipeline; **o** and **y** use the merge request's link (`No link` if it is not on this host); **r** and **Shift + R** refresh the list and every row. **p t w e a c x n**, **Shift + Y** and **←** / **h** only say `Not on a merge request; press Enter for its pipeline`. Navigation, search, help, zoom and **q** work as usual.
+- **Jump.** Enter switches to the projects view with an empty filter, expands the project and pipeline, and selects the pipeline. It needs the pipeline's project in your project list and not archived or CI-disabled; otherwise the footer says `Project not in your list; o opens the merge request`. Other refusals: `No pipeline yet`, `Pipeline hidden`, `Not checked yet`, `Merge request unavailable; o opens it`.
+- **Fork pipelines.** A merge request from a fork shows the pipeline of its head, which can belong to the fork's project. Jump follows that project, so it is refused when the fork is not in your project list.
+- **Cost.** The view makes no calls while it is off. Selected-project refreshes pause while it is on.
+
 ## Actions
 
 Actions write to GitLab, so they are off until you set `"actions": true` in this plugin's entry in `~/.config/omarchy/shell.json` (see [settings](#self-managed-gitlab-and-settings)). They need a token with the `api` scope; `read_api` is not enough. While they are off, **a**, **c**, **x** and **n** only show `Actions are off: set "actions": true for this plugin in shell.json`, and the helper refuses writes too.
@@ -302,6 +314,9 @@ While open, one scheduler fetches a single API page at a time. Selecting a proje
 | Idle projects | 10 minutes, backing off to 60 while nothing runs (projects inactive for a week start at 60) |
 | Project list | 5 minutes while open |
 | Watched pipelines | 30 seconds, also while the panel is closed |
+| Merge-request list | 60 seconds while the merge-request view is on |
+| Selected merge request | 10 seconds while its pipeline is unfinished, otherwise 60 seconds |
+| Other merge requests | 30 seconds while unfinished, otherwise 10 minutes (also when the list shows a newer update); unchecked ones first |
 
 A project whose last activity changes in the project list is checked next. GitLab updates that time at most once an hour, and scheduled pipelines may not change it, so a short pipeline on an idle project can start and finish without being shown as running. Pin a project to check it every minute.
 
@@ -313,6 +328,7 @@ Request slots are shared as follows:
 - Actions are the exception: they do not count toward the page limit or the request starts, but one starts only a second after the last request, and it can run while a read is in flight. All other paths, including manual refresh, share a limit of 60 pages per rolling minute, at least one second between request starts, and one request in flight.
 - Full summaries cover every unfinished status (`running`, `pending`, `created`, `waiting_for_resource`, `preparing`) plus the ten most recent pipelines.
 - `manual` and `scheduled` pipelines appear in history but do not count as running.
+- Merge-request lookups are background work: under sustained selected or running-project load they still get one request in every five.
 
 When a running pipeline disappears from the running list, the panel fetches its final status rather than assuming success. A finished pipeline's jobs are fetched once and reused until you refresh, or until the pipeline is retried: GitLab updates a retried pipeline's `updated_at`, and that triggers a new fetch.
 
@@ -325,6 +341,7 @@ Closing the panel cancels the helper and its `glab` child, except an action alre
 ## Known limits
 
 - **Downstream pipelines**: downstream and child pipelines show as `»` rows inside the trigger job's stage, with their status. Their own jobs are not shown. The times on a `»` row are the trigger job's. A downstream waiting in manual or scheduled stops refreshing until you press `r`.
+- **My merge requests**: capped at 50 (the rest are one link away); a project outside your project list cannot be jumped into; `pipeline hidden` relies on GitLab leaving the pipeline field out of the reply for users who cannot read pipelines.
 - **Stage order** follows job creation. Pipelines built with `needs:` can show a stage later than the GitLab UI does.
 - **Pipeline durations** in lists start at creation time, so they include queue time until the pipeline is looked up individually.
 
