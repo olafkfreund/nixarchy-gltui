@@ -184,7 +184,7 @@ function infoText(row, now) {
 
 function accessibleName(row) {
     if (row.kind === "more" || row.kind === "message") return row.title;
-    var kinds = {repo: "project", run: "pipeline", stage: "stage", job: "job", trigger: "downstream pipeline"};
+    var kinds = {repo: "project", run: "pipeline", stage: "stage", job: "job", trigger: "downstream pipeline", mr: "merge request"};
     var parts = [row.title, kinds[row.kind]];
     if (row.kind === "repo" && row.pinned) parts.push("pinned");
     if (row.kind === "run" && row.watched) parts.push("watched");
@@ -192,6 +192,33 @@ function accessibleName(row) {
     var names = {success: "passed", allowed: "failed, allowed", neutral: "no status", unknown: "no status"};
     parts.push(names[status] || status);
     return parts.join(", ");
+}
+
+// Merge-request view (#40). selectedKey is the scheduler key "<project_id>!<iid>".
+function mrRows(mrs, filter, now, host, selectedKey) {
+    var query = filter.toLowerCase(), list = (mrs && mrs.list) || [], result = [];
+    list.forEach(function(mr) {
+        var key = mr.project_id + "!" + mr.iid, st = (mrs.status || {})[key];
+        var pipe = st && st.state === "ok" && st.pipeline ? st.pipeline : null;
+        var status = pipe ? state(pipe) : "neutral";
+        var info = !st ? "not checked" : pipe ? "" : {none: "no pipeline", hidden: "pipeline hidden"}[st.state] || "unavailable";
+        if (st) {
+            var unfinished = !!pipe && pipe.status !== "completed", selected = key === selectedKey;
+            var target = selected ? (unfinished ? 10000 : 60000) : unfinished ? 30000 : 600000;
+            if (now - st.at > target) info = (info ? info + " · " : "") + "checked " + ago(new Date(st.at).toISOString(), now);
+        }
+        var project = mr.project || "unknown project";
+        var title = project + " !" + mr.iid + " " + mr.title;
+        if (query && [title, mr.source_branch, status].join(" ").toLowerCase().indexOf(query) < 0) return;
+        result.push({key: "mr:" + key, parent: "", kind: "mr", depth: 0, title: (mr.draft ? "Draft · " : "") + title,
+            subtitle: mr.source_branch || "", status: status, info: info, repo: mr.project || "",
+            url: browsable(mr.web_url, host) ? mr.web_url : ""});
+    });
+    var total = mrs && typeof mrs.total === "number" ? mrs.total : 0;
+    if (!query && (total === -1 || total > list.length)) result.push({key: "mr:more", parent: "", kind: "more", depth: 0,
+        title: total === -1 ? "more on GitLab" : (total - list.length) + " more on GitLab", subtitle: "o opens GitLab",
+        status: "", info: "", repo: "", url: "https://" + host + "/dashboard/merge_requests?scope=created_by_me&state=opened"});
+    return result;
 }
 
 function subtitleText(row, now) {

@@ -420,7 +420,8 @@ review against this plan and an Opus review of the diff.
 
 ## Deviations
 
-None yet.
+- Step 3: the "more on GitLab" row is left out while a filter is active,
+  since it does not match any query and would show under a no-match filter.
 
 ## Rollback
 
