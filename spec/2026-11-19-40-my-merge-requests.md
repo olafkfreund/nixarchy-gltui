@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 40
 intent: intent/2026-11-19-40-my-merge-requests.md
 ---
