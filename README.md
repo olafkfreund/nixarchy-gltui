@@ -22,6 +22,13 @@ Make sure your running session matches the installed Omarchy generation first. I
 omarchy plugin add https://github.com/olafkfreund/nixarchy-gltui.git --enable
 ```
 
+To add the separate bar widget, link its directory beside the panel plugin, then place it on the bar:
+
+```sh
+ln -s "$HOME/.config/omarchy/plugins/olafkfreund.gitlab-pipelines/bar-widget" "$HOME/.config/omarchy/plugins/olafkfreund.gitlab-pipelines-bar"
+omarchy bar put olafkfreund.gitlab-pipelines-bar
+```
+
 ### Nix flake installation
 
 This route is for an existing NixOS configuration with Nixarchy and its Home Manager module already enabled for your user. Add this input to your `flake.nix`:
@@ -52,7 +59,9 @@ Import a NixOS module like this one, replacing `YOUR_USER`:
 }
 ```
 
-The package supports `x86_64-linux` and `aarch64-linux` and contains only the plugin files. Adding it to `environment.systemPackages` does not register it with Omarchy. The Nixarchy module validates the package and links it into your plugin directory. Never put tokens in `flake.nix` or `flake.lock`; runtime API access comes from `glab`'s stored login or an environment token (see [Authentication](#authentication)).
+The panel package supports `x86_64-linux` and `aarch64-linux` and contains only the plugin files. Adding it to `environment.systemPackages` does not register it with Omarchy. The Nixarchy module validates the package and links it into your plugin directory. Never put tokens in `flake.nix` or `flake.lock`; runtime API access comes from `glab`'s stored login or an environment token (see [Authentication](#authentication)).
+
+The flake also exposes `packages.<system>.bar` for the separate widget. Declaring that package as a nixarchy plugin and placing it on the bar is follow-up work; the panel's `default` package does not include it.
 
 Build and activate through NixOS, replacing `HOST`, then enable the plugin once in the running session (or use **Setup → Plugins**):
 
@@ -119,6 +128,19 @@ If that file is a symlink or read-only (for example, managed by Nix), declare th
 ```sh
 python3 ~/.config/omarchy/plugins/olafkfreund.gitlab-pipelines/menu.py register
 ```
+
+## Bar widget
+
+The separate bar widget shows `●N` running pipelines and `✕N` failed projects. A failed project is one whose latest finished pipeline the panel has seen failed. Left click anywhere on the widget to toggle the panel.
+
+Project counts are from the last project read; the tooltip shows that time. Watched pipelines can update the running count while the panel is closed.
+
+| State | Bar | Meaning |
+| --- | --- | --- |
+| No data | Dimmed GitLab glyph | Open the panel to load counts. |
+| Ready | Glyph and nonzero counts; urgent colour when projects failed | The tooltip shows the host, both counts and the last project read time. |
+| Stopped | Urgent glyph and `!` | The tooltip names the configuration, login or project-list error. Open the panel to fix it. |
+| Rate limited | Dimmed glyph and the last counts | The tooltip shows when GitLab polling resumes. The widget rechecks at that time. |
 
 ## Projects
 
@@ -332,6 +354,8 @@ Request slots are shared as follows:
 
 When a running pipeline disappears from the running list, the panel fetches its final status rather than assuming success. A finished pipeline's jobs are fetched once and reused until you refresh, or until the pipeline is retried: GitLab updates a retried pipeline's `updated_at`, and that triggers a new fetch.
 
+When a watched pipeline finishes while the panel is closed, its final lookup updates the running count if it was still counted. A run already removed from GitLab's activity total is not subtracted again.
+
 GitLab's `Retry-After` and `RateLimit-Reset` headers pause all work. A rate limit without a deadline starts with a one-minute wait and backs off up to fifteen minutes. Network and server errors back off the affected resource from five seconds up to five minutes. Permission failures leave that project unavailable until the panel reopens or you refresh (`r` or `R`). Authentication failures pause polling until you retry or reopen. Manual refresh never bypasses a server cooldown.
 
 Errors and pauses show in a line under the search box, with the key that fixes them: `r` after a login or setup stop, `R` after a project-list failure (press Esc first if the search box has focus).
@@ -344,6 +368,7 @@ Closing the panel cancels the helper and its `glab` child, except an action alre
 - **My merge requests**: capped at 50 (the rest are one link away); a project outside your project list cannot be jumped into; `pipeline hidden` relies on GitLab leaving the pipeline field out of the reply for users who cannot read pipelines.
 - **Stage order** follows job creation. Pipelines built with `needs:` can show a stage later than the GitLab UI does.
 - **Pipeline durations** in lists start at creation time, so they include queue time until the pipeline is looked up individually.
+- **Bar counts** stay at their last project read while the panel is closed, except for watched pipelines. Failed projects cover only pipelines the panel has seen. Two shells on the same Wayland display share one status file.
 
 ## Checks
 
@@ -353,10 +378,11 @@ Run from the repository root:
 python3 -m unittest discover -s tests -v
 node tests/model.cjs
 node tests/polling.cjs
+node tests/bar.cjs
 python3 tests/qml-smoke.py
 ```
 
-The flake runs the Python, model and polling suites without a graphical session or live GitLab requests:
+The flake runs the Python, model, polling and bar suites without a graphical session or live GitLab requests:
 
 ```sh
 nix flake check
@@ -364,6 +390,8 @@ nix build .#default
 omarchy plugin validate "$(readlink -f result)"
 python3 tests/qml-smoke.py ./result
 ```
+
+Build the widget package separately with `nix build .#bar --no-link`.
 
 Node is only used by the tests. The QML check needs a graphical session, Quickshell and `OMARCHY_PATH`. It runs against a fake API in a temporary configuration, without installing the plugin.
 
@@ -393,5 +421,7 @@ Changes follow an **intent → spec → plan** workflow. Each task has one slug,
 
 - **Git installation:** `omarchy plugin remove olafkfreund.gitlab-pipelines`.
 - **Nix installation:** remove the declarative plugin entry and rebuild.
+
+Remove `olafkfreund.gitlab-pipelines-bar` from the bar layout and remove its `~/.config/omarchy/plugins/olafkfreund.gitlab-pipelines-bar` link as well. For a declarative installation, remove its widget entry from your configuration and rebuild.
 
 Then remove both keybindings, and the `apps.gitlab-pipelines` and `learn.gitlab-pipelines-keybindings` menu entries.
