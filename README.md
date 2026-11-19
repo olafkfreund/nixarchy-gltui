@@ -325,6 +325,24 @@ python3 tests/qml-smoke.py ./result
 
 Node is only used by the tests. The QML check needs a graphical session, Quickshell and `OMARCHY_PATH`. It runs against a fake API in a temporary configuration, without installing the plugin.
 
+### Testing
+
+The QML check also runs in CI, inside a NixOS VM with a real nixarchy session:
+
+```bash
+nix build ./ci#checks.x86_64-linux.qml-smoke -L
+```
+
+This boots a VM, so it needs KVM, and `nix flake check` does not run it. To move the nixarchy version it tests against:
+
+```bash
+nix flake update nixarchy --flake ./ci
+```
+
+### Accessibility
+
+Rows expose a list-item role and a name (title, kind, pinned/watched, status), the list and search box have names, and the footer exposes its current text, for screen readers and automation.
+
 ## Development process
 
 Changes follow an **intent → spec → plan** workflow. Each task has one slug, `YYYY-MM-DD-<issue>-<slug>`, shared by `intent/`, `spec/` and `plan/`. Each file carries `status: draft | approved`, and each approval is its own commit. No implementation starts before the plan is approved, and review checks the diff against the plan.
