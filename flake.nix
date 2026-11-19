@@ -26,26 +26,44 @@
     in
     {
       packages = forAllSystems (pkgs: {
-        default = pkgs.runCommand "nixarchy-gltui-${version}" {
-          inherit version;
-          # Found on PATH at run time, not substituted, so Git installs keep working (#15).
-          passthru.runtimeDeps = [
-            pkgs.glab
-            pkgs.python3
-            pkgs.xdg-utils
-          ];
-          meta = {
-            description = "GitLab Pipelines panel for the Omarchy shell";
-            homepage = "https://github.com/olafkfreund/nixarchy-gltui";
-            license = nixpkgs.lib.licenses.mit;
-            platforms = nixpkgs.lib.platforms.linux;
-          };
-        } ''
-          mkdir -p "$out"
-          ${nixpkgs.lib.concatMapStringsSep "\n" (file: ''
-            cp ${./. + "/${file}"} "$out/${file}"
-          '') runtimeFiles}
-        '';
+        default =
+          pkgs.runCommand "nixarchy-gltui-${version}"
+            {
+              inherit version;
+              # Found on PATH at run time, not substituted, so Git installs keep working (#15).
+              passthru.runtimeDeps = [
+                pkgs.glab
+                pkgs.python3
+                pkgs.xdg-utils
+              ];
+              meta = {
+                description = "GitLab Pipelines panel for the Omarchy shell";
+                homepage = "https://github.com/olafkfreund/nixarchy-gltui";
+                license = nixpkgs.lib.licenses.mit;
+                platforms = nixpkgs.lib.platforms.linux;
+              };
+            }
+            ''
+              mkdir -p "$out"
+              ${nixpkgs.lib.concatMapStringsSep "\n" (file: ''
+                cp ${./. + "/${file}"} "$out/${file}"
+              '') runtimeFiles}
+            '';
+        bar =
+          pkgs.runCommand "nixarchy-gltui-bar-${version}"
+            {
+              inherit version;
+              meta = {
+                description = "GitLab Pipelines bar widget for the Omarchy shell";
+                homepage = "https://github.com/olafkfreund/nixarchy-gltui";
+                license = nixpkgs.lib.licenses.mit;
+                platforms = nixpkgs.lib.platforms.linux;
+              };
+            }
+            ''
+              mkdir -p "$out"
+              cp ${./bar-widget}/* "$out/"
+            '';
       });
 
       checks = forAllSystems (pkgs: {
@@ -59,10 +77,12 @@
             }
             ''
               plugin=${self.packages.${pkgs.stdenv.hostPlatform.system}.default}
-              python3 - "$plugin" <<'PY'
+              bar=${self.packages.${pkgs.stdenv.hostPlatform.system}.bar}
+              python3 - "$plugin" "$bar" <<'PY'
               import json, sys
               from pathlib import Path
               root = Path(sys.argv[1])
+              bar = Path(sys.argv[2])
               assert sorted(p.name for p in root.iterdir()) == sorted(${builtins.toJSON runtimeFiles})
               assert (root / 'LICENSE').is_file(), 'the package must ship its licence'
               assert not any(p.is_symlink() for p in root.rglob('*'))
@@ -70,14 +90,26 @@
               assert manifest['version'] == '${version}'
               assert manifest['id'] == 'olafkfreund.gitlab-pipelines'
               assert all((root / entry).is_file() for entry in manifest['entryPoints'].values())
+              assert sorted(p.name for p in bar.iterdir()) == sorted(['manifest.json', 'BarWidget.qml', 'BarModel.js', 'LICENSE'])
+              assert (bar / 'LICENSE').read_bytes() == (root / 'LICENSE').read_bytes()
+              assert not any(p.is_symlink() for p in bar.rglob('*'))
+              bar_manifest = json.loads((bar / 'manifest.json').read_text())
+              assert bar_manifest['id'] == 'olafkfreund.gitlab-pipelines-bar'
+              assert bar_manifest['kinds'] == ['bar-widget']
+              assert bar_manifest['entryPoints'] == {'barWidget': 'BarWidget.qml'}
+              assert (bar / bar_manifest['entryPoints']['barWidget']).is_file()
+              assert bar_manifest['version'] == manifest['version']
               PY
               cp "$plugin"/* .
+              mkdir -p bar-widget
+              cp "$bar/BarModel.js" bar-widget/
               cp -R ${./tests} tests
               export HOME="$TMPDIR/home"
               mkdir -p "$HOME"
               python3 -m unittest discover -s tests -v
               node tests/model.cjs
               node tests/polling.cjs
+              node tests/bar.cjs
               python3 menu.py register
               bash keybindings.sh --print > /dev/null
               if python3 tests/qml-smoke.py "$TMPDIR/missing" 2> invalid-directory; then
