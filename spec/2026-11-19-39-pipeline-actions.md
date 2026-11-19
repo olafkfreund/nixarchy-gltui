@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 issue: 39
 intent: intent/2026-11-19-39-pipeline-actions.md
 ---
