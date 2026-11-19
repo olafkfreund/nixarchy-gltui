@@ -113,8 +113,9 @@ function view(s, on, now) {
 }
 function selectMr(s, key) { s.mrSelected=key || ""; s.wakeAt=0; }
 function jump(s, repo, run, expanded, now) {
-    select(s,repo,run,expanded,now,true);
-    mergeRuns(s,repoFor(s,repo),[run]);
+    select(s,repo,run.id,expanded,now,true);
+    // A copy: the scheduler mutates runs in place, and this object is also the merge request's cached status.
+    mergeRuns(s,repoFor(s,repo),[Object.assign({},run)]);
     touch(s,repo,run.id,now);
 }
 function pin(s, names) {
@@ -382,7 +383,7 @@ function complete(s,reply,now) {
     if (!t) return false;
     s.wakeAt=0;
     if (t.kind==="mr" && !(s.mrs.list || []).some(function(row) { return row.project_id+"!"+row.iid===t.run; })) {
-        delete s.tasks[t.key]; return false;
+        cool(s,reply,now); delete s.tasks[t.key]; return false;
     }
     var bad=reply.data===null || typeof reply.data!=="object" || Array.isArray(reply.data)!==(t.kind!=="run" && t.kind!=="mr")
         || Array.isArray(reply.data) && !reply.data.every(function(x) { return x && typeof x==="object" });

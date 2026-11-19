@@ -435,6 +435,17 @@ review against this plan and an Opus review of the diff.
   the managed scenario (the request it was saved for has finished). No
   timeout change was needed: the run took about 286 s with the 180 s QML
   timer per scenario.
+- Final review fixes (Codex, Opus):
+  - an explicit project filter on open (`glp`, `menu.py open`) switches to
+    the projects view when the merge-request view was remembered;
+  - `jump` selects the pipeline by id (it stored the object) and merges a
+    copy, so the merge request's cached status is not mutated by polling;
+  - a reply for a merge request that left the list still applies a rate
+    cooldown before it is dropped;
+  - `merge_request()` keeps `updated_at` only when it is a string.
+  Not taken: resetting the live filter text on a host change (the projects
+  view already keeps it), and the header count above the 50 cap (the "more"
+  row covers it).
 
 ## Rollback
 

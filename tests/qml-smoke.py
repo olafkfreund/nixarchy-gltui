@@ -615,6 +615,11 @@ ShellRoot {
             eq(panel.notice,"Project not in your list; o opens the merge request","MR4 outside project refusal")
             panel.close(); panel.open("{}")
             eq(panel.view,"mrs","MR6 close and reopen keeps view")
+            panel.close(); panel.open('{"filter":"one/sub/repo"}')
+            eq(panel.view,"projects","MR8 an explicit project filter opens the projects view")
+            eq(panel.filterText,"one/sub/repo","MR8 the requested filter applies to projects")
+            panel.toggleView()
+            eq(panel.view,"mrs","MR8 m returns to merge requests")
             sh('touch "$MR_DELAY"')
         },
         function() {

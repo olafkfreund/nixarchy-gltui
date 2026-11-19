@@ -1408,9 +1408,18 @@ test('resetHost keeps the view but ignores old-generation replies', () => {
 });
 test('jump retains an old finished pipeline and starts its full lookup', () => {
   const s=mrFixture([]); s.repos=[{repo:'a/b',runs:Array.from({length:10},(_,i)=>({id:i+11,status:'completed'}))}];
-  const expanded={'a/b:1':true}; polling.jump(s,'a/b',{id:1,status:'completed'},expanded,1000);
-  assert.ok(polling.runFor(s,'a/b',1)); assert.equal(s.selected,'a/b');
+  const run={id:1,status:'completed'}, expanded={'a/b:1':true}; polling.jump(s,'a/b',run,expanded,1000);
+  assert.ok(polling.runFor(s,'a/b',1)); assert.equal(s.selected,'a/b'); assert.equal(s.inspected,'1');
+  assert.notEqual(polling.runFor(s,'a/b',1),run);
   assert.equal(s.tasks['run:a/b:1'].due,1000);
+});
+test('a rate limit on a merge request that left the list still pauses polling', () => {
+  const s=mrFixture([mr(1,1)]); s.opened=true;
+  polling.ensure(s,'mr','','1!1','background',0).project=1;
+  s.flight={key:'mr::1!1',request:{requestId:5},generation:s.generation};
+  s.mrs.list=[];
+  polling.complete(s,{requestId:5,errorType:'rate',error:'GitLab rate limit',retryAt:90000},1000);
+  assert.equal(s.cooldown,90000); assert.ok(!s.tasks['mr::1!1']);
 });
 test('background merge requests start under sustained active load in the fifth slot', () => {
   const s=mrFixture([mr(1,1)]); s.mrs.listAt=100000;

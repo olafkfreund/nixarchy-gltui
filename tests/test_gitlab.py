@@ -441,6 +441,7 @@ class PageTest(unittest.TestCase):
                           result["data"][0]["source_branch"], result["data"][0]["draft"], result["total"]),
                          ("g/p", "Fix bug", "feat branch", True, -1))
         self.assertEqual(gitlab.merge_request({**row, "draft": False, "work_in_progress": True})["draft"], True)
+        self.assertIsNone(gitlab.merge_request({**row, "updated_at": {"x": 1}})["updated_at"])
         self.assertEqual(gitlab.merge_request({**row, "references": {"full": "../x!7"}})["project"], "g/p")
         self.assertEqual(gitlab.merge_request({**row, "references": {"full": "../x!7"}, "web_url": "https://gitlab.com/../x/-/merge_requests/7"})["project"], "")
         for field in ("id", "iid", "project_id"):

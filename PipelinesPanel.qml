@@ -159,7 +159,9 @@ Item {
         if (request.filter !== null) {
             helpOpen = false
             notice = ""; noticeTimer.stop()
-            if (filterText === request.filter) { rebuild(true); selectionChanged(false) }
+            // An explicit project filter always opens the projects view, even if merge requests were shown last.
+            if (view === "mrs") switchView("projects", request.filter)
+            else if (filterText === request.filter) { rebuild(true); selectionChanged(false) }
             else filterText = request.filter
         }
         if (request.notice) notify(request.notice)

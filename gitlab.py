@@ -293,7 +293,8 @@ def merge_request(row):
             "project": project, "title": plain(row.get("title") or ""),
             "source_branch": plain(row.get("source_branch") or ""),
             "draft": bool(row.get("draft") or row.get("work_in_progress")),
-            "web_url": row.get("web_url") or "", "updated_at": row.get("updated_at")}
+            "web_url": row.get("web_url") or "",
+            "updated_at": row["updated_at"] if isinstance(row.get("updated_at"), str) else None}
 
 
 def mr_detail(row):
