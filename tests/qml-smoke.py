@@ -68,6 +68,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons as Commons
 import "Polling.js" as Polling
+import "PipelinesModel.js" as Model
 ShellRoot {
     PipelinesPanel { id: panel }
     FileView {
@@ -226,6 +227,7 @@ ShellRoot {
         }
     ]
     property int ei: 0
+    property var keyFixture: ({})
     property var live: ({})
     function rowItem(key) { return panel.listItem.itemAtIndex(panel.entries.findIndex(function(r) { return r.key===key })) }
     property double holdSince: 0
@@ -702,6 +704,11 @@ ShellRoot {
             panel.filterText="a/one"
             var at=panel.entries.findIndex(function(r) { return r.kind==="more" && r.parent==="repo:a/one" })
             check(at>=0,"E10 more row under a/one")
+            panel.listItem.positionViewAtIndex(at, ListView.Contain)
+            panel.listItem.forceLayout()
+            var moreItem=panel.listItem.itemAtIndex(at)
+            check(moreItem && moreItem.Accessible.role===Accessible.ListItem,"E10 more accessibility role")
+            eq(moreItem.Accessible.name,Model.accessibleName(panel.entries[at]),"E10 more accessibility name")
             panel.cursor=at
             var n=Object.keys(panel.expanded).length
             pressKey(Qt.Key_Right)
@@ -1182,7 +1189,8 @@ ShellRoot {
             // P14: texts.
             panel.notice=""
             listFocus()
-            panel.toggleHelp()
+            tc.keyClick("?")
+            check(panel.helpOpen,"? opens help")
         },
         function() {
             if (!waitUntil(function() { return panel.helpText.indexOf("Pin or unpin")>=0 },"P14 help text")) return false
@@ -1330,7 +1338,8 @@ ShellRoot {
             // T8: texts.
             panel.notice=""
             listFocus()
-            panel.toggleHelp()
+            tc.keyClick("?")
+            check(panel.helpOpen,"? opens help")
         },
         function() {
             if (!waitUntil(function() { return panel.helpText.indexOf("job's log")>=0 },"T8 help text")) return false
@@ -1405,7 +1414,9 @@ ShellRoot {
         },
         function() {
             if (!waitUntil(function() { return panel.footerHint.indexOf("w watch")>=0 },"W9 footer hint")) return false
-            panel.toggleHelp()
+            listFocus()
+            tc.keyClick("?")
+            check(panel.helpOpen,"? opens help")
         },
         function() {
             if (!waitUntil(function() { return panel.helpText.indexOf("Watch or stop")>=0 },"W9 help text")) return false
@@ -1606,6 +1617,51 @@ ShellRoot {
             panel.filterText=""
             panel.open("{}")
             panel.adopt()
+        },
+        // E11: drive the selection and expansion keys in a fixture that cannot poll.
+        function() {
+            keyFixture={repos:panel.polling.repos,expanded:panel.expanded,filter:panel.filterText,
+                        cursor:panel.current && panel.current.key}
+            panel.polling.repos=[{repo:"key/one",checked:"x",runs:[{id:7,name:"CI",status:"in_progress",conclusion:"running",run_number:1}]},
+                                 {repo:"key/two",checked:"x",runs:[]}]
+            panel.expanded=({"repo:key/one":true})
+            panel.filterText=""
+            panel.adopt()
+            cursorTo("repo:key/one")
+            listFocus()
+        },
+        function() {
+            if (!waitUntil(function() { return panel.searchItem.parent.parent.activeFocus },"E11 list focus")) return false
+            pressKey(Qt.Key_Down)
+            eq(panel.current.key,"key/one:7","E11 keyboard selection")
+            pressKey(Qt.Key_Right)
+            check(panel.expanded["key/one:7"],"E11 Right expands run")
+            var messageAt=panel.entries.findIndex(function(r) { return r.kind==="message" && r.parent==="key/one:7" })
+            check(messageAt>=0 && panel.entries[messageAt].title==="Loading jobs…","E11 loading message")
+            panel.listItem.positionViewAtIndex(messageAt,ListView.Contain)
+            panel.listItem.forceLayout()
+            var messageItem=panel.listItem.itemAtIndex(messageAt)
+            check(messageItem && messageItem.Accessible.role===Accessible.ListItem,"E11 message accessibility role")
+            eq(messageItem.Accessible.name,Model.accessibleName(panel.entries[messageAt]),"E11 message accessibility name")
+            pressKey(Qt.Key_Left)
+            check(!panel.expanded["key/one:7"] && has("repo:key/two"),"E11 collapse retains other repository")
+            eq(panel.entries.length,3,"E11 collapse leaves three rows")
+            var runAt=panel.entries.findIndex(function(r) { return r.key==="key/one:7" })
+            panel.listItem.positionViewAtIndex(runAt,ListView.Contain)
+            panel.listItem.forceLayout()
+            eq(panel.listItem.itemAtIndex(runAt).Accessible.name,"CI, pipeline, running","E11 running name")
+            panel.polling.repos[0].runs[0].status="completed"
+            panel.polling.repos[0].runs[0].conclusion="failed"
+            panel.adopt()
+            runAt=panel.entries.findIndex(function(r) { return r.key==="key/one:7" })
+            panel.listItem.positionViewAtIndex(runAt,ListView.Contain)
+            panel.listItem.forceLayout()
+            eq(panel.listItem.itemAtIndex(runAt).Accessible.name,"CI, pipeline, failed","E11 failed name after adopt")
+            panel.polling.repos=keyFixture.repos
+            panel.expanded=keyFixture.expanded
+            panel.filterText=keyFixture.filter
+            panel.adopt()
+            if (keyFixture.cursor) { cursorTo(keyFixture.cursor); panel.selectionChanged(false) }
             stage=11
         }
     ]
@@ -1627,12 +1683,6 @@ ShellRoot {
             panel.polling.repos[0].runs=[{id:7,name:"CI",status:"in_progress",conclusion:"running",run_attempt:"active"}]
             panel.expanded={"repo:one/sub/repo":true}
             panel.adopt()
-            panel.move(1)
-            check(panel.current.kind==="run","keyboard selection")
-            panel.expand(false)
-            check(panel.entries[2].title==="Loading jobs…","expand run")
-            panel.expand(true)
-            check(panel.entries.length===3,"collapse run retains other repository")
             // Selection sync: a row that drops from the filtered list must not leave a stale inspected run behind.
             panel.polling.repos[0].runs.push({id:8,name:"CI",status:"in_progress",conclusion:"running",run_attempt:"active"})
             panel.polling.wakeAt=0
@@ -1697,6 +1747,28 @@ ShellRoot {
                 var lintItem=panel.listItem.itemAtIndex(lintIndex)
                 if (!lintItem) return
                 selCheck(lintItem,"allowed to fail","!")
+                eq(lintItem.Accessible.selected,true,"a11y cursor row selected")
+                ;["repo","run","stage","job","trigger"].forEach(function(kind) {
+                    var index=panel.entries.findIndex(function(row) { return row.kind===kind })
+                    check(index>=0,"a11y " + kind + " row exists")
+                    panel.listItem.positionViewAtIndex(index,ListView.Contain)
+                    panel.listItem.forceLayout()
+                    var item=panel.listItem.itemAtIndex(index)
+                    check(item && item.Accessible.role===Accessible.ListItem,"a11y " + kind + " role")
+                    eq(item.Accessible.name,Model.accessibleName(panel.entries[index]),"a11y " + kind + " name")
+                    for (var i=0;i<panel.entries.length;i++) {
+                        var visible=panel.listItem.itemAtIndex(i)
+                        if (visible) eq(visible.Accessible.selected,i===panel.cursor,"a11y selected row " + i)
+                    }
+                })
+                eq(panel.listItem.Accessible.role,Accessible.List,"a11y list role")
+                eq(panel.listItem.Accessible.name,"GitLab pipelines","a11y list name")
+                eq(panel.searchItem.Accessible.role,Accessible.EditableText,"a11y search role")
+                eq(panel.searchItem.Accessible.name,"Search projects","a11y search name")
+                eq(panel.hintItem.Accessible.role,Accessible.StaticText,"a11y footer role")
+                eq(panel.hintItem.Accessible.name,panel.hintItem.text,"a11y footer name")
+                panel.notify("x")
+                eq(panel.hintItem.Accessible.name,"x","a11y footer notice")
                 var trigIndex=panel.entries.findIndex(function(row) { return row.kind==="trigger" })
                 check(trigIndex>=0,"trigger row exists")
                 panel.cursor=trigIndex

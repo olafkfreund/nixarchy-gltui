@@ -182,6 +182,18 @@ function infoText(row, now) {
     return parts.filter(Boolean).join(" · ");
 }
 
+function accessibleName(row) {
+    if (row.kind === "more" || row.kind === "message") return row.title;
+    var kinds = {repo: "project", run: "pipeline", stage: "stage", job: "job", trigger: "downstream pipeline"};
+    var parts = [row.title, kinds[row.kind]];
+    if (row.kind === "repo" && row.pinned) parts.push("pinned");
+    if (row.kind === "run" && row.watched) parts.push("watched");
+    var status = group(row.status);
+    var names = {success: "passed", allowed: "failed, allowed", neutral: "no status", unknown: "no status"};
+    parts.push(names[status] || status);
+    return parts.join(", ");
+}
+
 function subtitleText(row, now) {
     var fetched = row.kind === "run" ? ago(row.fetched, now) : "";
     return (row.subtitle || "") + (fetched ? " · jobs fetched " + fetched : "");

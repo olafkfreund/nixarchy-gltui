@@ -97,7 +97,7 @@ Item {
             if (cursor >= 0 && cursor < list.count) list.positionViewAtIndex(cursor, ListView.Contain)
         })
     }
-    // The footer settles after the zoom's callLater; only that settle may move the view, not later resizes or scrolling.
+    // The footer settles after the zoom's callLater; only that settle, or an error strip change (keepOnResize), may move the view, not other resizes or scrolling.
     Timer { id: zoomSettle; interval: 300 }
     // Test hooks for tests/qml-smoke.py.
     readonly property Item cardItem: card
@@ -664,6 +664,8 @@ Item {
                     }
                     TextInput {
                         id: searchField
+                        Accessible.role: Accessible.EditableText
+                        Accessible.name: "Search projects"
                         width: parent.width
                         height: Math.ceil(font.pixelSize * 1.4)
                         color: Commons.Color.menu.text
@@ -719,6 +721,8 @@ Item {
                         textFormat: Text.PlainText
                         // The strip changes the list's height; keep the cursor row in view.
                         function keepCursor() {
+                            // The Column can resize the list after this callLater; the list's next height change repositions too.
+                            list.keepOnResize = true
                             Qt.callLater(function() {
                                 // forceLayout: the Column may not have resized the list yet when this runs.
                                 if (root.opened && root.cursor >= 0 && root.cursor < list.count) { list.forceLayout(); list.positionViewAtIndex(root.cursor, ListView.Contain) }
@@ -730,17 +734,27 @@ Item {
                     Rectangle { id: hairline; width: parent.width; height: Style.spacing.hairline; color: Commons.Color.menu.border; opacity: 0.4 }
                     ListView {
                         id: list
+                        Accessible.role: Accessible.List
+                        Accessible.name: "GitLab pipelines"
                         width: parent.width
                         height: Math.max(0, parent.height - y - footer.height - root.zs(Style.spacing.md))
                         clip: true
                         model: visibleRows
                         boundsBehavior: Flickable.StopAtBounds
                         // The footer settles after the zoom's callLater, which shrinks the list a few px; keep the cursor row contained.
-                        onHeightChanged: if (zoomSettle.running && root.opened && root.cursor >= 0 && root.cursor < count) positionViewAtIndex(root.cursor, ListView.Contain)
+                        property bool keepOnResize: false
+                        onHeightChanged: {
+                            var keep = zoomSettle.running || keepOnResize
+                            keepOnResize = false
+                            if (keep && root.opened && root.cursor >= 0 && root.cursor < count) positionViewAtIndex(root.cursor, ListView.Contain)
+                        }
                         delegate: Rectangle {
                             required property var rowData
                             readonly property var modelData: rowData
                             required property int index
+                            Accessible.role: Accessible.ListItem
+                            Accessible.name: Model.accessibleName(modelData)
+                            Accessible.selected: index === root.cursor
                             width: list.width
                             height: modelData.subtitle ? Math.max(root.zs(Style.space(64)), root.zf(Style.font.body) + root.zf(Style.font.caption) + root.zs(Style.space(16))) : Math.max(root.zs(Style.space(40)), root.zf(Style.font.body) + root.zs(Style.space(12)))
                             color: index === root.cursor ? Commons.Color.menu.selectedBackground : "transparent"
@@ -816,6 +830,8 @@ Item {
                         height: Math.max(hint.implicitHeight, zoomLabel.visible ? zoomLabel.implicitHeight : 0)
                         Text {
                             id: hint
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: hint.text
                             width: parent.width - (zoomLabel.visible ? zoomLabel.implicitWidth + root.zs(Style.spacing.sm) : 0)
                             text: root.notice || root.cooldownText || (root.filtering ? root.searchHint : root.listHint)
                             color: Commons.Color.menu.text
