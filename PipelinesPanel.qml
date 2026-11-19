@@ -140,7 +140,8 @@ Item {
         if (pinsError) { notify(pinsError); pinsError = "" }
         showMissed()
         if (missedAction) {
-            notify(missedAction, 10000)
+            // Keep missed watch notices from showMissed() beside the action result.
+            notify((notice ? notice + " · " : "") + missedAction, 10000)
             actionFailed = missedFailed
             missedAction = ""
         }
@@ -802,6 +803,7 @@ Item {
                         selectionColor: Commons.Color.menu.selectedBackground
                         selectedTextColor: Commons.Color.menu.selectedText
                         Keys.onPressed: function(event) {
+                            if (root.confirm) { root.confirmKey(event); return }
                             if (root.zoomKey(event)) { event.accepted = true; return }
                             if (event.key === Qt.Key_Up || event.key === Qt.Key_Down) {
                                 root.move(event.key === Qt.Key_Up ? -1 : 1)

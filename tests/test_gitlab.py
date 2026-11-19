@@ -219,6 +219,10 @@ class ActionTest(unittest.TestCase):
                     self.assertEqual((result["errorType"], result["error"]),
                                      ("disabled", "Actions are off in shell.json"))
             request.assert_not_called()
+        # A non-string host means gitlab.com, as the panel reads it.
+        self.enable(host=None)
+        with patch.object(gitlab, "request", return_value=reply({"id": 8})):
+            self.assertTrue(gitlab.write_action(task)["ok"])
 
     def test_replies(self):
         self.enable()
@@ -234,6 +238,8 @@ class ActionTest(unittest.TestCase):
                  ("409 Conflict", {"message": "Busy"}, "", "refused"),
                  ("422 Unprocessable", {"message": "Invalid"}, "", "refused"),
                  ("302 Found", {}, "", "refused"),
+                 ("401 Unauthorized", {}, "Ratelimit-Remaining: 0\r\n", "rate"),
+                 ("503 Unavailable", {}, "Retry-After: 30\r\n", "rate"),
                  ("503 Unavailable", {"message": "Error"}, "", "unknown")]
         for status, body, headers, kind in cases:
             with self.subTest(status=status, body=body), patch.object(gitlab, "request", return_value=reply(body, status, headers)):
@@ -257,6 +263,13 @@ class ActionTest(unittest.TestCase):
         for failure, kind in [(FileNotFoundError(), "setup"), (subprocess.TimeoutExpired("glab", 25), "unknown")]:
             with self.subTest(kind=kind), patch.object(gitlab, "request", side_effect=failure):
                 self.assertEqual(gitlab.write_action(task)["errorType"], kind)
+        # A proxy's non-JSON error page is still classified by status.
+        for response, kind in [(("HTTP/2.0 429 Too Many Requests\n\n<html>Slow down</html>", "", 1), "rate"),
+                               (("HTTP/2.0 403 Forbidden\n\nForbidden", "", 1), "refused")]:
+            with self.subTest(response=response), patch.object(gitlab, "request", return_value=response):
+                self.assertEqual(gitlab.write_action(task)["errorType"], kind)
+        with patch.object(gitlab, "request", return_value=("HTTP/2.0 403 Forbidden\n\n<html>no</html>", "", 1)):
+            self.assertEqual(gitlab.write_action(task)["error"], "GitLab refused: HTTP 403")
 
     def test_ref_keeps_control_free_raw_text(self):
         ref = "café\u200b&#%+/branch"

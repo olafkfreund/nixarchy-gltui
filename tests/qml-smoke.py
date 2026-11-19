@@ -325,6 +325,12 @@ ShellRoot {
             pressKey(Qt.Key_Slash); check(!panel.searchItem.activeFocus && panel.cursor===cursor,"A slash swallowed")
             pressKey(Qt.Key_Return); check(panel.confirm,"A Enter cannot confirm")
             pressKey(Qt.Key_Y,Qt.ShiftModifier); check(panel.confirm,"A Shift+y cannot confirm")
+            // With the search box focused, Esc still cancels the confirmation and y types nothing.
+            panel.searchItem.forceActiveFocus()
+            pressKey(Qt.Key_Escape)
+            check(!panel.confirm && panel.notice==="Nothing was sent" && panel.filterText==="","A Esc in search cancels")
+            listFocus()
+            actionPress(actionRepo+":1",Qt.Key_A)
             var repeated={key:Qt.Key_Y,modifiers:Qt.NoModifier,isAutoRepeat:true,accepted:false}
             panel.confirmKey(repeated); check(repeated.accepted && panel.confirm,"A auto-repeat y swallowed")
             panel.confirmKey({key:Qt.Key_Y,modifiers:Qt.NoModifier,isAutoRepeat:false,accepted:false})
@@ -491,14 +497,16 @@ ShellRoot {
         },
         function() {
             var h=panel.hintItem
-            check(!h.truncated && h.text===panel.confirm.text,"A 75% text fully wraps")
-            check(h.x+h.width<=panel.cardItem.width,"A 75% text stays inside card")
+            check(h.text===panel.confirm.text && h.wrapMode===Text.Wrap,"A 75% text wraps")
+            check(h.contentWidth<=h.width+1,"A 75% text fits its width")
             panel.cardItem.width=Commons.Style.space(300)
         },
         function() {
             var h=panel.hintItem
-            check(!h.truncated && h.text===panel.confirm.text,"A narrow text fully wraps")
-            check(h.x+h.width<=panel.cardItem.width,"A narrow text stays inside card")
+            check(h.text===panel.confirm.text && h.lineCount>1,"A narrow text wraps onto several lines")
+            check(h.contentWidth<=h.width+1,"A narrow text fits its width")
+            var bottom=h.mapToItem(panel.cardItem,0,h.height).y
+            check(bottom<=panel.cardItem.height+1,"A narrow footer stays inside the card: " + bottom + " vs " + panel.cardItem.height)
             panel.cardItem.width=Qt.binding(function() { return Math.min(panel.zs(Commons.Style.space(900)), screenW()-Commons.Style.gapsOut*2) })
             pressKey(Qt.Key_Escape)
             panel.zoomPercent=100

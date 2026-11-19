@@ -347,7 +347,7 @@ def actions_enabled(host):
         return isinstance(entries, list) and any(
             isinstance(entry, dict) and entry.get("id") == "olafkfreund.gitlab-pipelines" and
             entry.get("actions") is True and
-            str(entry.get("host", "gitlab.com")).lower() == host.lower() for entry in entries)
+            (entry.get("host") if isinstance(entry.get("host"), str) else "gitlab.com").lower() == host.lower() for entry in entries)
     except (KeyError, OSError, ValueError, TypeError, AttributeError):
         return False
 
@@ -383,7 +383,13 @@ def write_action(task):
         status, headers, raw_body = http_reply(stdout)
         result["httpStatus"] = status
         limits(headers, result)
-        body = json.loads(raw_body) if raw_body.strip() else None
+        try:
+            body = json.loads(raw_body) if raw_body.strip() else None
+        except ValueError:
+            # A proxy's HTML or text error page still has a status worth classifying (a bare 429 must pause polling).
+            if 200 <= status < 300:
+                raise
+            body = None
         message = message_text(body)
         if 200 <= status < 300:
             result["ok"] = True
@@ -397,7 +403,7 @@ def write_action(task):
                 "insufficient_scope" in str(body.get(key, "")).lower() for key in ("error", "message")):
             result.update(errorType="scope", error="Needs a token with the api scope")
         elif 400 <= status < 500:
-            result.update(errorType="refused", error="GitLab refused: " + message)
+            result.update(errorType="refused", error="GitLab refused: " + (message or f"HTTP {status}"))
         elif 300 <= status < 400:
             result.update(errorType="refused", error="GitLab redirected the request; the project may have moved")
         else:

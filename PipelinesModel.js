@@ -424,7 +424,7 @@ function actionFor(key, row, raw) {
             return {reason: "Merge-request pipelines cannot be started from the panel"};
         return typeof ref === "string" && ref ? {action: "new-pipeline"} : {reason: "This pipeline has no branch or tag to start from"};
     }
-    return {reason: "Select a pipeline or job"};
+    return {reason: isJob ? "Select a pipeline to start a new one" : "Select a pipeline or job"};
 }
 
 function cut(text) {

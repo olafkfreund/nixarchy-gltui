@@ -487,7 +487,7 @@ console.log('Model: stage hierarchy, aggregation, filtering, progress, selection
   assert.equal(af('a', job, 'success').reason, 'Only a failed or canceled job can be retried');
   assert.equal(af('c', run, 'success').reason, 'Only a running or queued pipeline can be canceled');
   assert.equal(af('c', job, 'manual').reason, 'Only a running or queued job can be canceled');
-  assert.equal(af('n', job, 'failed').reason, 'Select a pipeline or job');
+  assert.equal(af('n', job, 'failed').reason, 'Select a pipeline to start a new one');
   for (const kind of ['repo','stage','trigger','more','message'])
     for (const k of 'acxn') assert.equal(af(k, {kind}, 'failed').reason, 'Select a pipeline or job');
   assert.equal(plain(model.actionFor('a', run, null)).reason, 'Select the row again');

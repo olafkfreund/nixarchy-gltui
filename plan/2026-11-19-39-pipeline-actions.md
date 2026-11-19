@@ -437,6 +437,22 @@ nix build ./ci#checks.x86_64-linux.qml-smoke -L --override-input gltui path:$PWD
   `ci/qml-smoke.nix`'s 600 s wait. The reachability probe failed as
   expected in the first scenario (a failed check ends the run) and was
   removed before the passing run.
+- Final reviews (Codex, Opus), applied:
+  - the helper classifies a non-JSON error body by its HTTP status (a
+    proxy's bare 429 now pauses polling instead of being `unknown`); an
+    empty reason shows `GitLab refused: HTTP <status>`; a non-string `host`
+    in `shell.json` means `gitlab.com` in the helper, as in the panel;
+  - the search field's key handler also routes to `confirmKey` while a
+    confirmation shows, so Esc cancels and `y` does not type;
+  - `n` on a job row says "Select a pipeline to start a new one";
+  - a missed action result is shown beside missed watch notices, not over
+    them;
+  - tests: the two untested rate rows (`remaining 0` on a 401,
+    `Retry-After` on a 503), non-JSON 429/403, the null host, and smoke
+    wrap checks that can fail (`lineCount > 1`, `contentWidth`, footer
+    bottom inside the card) plus Esc from the search field.
+  - Not taken (beyond the plan): a "Sending…" notice while an action runs,
+    and holding reads while an action waits for its one-second slot.
 
 ## Rollback
 
