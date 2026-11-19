@@ -90,7 +90,7 @@ already drops replies for the old host (`complete`, line 338).
     - finished, `none` or `hidden`: group `background`, every 10 minutes, or
       due now when the list's `updated_at` differs from the status's
       `mrUpdated`.
-  - `pinned` sits behind `active` in the existing slot order (line 241), so
+  - `pinned` sits behind `active` in the existing slot order (line 242), so
     projects with running pipelines keep their 15 s rate; `mr` reads take
     what is left of the 60-a-minute budget, so freshness is best effort.
   - Tasks of kind `mrs`/`mr` are deleted when `mrView` is off, like summary
