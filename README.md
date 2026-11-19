@@ -1,13 +1,13 @@
 # GitLab Pipelines for Omarchy
 
-A flat, keyboard-driven Quickshell popup for GitLab projects → pipelines → stages → jobs, hosted inside `omarchy-shell`. It discovers every project you are a member of, including nested groups, and lists projects with running pipelines first. It uses the current Omarchy menu colours, fonts, spacing, border and corner radius, and follows the theme font size (`[font] base-size`). There are no buttons, and no background daemon, database or token storage.
+A flat, keyboard-driven Quickshell popup for GitLab projects → pipelines → stages → jobs, hosted inside `omarchy-shell`. It can also retry, cancel, play and start pipelines when you turn actions on. It discovers every project you are a member of, including nested groups, and lists projects with running pipelines first. It uses the current Omarchy menu colours, fonts, spacing, border and corner radius, and follows the theme font size (`[font] base-size`). There are no buttons, and no background daemon, database or token storage.
 
 It is the GitLab sibling of [nixarchy-ghtui](https://github.com/olafkfreund/nixarchy-ghtui) (GitHub Actions), with the same design and behaviour. Both plugins can be installed side by side.
 
 ## Requirements
 
 - Omarchy shell with the panel plugin contract and `qs.Commons` / `qs.Ui` components.
-- [`glab`](https://gitlab.com/gitlab-org/cli), authenticated with `glab auth login` for every host you use, or with an environment token (see [Authentication](#authentication)). The token needs the `read_api` scope.
+- [`glab`](https://gitlab.com/gitlab-org/cli), authenticated with `glab auth login` for every host you use, or with an environment token (see [Authentication](#authentication)). The token needs the `read_api` scope, and the `api` scope if you turn on [actions](#actions), which write to GitLab.
 - Python 3, `xdg-open` for the browser shortcut, `wl-copy` (wl-clipboard) for the copy keys, and a terminal that `xdg-terminal-exec` can start with a command (Omarchy's terminals can) for the log key. `notify-send` (libnotify) for watch notifications.
 
 On NixOS, missing dependencies belong in your declarative configuration. Do not install them with pacman or an imperative Nix profile.
@@ -130,7 +130,7 @@ The catalogue and known activity stay in memory between openings. After five min
 
 ### Self-managed GitLab and settings
 
-The default host is `gitlab.com`. For a self-managed instance, add `host` to this plugin's entry in `~/.config/omarchy/shell.json`. You can also add `projects`, a list of project paths that are shown before discovery finishes; it does not limit discovery. `pinned` lists projects that sort first and are checked about every minute (see [Pinned projects](#pinned-projects)).
+The default host is `gitlab.com`. For a self-managed instance, add `host` to this plugin's entry in `~/.config/omarchy/shell.json`. Add `"actions": true` to turn on [actions](#actions); anything else leaves them off. You can also add `projects`, a list of project paths that are shown before discovery finishes; it does not limit discovery. `pinned` lists projects that sort first and are checked about every minute (see [Pinned projects](#pinned-projects)).
 
 ```json
 {
@@ -149,7 +149,7 @@ Keep any other keys already in that entry. The host must be authenticated with `
 
 ### Authentication
 
-The plugin uses your existing `glab` login and never reads, extracts or stores a token. A personal, group or project access token works if it has `read_api`. If a project is missing, confirm that `glab api projects?membership=true` lists it with the same login, then press **Shift + R**.
+The plugin uses your existing `glab` login and never reads, extracts or stores a token. A personal, group or project access token works if it has `read_api`; [actions](#actions) need `api`, and your role and the project's rules must allow them (normally Developer, subject to protected branches, protected environments and the project's cancel restriction). If a project is missing, confirm that `glab api projects?membership=true` lists it with the same login, then press **Shift + R**.
 
 **Environment tokens.** `glab` prefers a token from the environment over its stored login: `GITLAB_TOKEN`, then `GITLAB_ACCESS_TOKEN`, then `OAUTH_TOKEN`, the first one set wins. It needs the same `read_api` scope. `glab` only sends such a token to some hosts: the default host (`GITLAB_HOST`), the host in `GITLAB_REPO`, and hosts already in its configuration. `glab config --help` has the full rules. The panel names its host only on the command line, so for any other host run `glab auth login --hostname …` once. Setting `GITLAB_HOST` for the whole session also works, but then every `glab` command in that session uses that host, and fails in repositories whose remotes do not match it.
 
@@ -184,6 +184,11 @@ If that works, the stale token is in the session's environment. `omarchy-restart
 | p | Pin or unpin the selected project |
 | t | Open the selected job's log in a terminal |
 | w | Watch or stop watching the selected pipeline |
+| a | Retry the selected failed or canceled pipeline or job (actions on) |
+| c | Cancel the selected running or queued pipeline or job (actions on) |
+| x | Play the selected manual job (actions on) |
+| n | Start a new pipeline on the selected pipeline's branch or tag (actions on) |
+| y / Esc | While a confirmation shows: confirm or cancel the action |
 | g / G | First or last row |
 | e | Next failed pipeline, stage, job or `»` row |
 | ? | Show or hide this help in the panel |
@@ -263,6 +268,26 @@ A remote on a different host than the panel's shows a notice instead of filterin
 - Changing `host`, restarting the shell or logging out ends all watches (the last two silently).
 - A notification that cannot be sent shows in the footer the next time the panel opens.
 
+## Actions
+
+Actions write to GitLab, so they are off until you set `"actions": true` in this plugin's entry in `~/.config/omarchy/shell.json` (see [settings](#self-managed-gitlab-and-settings)). They need a token with the `api` scope; `read_api` is not enough. While they are off, **a**, **c**, **x** and **n** only show `Actions are off: set "actions": true for this plugin in shell.json`, and the helper refuses writes too.
+
+| Key | On | Does | When |
+| --- | --- | --- | --- |
+| a | pipeline | Retry the pipeline | failed or canceled |
+| a | job | Retry the job | failed or canceled |
+| c | pipeline or job | Cancel it | created, waiting for resource, preparing, pending, running or scheduled |
+| x | job | Play the job | manual |
+| n | pipeline | Start a new pipeline on its branch or tag | any status, except merge-request pipelines |
+
+Only a pipeline row or a job row offers an action, judged by the status GitLab reported, not the icon. When a key does not apply to the row, the footer says why, for example `Only a failed or canceled job can be retried`.
+
+- **Confirm.** Every action first shows a question in the footer, for example `Retry pipeline #7 CI (main) in group/project? y yes · Esc no`. Plain **y** sends it; **Esc** sends nothing. Every other key is ignored while the question shows, and Shift + Y or a held key does not confirm. The question names the project, pipeline, job and branch, and a cancel adds `Cannot be undone.`
+- **Sent as shown.** The action is sent to the row you confirmed, even if the list re-sorts meanwhile. Changing `host`, turning actions off or closing the panel before it is sent cancels it. One action runs at a time, and it starts at least one second after the last GitLab request.
+- **Result.** The footer shows the outcome for 10 seconds, for example `Retry requested: pipeline #7 CI (main) in group/project`, and the pipeline refreshes at once (after a rate-limit pause, the text adds `· refresh waits until HH:MM`). A new pipeline adds `· new pipeline #N`. A result that arrives after you closed the panel shows when you open it again; one that arrives after a host change starts with `on <host>:`.
+- **Failures.** `GitLab rate limit` (polling pauses too), `Authenticate with glab auth login`, `Needs a token with the api scope`, `GitLab refused: <reason>` (permissions, a state that changed, a protected branch), `Install glab (GitLab CLI)`. `Outcome unknown; check GitLab before retrying` means the request may have reached GitLab (timeout, server error, unreadable reply): look at the pipeline before pressing the key again.
+- **Not offered.** Merge-request pipelines (a new pipeline cannot be started from them), `»` trigger rows, stage rows, whole manual stages, pipeline variables (new and played jobs use their defaults), retrying a successful job, and cancelling a manual job.
+
 ## Refresh and errors
 
 While open, one scheduler fetches a single API page at a time. Selecting a project waits 250 ms before fetching its missing or stale data, so rapid navigation does not trigger requests for every project you pass.
@@ -285,7 +310,7 @@ A queued pipeline on a project you are not viewing is looked up every 15 seconds
 Request slots are shared as follows:
 
 - Three slots serve selected data, one serves projects with running pipelines, then idle pinned projects, and one serves background discovery. Spare slots serve pins before background work. Under a busy schedule (the selected project plus several running projects) idle pins wait.
-- All paths, including manual refresh, share a limit of 60 pages per rolling minute, at least one second between request starts, and one request in flight.
+- Actions are the exception: they do not count toward the page limit or the request starts, but one starts only a second after the last request, and it can run while a read is in flight. All other paths, including manual refresh, share a limit of 60 pages per rolling minute, at least one second between request starts, and one request in flight.
 - Full summaries cover every unfinished status (`running`, `pending`, `created`, `waiting_for_resource`, `preparing`) plus the ten most recent pipelines.
 - `manual` and `scheduled` pipelines appear in history but do not count as running.
 
@@ -295,7 +320,7 @@ GitLab's `Retry-After` and `RateLimit-Reset` headers pause all work. A rate limi
 
 Errors and pauses show in a line under the search box, with the key that fixes them: `r` after a login or setup stop, `R` after a project-list failure (press Esc first if the search box has focus).
 
-Closing the panel cancels the helper and its `glab` child. While the panel is closed, only watched pipelines are polled (see [Watching a pipeline](#watching-a-pipeline)). Each request times out after 25 seconds and shares your account's GitLab API quota with other tools.
+Closing the panel cancels the helper and its `glab` child, except an action already sent, which finishes (see [Actions](#actions)). While the panel is closed, only watched pipelines are polled (see [Watching a pipeline](#watching-a-pipeline)). Each request times out after 25 seconds and shares your account's GitLab API quota with other tools.
 
 ## Known limits
 
