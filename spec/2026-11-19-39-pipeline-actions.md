@@ -40,17 +40,24 @@ says "Select the row again" and does nothing.
 | Key | Row | Action | Offered when raw `conclusion` is | Request |
 | --- | --- | --- | --- | --- |
 | `a` | pipeline | `retry-pipeline` | `failed`, `canceled` | `POST projects/:id/pipelines/:pipeline/retry` |
-| `a` | job | `retry-job` | `failed`, `canceled`, `success` | `POST projects/:id/jobs/:job/retry` |
+| `a` | job | `retry-job` | `failed`, `canceled` | `POST projects/:id/jobs/:job/retry` |
 | `c` | pipeline | `cancel-pipeline` | `created`, `waiting_for_resource`, `preparing`, `pending`, `running`, `scheduled` | `POST projects/:id/pipelines/:pipeline/cancel` |
 | `c` | job | `cancel-job` | the same list | `POST projects/:id/jobs/:job/cancel` |
 | `x` | job | `play-job` | `manual` | `POST projects/:id/jobs/:job/play` |
-| `n` | pipeline | `new-pipeline` | any, if the raw `ref` is set and does not start with `refs/merge-requests/` | `POST projects/:id/pipeline?ref=<ref>` |
+| `n` | pipeline | `new-pipeline` | any, if the raw `ref` is set, does not start with `refs/merge-requests/`, and `source` is not `merge_request_event` | `POST projects/:id/pipeline?ref=<ref>` |
 
 - These are GitLab's documented operations (Pipelines API: retry, cancel,
-  create; Jobs API: retry, cancel, run). Retrying a pipeline retries its
-  failed and canceled jobs. A successful job can be retried in GitLab, so
-  `a` allows it on a job row; the pipeline `a` stays failed/canceled only,
-  because GitLab's pipeline retry does nothing to an all-green pipeline.
+  create; Jobs API: retry, cancel, run). Success is 201 for retry
+  pipeline, create pipeline, retry job and cancel job, 200 for cancel
+  pipeline and play job; the helper accepts any 2xx. Retrying a pipeline
+  retries its failed and canceled jobs.
+- The status lists are this panel's conservative policy, not GitLab's
+  full rules. GitLab also lets you retry a successful job and cancel a
+  manual one; both are left out on purpose (the intent scopes retry to
+  failed or canceled jobs).
+- Legacy detached merge-request pipelines carry the source branch as
+  `ref`, so the `refs/merge-requests/` prefix alone does not catch them;
+  `source` does.
 - A key that is not offered says why, for example "Only a failed or
   canceled pipeline can be retried", "Only a manual job can be played",
   "Merge-request pipelines cannot be started from the panel". It never
@@ -76,9 +83,12 @@ says "Select the row again" and does nothing.
 ### Helper: a closed write table in `gitlab.py`
 
 - `main()` (line 369) gets a third mode, `act`, with one JSON argument:
-  `{"action", "host", "repo", "run", "job", "ref", "requestId"}`. `job` is
-  required for job actions, `run` for pipeline actions, `ref` only for
-  `new-pipeline`.
+  `{"action", "host", "repo", "run", "job", "ref", "source", "requestId"}`.
+  `job` is required for job actions, `run` for pipeline actions, `ref` and
+  `source` only for `new-pipeline`. The `shell.json` gate and all
+  validation run before `request()` is called.
+- `act` refuses `new-pipeline` when the task's `source` is
+  `merge_request_event`, as a second check behind the panel.
 - `write_endpoint(task)` maps the action to a fixed path, never to text from
   the task. It validates like `page_endpoint` (lines 127-157):
   `host_name`, `project_path`, a positive int `requestId`, and the numeric
@@ -86,9 +96,10 @@ says "Select the row again" and does nothing.
   used for both pipeline and job IDs. An unknown action raises
   `ValueError("Invalid action")`.
 - **The ref goes in the URL**, encoded with `quote(ref, safe="")`, as
-  `projects/<id>/pipeline?ref=<encoded>`. GitLab reads `ref` from the query
-  string on POST. There is no `-f`, `-F` or `--input`, so there is no body
-  and no `@file` reading. The ref must be a string of 1 to 255 characters
+  `projects/<id>/pipeline?ref=<encoded>`. GitLab documents `ref` as a query
+  parameter on this POST. There is no `-f`, `-F` or `--input`: `glab` then
+  sends an empty JSON body (`{}`), so nothing the user or GitLab supplied is
+  in the body and nothing is read from a file. The ref must be a string of 1 to 255 characters
   with no control characters, and must not start with
   `refs/merge-requests/`.
 - `request()` (lines 113-124) gets a `method` parameter. For writes the
@@ -98,7 +109,8 @@ says "Select the row again" and does nothing.
 - The rate-limit header block of `read_page` (lines 305-316) is lifted into
   `limits(headers, result)` and called from both paths, not copied.
 - `pipeline()` (line 222) gains `"ref"`: the raw `row["ref"]` if it is a
-  string that passes the ref check above, else `""`. `head_branch` stays the
+  string that passes the ref check above, else `""`; and `"source"`: the
+  raw `row["source"]` if it is a string matching `[a-z_]{1,40}`, else `""`. `head_branch` stays the
   sanitised display text. The write uses `ref`; the confirmation shows
   `head_branch`.
 - The module docstring (line 1) becomes "GitLab pipeline data and a closed
@@ -137,13 +149,15 @@ Pure functions, tested in `tests/model.cjs`:
 
 - `actionFor(key, row, raw)` returns `{action}` or `{reason}` from the
   table above.
-- `describe(action, repo, raw)` returns `{confirm, done}`. The part that
-  must stay visible comes first, because the footer elides on the right
-  (`PipelinesPanel.qml` line 836). Name and ref are cut to 30 characters:
-  - `Retry pipeline? y yes · Esc no — group/app #42 build (main)`
-  - `Cancel job? y yes · Esc no · cannot be undone — group/app #42 deploy`
-  - `Play manual job? y yes · Esc no · uses its default variables — group/app #42 deploy`
-  - `New pipeline on main? y yes · Esc no · uses default variables — group/app`
+- `describe(action, repo, raw, run)` returns `{confirm, done}`. The
+  confirmation names the action, the target (pipeline number, name and
+  ref; for a job also its name and job ID, since job names repeat), the
+  project, the effect and the keys. Name and ref are cut to 30 characters;
+  the project path is not cut. Examples:
+  - `Retry pipeline #42 build (main) in group/app? y yes · Esc no`
+  - `Cancel job deploy (job 1234) of #42 in group/app? Cannot be undone. y yes · Esc no`
+  - `Play manual job deploy (job 1234) of #42 in group/app with its default variables? y yes · Esc no`
+  - `Start a new pipeline on main in group/app with default variables? y yes · Esc no`
   - done: `Retry requested: group/app #42 build (main)`. "Requested", since
     GitLab only accepted it.
 - `actionReply(stdout, code, requestId)`: like `reply()` (line 2) for
@@ -168,11 +182,18 @@ New state: `actionsOn`, `confirm` (null or a pinned target), `actionBusy`,
   search cannot start, and the action keys are only wired in navigation
   mode, so a confirmation cannot open while searching.
 - **Cleared by** `close()` (line 184), a host change in `configure()`
-  (line 376), and `actionsOn` turning false.
+  (line 376), and `actionsOn` turning false. Each of these also cancels a
+  confirmed action that is still waiting to start (below).
+- **Host epoch.** `configure()` increments a `hostEpoch` counter whenever
+  the host changes. `polling` is not a stable identity: `adopt()` copies
+  it (line 414) and a host change replaces it (line 384).
 - **Footer.** The footer text becomes
   `confirm ? confirm.text : notice || cooldownText || hint`
-  (line 836). The footer's `Accessible.name` follows `hint.text`, so a
-  screen reader gets the confirmation. With `actionsOn`, `listHint` gains
+  (line 836). While `confirm` is set the footer wraps instead of eliding
+  (`wrapMode: Text.Wrap`, `elide: Text.ElideNone`, line 840), so the
+  whole confirmation is visible however long the project path is, at the
+  smallest zoom and panel width too. The footer's `Accessible.name`
+  follows `hint.text`, so a screen reader gets the confirmation. With `actionsOn`, `listHint` gains
   `a/c/x/n act` after `w watch`.
 - **Local gates before sending** (no request):
   - `actionBusy`: "An action is already running".
@@ -180,37 +201,53 @@ New state: `actionsOn`, `confirm` (null or a pinned target), `actionBusy`,
     (refused, not queued).
   - `actionsOn` false or `host !== confirm.host`: the confirmation is
     dropped with "Actions are off" or "Host changed; nothing was sent".
-  - Less than one second since `polling.lastStarted`: the send waits for
-    the rest of that second (a one-shot `Timer`), then checks the gates
-    above again. This is the only wait.
+  - Less than one second since `max(polling.lastStarted, polling.writeAt)`:
+    the send waits for the rest of that second (a one-shot `Timer`).
+- **Confirming consumes the confirmation.** `y` moves `confirm` into
+  `pendingAction` and clears `confirm` in the same handler, so a second `y`
+  finds nothing to confirm. `actionBusy` is true from that moment. Right
+  before starting `actionProc`, every gate is checked again, including the
+  one-second spacing (a read may have started during the wait). Close,
+  setting off or a host change clears `pendingAction` and stops the timer;
+  nothing is sent.
 - **Its own process.** `actionProc` is a separate `Process`. It does not
   use `requestProc`, `workerBusy` or `Polling.flight`, so it can run while
   a read is in flight. `close()` does not stop it (it stops `requestProc`,
   line 193); the helper's own 25 s and 90 s limits still apply. A failed
   start is caught the way `pinsLoad` does (lines 505-512) with an
   `actionStarted` flag, and reported as `setup` "python3 not found".
-- **Result.** The panel matches `requestId` against `actionId`. Then:
-  - shown with `notify(text, 10000)`: `notify` (line 241) gets an optional
+- **Result.** The panel matches `requestId` against `actionId`. Every
+  result is reported, and when its `hostEpoch` differs from the current
+  one it names its host ("on gitlab.example.org: Retry requested …").
+  Polling is updated (`noteWrite`, `touch`) only when the epoch still
+  matches; a close and reopen on the same host keeps the epoch, so it still
+  applies. Then:
+  - shown with `notify(text, 10000)`: `notify` (line 242) gets an optional
     duration, and `noticeTimer` (line 520) uses it, default 2000;
   - success shows `describe().done`, plus `· refresh waits until HH:MM` if a
     cooldown holds the refetch back, plus `· new pipeline #N` when
     `created.iid` is set;
   - failures show the helper's text in `Color.urgent`, as errors do;
-  - if the panel is closed when the result arrives, it goes into
-    `missedNotices` (line 63), which `showMissed()` (line 151) shows on the
-    next open. That covers the unknown outcome too.
+  - if the panel is closed when the result arrives, it is kept in
+    `missedAction` (one string, the latest result). `open()` shows it with
+    `notify(missedAction, 10000)` after `showMissed()` (line 152), so it
+    keeps its duration and is not joined with watch notices. That covers
+    the unknown outcome too.
 - **Refresh after success**, through a new `Polling.touch(s, repo, run,
-  now)`:
+  now)`. It reuses `restart()` (`Polling.js` lines 68-72): for a task in
+  flight, `restart()` sets `t.restart`, and `complete()` then keeps the
+  reply's rate-limit handling but drops its data and starts the task again
+  (line 332). So a read that overlapped the write never publishes
+  pre-action state, never restores `summaryAt`, and never reaches
+  `settle()` with it. `touch()`:
   - `ensure(s, "run", repo, run, "interactive", now)` (line 58), then
-    `t.due = now`, because `ensure` keeps an existing task's deadline;
-  - if that task is in flight, set `t.again = true`; `complete()` re-arms
-    it (`due = now`) instead of deleting it (line 386), so the refetch is a
-    request sent after the write;
-  - `delete r.summaryAt`, so the next `seed` re-reads the project's
-    pipelines and a new pipeline appears;
-  - if the pipeline is expanded (`s.expanded[repo + ":" + run]`), also
-    `ensure` its `jobs` task due now, so a retried or played job shows its
-    new state.
+    `restart()` it (which sets `due = now`, or flags it when in flight);
+  - `delete r.summaryAt`, and `restart()` the project's `summary` task if
+    one exists, so the next `seed` re-reads the project's pipelines and a
+    new pipeline appears;
+  - if the pipeline is expanded (`s.expanded[repo + ":" + run]`), `ensure`
+    and `restart()` its `jobs` task, from page one, so a retried or played
+    job shows its new state.
   It stays an ordinary polling request: it counts toward the budget, waits
   for the gap and the cooldown.
 - **Watches.** No action calls `Polling.watch`. An existing watch is left
@@ -222,17 +259,17 @@ New state: `actionsOn`, `confirm` (null or a pinned target), `actionBusy`,
 
 ### Panel: `Polling.js`
 
-- The cooldown block of `complete()` (lines 327-332) moves into
+- The cooldown block of `complete()` (lines 326-331) moves into
   `cool(s, reply, now)`, called from `complete()` and from a new
   `noteWrite(s, reply, now)`. A write reply with `retryAt`, 429 or
   `remaining === 0` pauses polling like a read. `noteWrite` changes nothing
   else: not `s.error`, `s.auth`, a project's `blocked` or `error`, `tasks`
   or `starts`.
-- `noteWrite` also records `s.writeAt = now` at send time (via a small
-  `writeStarted(s, now)`), and `next()` (line 218) waits one second after
+- A small `writeStarted(s, now)` records `s.writeAt = now` when
+  `actionProc` starts, and `next()` (line 218) waits one second after
   `s.writeAt` as it does after `starts` (line 223). Writes do not enter
   `s.starts`, so they do not count toward 60 a minute.
-- `touch()` and the `again` flag as above.
+- `touch()` as above.
 
 ### Docs and version
 
@@ -251,6 +288,9 @@ New state: `actionsOn`, `confirm` (null or a pinned target), `actionBusy`,
   - Refresh and errors (line 288): writes skip the 60-a-minute limit and
     may run beside one read, wait one second after a request start, are
     refused during a cooldown, and an unknown outcome is never retried.
+    Line 298 ("Closing the panel cancels the helper") gets the exception:
+    a confirmed action is not cancelled by closing; it finishes and its
+    result shows on the next open.
 - `keybindings.sh`: four key lines and one for `y` / Esc.
 - `manifest.json`: 1.14.0. `flake.nix`: no change (no new runtime file).
 
@@ -263,9 +303,9 @@ New state: `actionsOn`, `confirm` (null or a pinned target), `actionBusy`,
   free letters do the job (question 5).
 - **The panel alone enforcing the setting.** A stale panel, or the helper
   run by hand, could still write. The helper reads `shell.json` itself.
-- **Passing the ref with `-f ref=...`.** It works, but adds a request body
-  and `glab`'s field parsing to a path that today takes no user-shaped
-  input. The encoded query string keeps the argument list fixed.
+- **Passing the ref with `-f ref=...`.** It works, but puts a
+  GitLab-supplied value through `glab`'s field parsing. The encoded query
+  string keeps the argument list fixed and the body empty (`{}`).
 - **Reusing `requestProc` and `Polling.flight`.** A write would be dropped
   by `complete()` after a close or generation change (line 319), and
   `close()` kills `requestProc`.
@@ -298,26 +338,38 @@ New state: `actionsOn`, `confirm` (null or a pinned target), `actionBusy`,
 ## Verification
 
 - `python3 -m unittest discover -s tests`: `write_endpoint` for each
-  action, rejected IDs, refs (control characters, too long,
-  `refs/merge-requests/`), the exact `glab` argument list with `--method
-  POST` and no `-f`, the `shell.json` gate (missing, off, other host, bad
-  JSON), each row of the reply table, `insufficient_scope` vs another 403,
-  `created`, and `pipeline()["ref"]` keeping a raw ref that `plain()` would
-  change.
+  action; rejected IDs; refs (control characters, too long,
+  `refs/merge-requests/`), and refs with `&`, `#`, `%`, `+`, `/` and
+  Unicode round-tripping exactly through the encoding; `source`
+  (`merge_request_event` refused); the exact `glab` argument list with
+  `--method POST` and no `-f`; the `shell.json` gate (missing, off, other
+  host, bad JSON) never calling `request()`; each row of the reply table;
+  the real `insufficient_scope` body (`error`, `error_description`,
+  `scope`) vs another 403; nested message arrays; non-JSON failures; a 2xx
+  with `remaining: 0` (success plus a cooldown); `created`; and
+  `pipeline()["ref"]` keeping a raw ref that `plain()` would change.
 - `node tests/model.cjs`: `actionFor` for every key and row kind and the
-  status lists, `describe` texts and cuts, `actionReply` (127, other codes,
-  wrong ID).
-- `node tests/polling.cjs`: `touch` (new task, existing backed-off task,
-  task in flight → `again`), `noteWrite` cooldown without touching
-  `blocked`/`error`/`auth`, the one-second gap after `writeAt`, writes not
+  status lists, including an MR pipeline with a plain branch ref and
+  `source: merge_request_event`, and a successful job refused; `describe`
+  texts and cuts; `actionReply` (127, other codes, wrong ID).
+- `node tests/polling.cjs`: `touch` (new task, existing backed-off task;
+  an overlapping run lookup, summary and paginated jobs snapshot each
+  restarted without publishing their data; a watched pipeline not settled
+  from the stale reply); `noteWrite` cooldown without touching
+  `blocked`/`error`/`auth`; the one-second gap after `writeAt`; writes not
   in `starts`.
-- `tests/qml-smoke.py`, new stage with a fake `actionCommand`: setting
-  off message; each key on an allowed and a refused row; confirmation in
-  the footer; Esc cancels; Enter and held `y` do not confirm; rows
-  reordered while confirming still send the pinned target (the fake
-  records its argument); a host change cancels; cooldown refuses; success
-  text and `touch` effect; `scope`, `refused` and `unknown` texts; a
-  result after close shown on reopen; `/` swallowed while confirming.
+- `tests/qml-smoke.py`, new stage with a fake `actionCommand`: setting off
+  message; each key on an allowed and a refused row; confirmation in the
+  footer; Esc cancels; Enter and held `y` do not confirm; repeated `y`
+  sends once; rows reordered while confirming still send the pinned
+  target (the fake records its argument); a host change before sending
+  cancels; a host change after sending (A→B, and A→B→A) reports the
+  result with its host and leaves B's polling alone; cooldown refuses; two
+  writes in a row and a read during the wait keep one second apart;
+  closing during the wait sends nothing; success text and `touch` effect;
+  `scope`, `refused` and `unknown` texts; a result after close shown on
+  reopen for ten seconds; `/` swallowed while confirming; a long nested
+  project path wraps fully at the smallest zoom.
 - `nix build .#checks.x86_64-linux.plugin` and
   `nix build ./ci#checks.x86_64-linux.qml-smoke -L` (headless VM, passes on
   p620; the CI job runs it on the PR).
