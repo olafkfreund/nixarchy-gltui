@@ -1190,6 +1190,7 @@ ShellRoot {
             panel.notice=""
             listFocus()
             tc.keyClick("?")
+            check(panel.helpOpen,"? opens help")
         },
         function() {
             if (!waitUntil(function() { return panel.helpText.indexOf("Pin or unpin")>=0 },"P14 help text")) return false
@@ -1338,6 +1339,7 @@ ShellRoot {
             panel.notice=""
             listFocus()
             tc.keyClick("?")
+            check(panel.helpOpen,"? opens help")
         },
         function() {
             if (!waitUntil(function() { return panel.helpText.indexOf("job's log")>=0 },"T8 help text")) return false
@@ -1414,6 +1416,7 @@ ShellRoot {
             if (!waitUntil(function() { return panel.footerHint.indexOf("w watch")>=0 },"W9 footer hint")) return false
             listFocus()
             tc.keyClick("?")
+            check(panel.helpOpen,"? opens help")
         },
         function() {
             if (!waitUntil(function() { return panel.helpText.indexOf("Watch or stop")>=0 },"W9 help text")) return false
@@ -1642,6 +1645,7 @@ ShellRoot {
             eq(messageItem.Accessible.name,Model.accessibleName(panel.entries[messageAt]),"E11 message accessibility name")
             pressKey(Qt.Key_Left)
             check(!panel.expanded["key/one:7"] && has("repo:key/two"),"E11 collapse retains other repository")
+            eq(panel.entries.length,3,"E11 collapse leaves three rows")
             var runAt=panel.entries.findIndex(function(r) { return r.key==="key/one:7" })
             panel.listItem.positionViewAtIndex(runAt,ListView.Contain)
             panel.listItem.forceLayout()
@@ -1657,7 +1661,7 @@ ShellRoot {
             panel.expanded=keyFixture.expanded
             panel.filterText=keyFixture.filter
             panel.adopt()
-            if (keyFixture.cursor) cursorTo(keyFixture.cursor)
+            if (keyFixture.cursor) { cursorTo(keyFixture.cursor); panel.selectionChanged(false) }
             stage=11
         }
     ]

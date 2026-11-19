@@ -72,18 +72,22 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("display-manager.service")
 
     # Login: autologin if it works, else the greeter with the typed password.
-    logged_in = False
-    for _ in range(90):
-        if machine.execute("loginctl list-sessions --no-legend | grep -q omarchy")[0] == 0:
-            logged_in = True
+    # Type the password only when a greeter is up and still no omarchy session
+    # after 90 s; a slow autologin just keeps waiting (300 s in all).
+    def has_session(name):
+        return machine.execute("loginctl list-sessions --no-legend | grep -q " + name)[0] == 0
+    login = ""
+    for second in range(300):
+        if has_session("omarchy"):
+            login = login or "autologin"
             break
+        if second >= 90 and not login and has_session("greeter"):
+            login = "greeter fallback (no omarchy session after 90 s)"
+            machine.sleep(5)  # the greeter paints after logind lists it (session.nix:445-449)
+            machine.send_chars("omarchy\n")
         machine.sleep(1)
-    if logged_in:
-        print("login path: autologin")
-    else:
-        print("login path: greeter fallback (no omarchy session after 90 s)")
-        machine.wait_until_succeeds("loginctl list-sessions | grep -q greeter")
-        machine.send_chars("omarchy\n")
+    assert has_session("omarchy"), "login: no omarchy session after 300 s"
+    print("login path: " + login)
     machine.wait_until_succeeds("systemctl is-active user@1000.service", timeout=300)
     machine.wait_until_succeeds(on_desktop("hyprctl monitors"), timeout=300)
 
@@ -101,7 +105,10 @@ pkgs.testers.runNixOSTest {
         print("readiness: " + path + (" present" if rc == 0 else " absent (harness links it dangling)"))
     print("readiness: shell tree and theme colors present")
 
-    # hypridle would lock the idle VM mid-test.
+    # hypridle would lock the idle VM mid-test. It may start a little after
+    # Hyprland answers, so give it 30 s to appear before killing it.
+    rc, _ = machine.execute("for i in $(seq 30); do pgrep -x hypridle && exit 0; sleep 1; done; exit 1")
+    print("hypridle: " + ("running, stopping it" if rc == 0 else "not started within 30 s"))
     machine.execute("pkill -x hypridle")
     rc, _ = machine.execute("pgrep -x hypridle")
     assert rc != 0, "hypridle is still running; the session would lock mid-test"
@@ -110,14 +117,18 @@ pkgs.testers.runNixOSTest {
     # Heredocs, not inline: on_desktop already wraps its command in single quotes.
     machine.succeed(
         "cat > /tmp/run-smoke.sh <<'EOF'\n"
-        "cd /tmp/gltui && python3 /tmp/gltui/tests/qml-smoke.py /tmp/gltui > /tmp/smoke.out 2>&1; echo $? > /tmp/smoke.rc\n"
+        "cd /tmp/gltui && python3 /tmp/gltui/tests/qml-smoke.py /tmp/gltui > /tmp/smoke.out 2>&1; echo $? > /tmp/smoke.rc.tmp; mv /tmp/smoke.rc.tmp /tmp/smoke.rc\n"
         "EOF\n"
         "cat > /tmp/dispatch.sh <<'EOF'\n"
         "hyprctl dispatch 'hl.dsp.exec_cmd(\"sh /tmp/run-smoke.sh\")'\n"
         "EOF")
-    machine.succeed(on_desktop("sh /tmp/dispatch.sh"))
+    print("dispatch: " + machine.succeed(on_desktop("sh /tmp/dispatch.sh")).strip())
 
-    machine.wait_for_file("/tmp/smoke.rc", timeout=600)
+    try:
+        machine.wait_for_file("/tmp/smoke.rc", timeout=600)
+    except Exception:
+        print(machine.execute("cat /tmp/smoke.out; pgrep -a quickshell; pgrep -af qml-smoke")[1])
+        raise
     out = machine.succeed("cat /tmp/smoke.out")
     print(out)
     rc = machine.succeed("cat /tmp/smoke.rc").strip()

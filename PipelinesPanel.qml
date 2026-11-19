@@ -97,7 +97,7 @@ Item {
             if (cursor >= 0 && cursor < list.count) list.positionViewAtIndex(cursor, ListView.Contain)
         })
     }
-    // The footer settles after the zoom's callLater; only that settle may move the view, not later resizes or scrolling.
+    // The footer settles after the zoom's callLater; only that settle, or an error strip change (keepOnResize), may move the view, not other resizes or scrolling.
     Timer { id: zoomSettle; interval: 300 }
     // Test hooks for tests/qml-smoke.py.
     readonly property Item cardItem: card
