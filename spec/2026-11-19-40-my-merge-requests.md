@@ -73,83 +73,134 @@ can map a pipeline's `project_id` to a catalogue path.
 
 ### Scheduler (`Polling.js`)
 
-State in `create()`: `mrView:false` and `mrs:{list:null, total:0, listAt:undefined,
-error:"", status:{}}`, where `status` is keyed `"<project_id>!<iid>"` →
-`{state:"ok"|"none"|"hidden"|"unavailable", pipeline, at, mrUpdated}`.
-`resetHost` keeps `mrView` and starts `mrs` empty; its generation bump
-already drops replies for the old host (`complete`, line 338).
+State in `create()`: `mrView:false`, `mrSelected:""` and `mrs:{list:null,
+total:0, listAt:undefined, error:"", status:{}}`, where `status` is keyed
+`"<project_id>!<iid>"` → `{state:"ok"|"none"|"hidden"|"unavailable",
+pipeline, at, mrUpdated}`. `resetHost` keeps `mrView` and starts `mrs` and
+`mrSelected` empty; its generation bump already drops replies for the old
+host (`complete`, line 338).
 
-- **`view(s, on, now)`** sets `mrView`, clears `wakeAt`.
-- **`seed`** (line 143), only while `opened && mrView`:
+**Task identity.** `ensure()` (line 58) keys on kind, repo and run only, so
+repo-less tasks would collide as `mr::`. The `mr` task uses `run` =
+`"<project_id>!<iid>"` (key `mr::<project_id>!<iid>`) and stores `project`
+and `iid` on the task; `next()` (line 250) forwards both into the request,
+as it does `status` and `route`. `mrs` is the single key `mrs::`.
+
+- **`view(s, on, now)`** sets `mrView`, clears `wakeAt`; turning it off also
+  clears `mrSelected`.
+- **`seed`** (line 143), only while `opened && mrView`; every deadline that
+  is not yet due goes into `wake`, like the existing tasks (lines 157, 234),
+  so `next()` wakes for it even with no projects and no watches:
   - `mrs` task (group `interactive`) when `now >= age(listAt, 60000)`.
-  - per list row, an `mr` task carrying `project` and `iid`:
-    - the selected merge request (`s.mrSelected`): group `interactive`,
-      every 10 s while its pipeline is unfinished, else on the finished rule;
-    - unchecked (no status): group `background`, due now;
-    - unfinished pipeline: group `pinned`, every 30 s;
-    - finished, `none` or `hidden`: group `background`, every 10 minutes, or
-      due now when the list's `updated_at` differs from the status's
-      `mrUpdated`.
-  - `pinned` sits behind `active` in the existing slot order (line 242), so
-    projects with running pipelines keep their 15 s rate; `mr` reads take
-    what is left of the 60-a-minute budget, so freshness is best effort.
-  - Tasks of kind `mrs`/`mr` are deleted when `mrView` is off, like summary
-    tasks for an unselected project. The owner check (`t.repo && !owner`,
-    line 152) does not apply: they have no `repo`.
-- **`complete`** (line 334): `mrs` replaces `list` (cut to 50), sets
-  `total`, `listAt`, `error:""`, and drops statuses of merge requests no
-  longer listed. `mr` stores the status with `at:now` and `mrUpdated` from
-  the list row. Errors: `rate`, `auth`, `setup` and `network` follow the
-  existing paths (cooldown, stop, backoff); `permission` on `mr` stores
-  `state:"unavailable"`; on `mrs` it sets `mrs.error` and `listAt=now`, so it
-  retries a minute later. No error marks a project blocked. The
-  "invalid data" check (line 342) treats `mr` like `run` (an object).
-- **`jump(s, repo, run, now)`**: merges the given pipeline into that repo's
-  runs (`mergeRuns`) so its row exists at once, then `touch` (line 73)
-  fetches it in full.
+  - per listed merge request, an `mr` task with its target and group:
+
+    | Row | Group | Due |
+    | --- | --- | --- |
+    | selected (`mrSelected`), unchecked | `interactive` | now |
+    | selected, unfinished pipeline | `interactive` | `at + 10 s` |
+    | selected, anything else | `interactive` | `at + 60 s` |
+    | unchecked | `background` | now |
+    | unfinished pipeline | `pinned` | `at + 30 s` |
+    | finished, `none`, `hidden` or `unavailable` | `background` | `at + 10 min`, or now when the list's `updated_at` differs from `mrUpdated` |
+
+    "Unfinished" means `pipeline.status !== "completed"`, so `manual` and
+    `scheduled` head pipelines count as finished (they wait on a person or a
+    clock, not a runner), as they do for project activity. `unavailable` is
+    retried on the 10-minute rule and on `r`, so restored access recovers.
+  - Pruning: while `mrView` is off, every `mrs` and `mr` task not in flight
+    is deleted; while on, every `mr` task whose key is not in the current
+    list is deleted. The owner check (line 152) does not apply: they have no
+    `repo`.
+- **`complete`** (line 334):
+  - `mrs` replaces `list` (cut to 50), sets `total`, `listAt`, `error:""`,
+    and drops statuses and queued `mr` tasks of merge requests no longer
+    listed.
+  - `mr`: a reply for a key no longer in the list is dropped (task deleted,
+    no status written). Otherwise it stores the status with `at:now` and
+    `mrUpdated` from the list row, and deletes the task.
+  - Errors: `rate`, `auth`, `setup` and `network` follow the existing paths
+    (cooldown, stop, backoff). `permission` on `mr` stores
+    `state:"unavailable", at:now` and deletes the task; on `mrs` it sets
+    `mrs.error`, `listAt=now` and deletes the task, so it retries a minute
+    later. No error marks a project blocked.
+  - The "invalid data" check (line 342) treats `mr` like `run` (an object).
+- **`manual`** (line 117) in the merge-request view restarts the `mrs` task
+  and marks every listed status due now (keeping its data until the reply),
+  so `r` rechecks all rows, selected first.
+- **`jump(s, repo, run, expanded, now)`**: first `select(s, repo, run,
+  expanded, now, true)`, so the scheduler sees the pipeline as selected and
+  expanded and `trimRuns` (line 288) keeps it even when it is older than the
+  ten newest finished pipelines; then `mergeRuns` adds it, then `touch`
+  (line 73) fetches it in full.
 - **`select`** keeps working: in the merge-request view the panel calls it
-  with no repo, so selected-project rates pause (decision 7), and sets
-  `s.mrSelected`.
+  with no repo, so selected-project rates pause (decision 7). A new
+  `selectMr(s, key)` sets `mrSelected` and clears `wakeAt`.
 
 ### Model (`PipelinesModel.js`)
 
-- **`mrRows(mrs, filter, now)`** → rows with `kind:"mr"`, `key:"mr:<project_id>!<iid>"`,
-  `title` `"<project> !<iid> <title>"` (with `Draft · ` first when draft),
-  `subtitle` the source branch, `status` from the pipeline (`state()`), or
-  `neutral` with `info` "not checked", "no pipeline", "pipeline hidden" or
-  "unavailable"; a checked unfinished status older than 60 s adds
-  "checked 2m ago". `url` is the merge request's `web_url` (checked with
-  `browsable`, line 9). A last `kind:"more"` row says "N more on GitLab" or
-  "more on GitLab" (total −1). Filter matches title, project, branch and
-  status, like `runMatches`.
-- `accessibleName` (line 185) covers `mr` rows.
+- **`mrRows(mrs, filter, now, host)`** → rows with `kind:"mr"`,
+  `key:"mr:<project_id>!<iid>"`, `title` `"<project> !<iid> <title>"` (with
+  `Draft · ` first when draft), `subtitle` the source branch, and `status`
+  from the pipeline (`state()`), or `neutral` with `info` "not checked", "no
+  pipeline", "pipeline hidden" or "unavailable".
+  - Age: a checked row whose status is older than its refresh target
+    (10 s selected and unfinished, 30 s unfinished, 60 s selected otherwise,
+    10 min otherwise) adds "checked 2m ago".
+  - `url` is the merge request's `web_url` only if `browsable(url, host)`
+    (line 9), else `""`, so `o` and `y` say "No link".
+  - A merge request whose `project` is `""` shows the URL's path, run
+    through the same `plain()` rules (a model copy of the helper's check is
+    not needed: the path comes from a `browsable` URL, else "unknown
+    project").
+  - When `total` exceeds the list, or is −1, a last `kind:"more"` row says
+    "N more on GitLab" or "more on GitLab". Its `url` is
+    `https://<host>/dashboard/merge_requests?scope=created_by_me&state=opened`
+    (built from the configured host, so `o` opens and `y` copies it); Enter
+    on it does nothing but say "Open it with o".
+  - Filter matches title, project, branch and status, like `runMatches`; no
+    match gives "No merge requests match" in the empty state.
+- `accessibleName` (line 185) covers `mr` and `more` rows.
 
 ### Panel (`PipelinesPanel.qml`)
 
 - `property string view: "projects"` — not reset by `close()` or `open()`,
   so the panel reopens in the last view until the shell restarts.
-- **`m`** (bare, not while filtering or confirming) toggles the view. Each
-  view keeps its own filter text and cursor key; switching saves one and
-  restores the other, so the projects view is unchanged on return.
-- `rebuild()` (line 225) uses `Model.mrRows` in the `mrs` view.
+- **`m`** toggles the view. It is handled after the help overlay and the
+  action confirmation (lines 297-300, 745-749), which keep their precedence,
+  and only when the list has focus (not while filtering; `m` typed in the
+  search box is text).
+- **Per-view state.** Each view keeps `{filter, collapsed, key}` (filter
+  text, `searchCollapsed`, selected row key) in `viewState`. Assigning
+  `filterText` fires `onFilterTextChanged` (line 89), which clears
+  `searchCollapsed`, resets the selection and calls `selectionChanged`. So a
+  switch runs in this order: save the current view's three values; set
+  `switching = true` (the handler returns early while it is set); set
+  `view`; assign the saved filter; restore `searchCollapsed`; set `switching
+  = false`; `rebuild(false)` selecting the saved key; `selectionChanged(true)`.
+- `rebuild()` (line 225) uses `Model.mrRows` in the `mrs` view;
+  `selectionChanged` calls `Polling.select(s, "", "", …)` plus `selectMr` in
+  that view.
 - Header (line 788): `GitLab Pipelines · N projects` or `My merge requests ·
   N open`.
-- Keys on an `mr` row: `o` opens and `y` copies the merge request URL;
-  `r` restarts the list and the selected row's status (`Polling.manual`
-  gains the view case); Enter/→/l jumps. `p t w e a c x n Y` and ←/h say
-  "Not on a merge request; press Enter for its pipeline" in the footer.
-  Navigation, `/`, `?`, `q`, Esc and zoom are unchanged.
+- Keys on an `mr` row: `o` opens and `y` copies the merge request URL; `r`
+  refreshes the list and every row's status; Enter/→/l/Space jumps.
+  `p t w e a c x n Y` and ←/h say "Not on a merge request; press Enter for
+  its pipeline" in the footer. Navigation, `/`, `?`, `q`, Esc and zoom are
+  unchanged.
 - **Jump**: find the catalogue repo whose `id` is the pipeline's
-  `project_id`. If found and not archived or CI-disabled: switch to the
-  projects view, clear its filter, expand the repo and pipeline, `jump()`,
-  rebuild, select the pipeline row. Otherwise the footer says "No pipeline
-  yet", "Pipeline hidden", or "Project not in your list; o opens the merge
-  request".
-- Empty state: "No open merge requests" when the list is empty;
-  "Loading merge requests…" before the first reply; `mrs.error` uses the
-  existing error strip.
-- `configure()` host change: `resetHost` already resets the state; the view
-  stays, so the new host's list loads.
+  `project_id`. If found and not archived or CI-disabled: save the
+  merge-request view's state, switch to the projects view as above but with
+  an empty filter, add the repo and pipeline to `expanded`, call
+  `Polling.jump` with that expansion, `adopt()`, then select and scroll to
+  the pipeline row (`positionViewAtIndex`). Otherwise the footer says "No
+  pipeline yet", "Pipeline hidden", "Not checked yet" or "Project not in
+  your list; o opens the merge request".
+- Empty state: "No open merge requests" when the list is empty; "Loading
+  merge requests…" before the first reply; `mrs.error` uses the existing
+  error strip.
+- `configure()` host change: `resetHost` resets the scheduler state; the
+  panel also resets both `viewState` entries (filter, collapsed, key) but
+  keeps `view`, so the new host's list loads in the same view.
 - `status()` adds `view` and `mrs` (count) for the smoke test.
 - `listHint` gains `m MRs`; the `mrs` view has its own short hint.
 
@@ -182,9 +233,12 @@ into; `hidden` relies on GitLab omitting the field). `keybindings.sh` gets
 ## Risks
 
 - **Budget**: 50 merge requests, all unchecked, cost 50 background reads on
-  first switch, at most one a second and behind interactive and active work,
-  so the list fills over about a minute on a busy account. The selected row
-  goes first.
+  first switch. With nothing else due they fill in about a minute (one start
+  a second). Under sustained higher-priority work the background group gets
+  one slot in five (line 242), about 12 starts a minute, so filling can take
+  over four minutes. `pinned` rows (unfinished pipelines) have no
+  guaranteed maximum delay while `active` work stays continuously due; the
+  age text shows it. The selected row always goes first.
 - **`hidden` vs `none`** relies on GitLab omitting `head_pipeline` without
   read access. If a GitLab version sends `null` instead, such rows say "no
   pipeline"; only the wording is wrong.
@@ -202,19 +256,37 @@ into; `hidden` relies on GitLab omitting the field). `keybindings.sh` gets
   draft, bad project path → `""`); `mr_detail` three states and a fork
   pipeline `project_id`; `read_page` 403 → "Merge request unavailable";
   `total` −1; `project()` returns `id`.
-- `node tests/polling.cjs`: nothing scheduled while `mrView` is off; list due
-  at once and every 60 s; unchecked rows background; unfinished rows `pinned`
-  every 30 s, behind `active`; finished every 10 min and on `updated_at`
-  change; tasks dropped when the view turns off; `mr` permission →
-  `unavailable` without blocking a repo; old-generation reply ignored after
-  `resetHost`; `jump` adds the run and starts its `run` task.
-- `node tests/model.cjs`: `mrRows` titles, draft mark, states, age text,
-  "more" row with and without a count, filter, URL checked by `browsable`.
+- `node tests/polling.cjs`: nothing scheduled while `mrView` is off; list
+  due at once and every 60 s; two merge requests with the same `iid` in two
+  projects get two tasks and two requests carrying `project` and `iid`; with
+  an empty catalogue and no watches, `wakeAt` is the next list or status
+  deadline; selected unchecked row is `interactive`; unchecked rows
+  `background`; unfinished rows `pinned` every 30 s, behind `active`;
+  manual and scheduled head pipelines on the finished rule; finished every
+  10 min and on `updated_at` change; `unavailable` retried on the 10-minute
+  rule and on `manual`; list churn during a failed `mr` request deletes the
+  task and drops a late reply; tasks dropped when the view turns off; `mr`
+  permission → `unavailable` without blocking a repo; an old-generation
+  reply is ignored after `resetHost`; `jump` keeps a pipeline older than
+  the ten newest finished ones and starts its `run` task; under sustained
+  `active` load background `mr` tasks still start in the one-in-five slot.
+- `node tests/model.cjs`: `mrRows` titles, draft mark, states, age text for
+  each refresh target, "more" row with and without a count and its URL,
+  filter and no-match text, URL rejected by `browsable` on another host,
+  project fallback from the URL path.
 - QML smoke test, in the headless VM only:
   `nix build ./ci#checks.x86_64-linux.qml-smoke -L --override-input gltui path:<worktree>`
-  with a fake helper reply for `mrs` and `mr`: `m` switches and back keeps
-  the projects cursor and filter; header text; Enter jumps to the pipeline
-  row; Enter on an outside project shows the footer message; `p` on an `mr`
-  row shows the footer message; closing and reopening keeps the view.
+  with a fake helper reply for `mrs` and `mr`:
+  - `m` switches, and `m` back keeps the projects cursor, filter and a
+    project collapsed during search;
+  - `m` typed while filtering is text; `m` during an action confirmation or
+    with help open does not switch;
+  - header text; no-match filter text in the merge-request view;
+  - Enter jumps to the pipeline row and it is selected and visible; Enter on
+    an outside project shows the footer message;
+  - `p` and `a` on an `mr` row show the footer message;
+  - closing and reopening keeps the view;
+  - a host change during an `mr` request: old rows disappear, the old reply
+    is ignored, the view stays and the new host's list loads.
 - Manual on p620 after deploy: open, press `m`, check one real merge request
   and Enter into its pipeline.
