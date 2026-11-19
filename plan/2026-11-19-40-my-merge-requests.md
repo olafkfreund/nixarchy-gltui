@@ -272,9 +272,10 @@ into; `hidden` relies on GitLab omitting the field). `keybindings.sh` gets
      while on, `complete` for `mrs` and `mr` (stale-key replies dropped,
      permission paths, the invalid-data check treating `mr` as an object at
      line 342), `manual` in the view, and `jump()`.
-   - Export the new functions the way the file exports the others (check
-     the bottom of `Polling.js` and how `tests/polling.cjs` loads it).
-   - Tests: every bullet of the spec's polling list (Verification), each as
+   - `Polling.js` has no exports: QML imports it as a library and
+     `tests/polling.cjs` loads it with `node:vm`; new top-level functions are
+     visible to both.
+   - Tests: every bullet of the polling list in Tests › Required cases, each as
      its own case in `tests/polling.cjs`, using injected `now`.
    - Check: `node tests/polling.cjs` and `node tests/model.cjs` (0 fail).
    - Traps:
@@ -294,7 +295,7 @@ into; `hidden` relies on GitLab omitting the field). `keybindings.sh` gets
    - `mrRows` takes the per-row refresh target from the same numbers as the
      scheduler; pass `selectedKey` as a fifth argument for the selected
      targets.
-   - Tests: the spec's model list.
+   - Tests: the model list in Tests › Required cases.
    - Check: `node tests/model.cjs` (0 fail).
    - Traps: `browsable(url, host)` returns false without a host (line 9);
      rows must not carry an unchecked URL.
@@ -323,8 +324,7 @@ into; `hidden` relies on GitLab omitting the field). `keybindings.sh` gets
      `project_id` 99) and `mr` (head pipeline 7 in project 1 for the first;
      absent `head_pipeline` for the second). The catalogue fixture gets
      `id` values. The other host returns `[]` for `mrs`.
-   - New steps before the final `QML_CHECKS_PASSED` step, covering the
-     spec's smoke list (Verification).
+   - New steps before the final `QML_CHECKS_PASSED` step, covering the smoke list in Tests › Required cases.
    - Check, in the headless VM only:
 
      ```bash
@@ -362,6 +362,48 @@ nix build ./ci#checks.x86_64-linux.qml-smoke -L --override-input gltui path:/mnt
 
 All pass; the VM build prints `QML_CHECKS_PASSED` twice. Then a fresh Codex
 review against this plan and an Opus review of the diff.
+
+### Required cases (from the spec)
+
+- `python3 -m unittest discover -s tests`: endpoint building and validation
+  for `mrs`/`mr` (bad ids refused); `merge_request` parsing (plain text,
+  draft, bad project path → `""`); `mr_detail` three states and a fork
+  pipeline `project_id`; `read_page` 403 → "Merge request unavailable";
+  `total` −1; `project()` returns `id`.
+- `node tests/polling.cjs`: nothing scheduled while `mrView` is off; list
+  due at once and every 60 s; two merge requests with the same `iid` in two
+  projects get two tasks and two requests carrying `project` and `iid`; with
+  an empty catalogue and no watches, `wakeAt` is the next list or status
+  deadline; selected unchecked row is `interactive`; unchecked rows
+  `background`; unfinished rows `pinned` every 30 s, behind `active`;
+  manual and scheduled head pipelines on the finished rule; finished every
+  10 min and on `updated_at` change; `unavailable` retried on the 10-minute
+  rule and on `manual`; list churn during a failed `mr` request deletes the
+  task and drops a late reply; tasks dropped when the view turns off; `mr`
+  permission → `unavailable` without blocking a repo; an old-generation
+  reply is ignored after `resetHost`; `jump` keeps a pipeline older than
+  the ten newest finished ones and starts its `run` task; under sustained
+  `active` load background `mr` tasks still start in the one-in-five slot.
+- `node tests/model.cjs`: `mrRows` titles, draft mark, states, age text for
+  each refresh target, "more" row with and without a count and its URL,
+  filter and no-match text, URL rejected by `browsable` on another host,
+  project fallback from the URL path.
+- QML smoke test, in the headless VM only:
+  `nix build ./ci#checks.x86_64-linux.qml-smoke -L --override-input gltui path:<worktree>`
+  with a fake helper reply for `mrs` and `mr`:
+  - `m` switches, and `m` back keeps the projects cursor, filter and a
+    project collapsed during search;
+  - `m` typed while filtering is text; `m` during an action confirmation or
+    with help open does not switch;
+  - header text; no-match filter text in the merge-request view;
+  - Enter jumps to the pipeline row and it is selected and visible; Enter on
+    an outside project shows the footer message;
+  - `p` and `a` on an `mr` row show the footer message;
+  - closing and reopening keeps the view;
+  - a host change during an `mr` request: old rows disappear, the old reply
+    is ignored, the view stays and the new host's list loads.
+- Manual on p620 after deploy: open, press `m`, check one real merge request
+  and Enter into its pipeline.
 
 ## Deviations
 
