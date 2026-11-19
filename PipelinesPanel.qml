@@ -664,6 +664,8 @@ Item {
                     }
                     TextInput {
                         id: searchField
+                        Accessible.role: Accessible.EditableText
+                        Accessible.name: "Search projects"
                         width: parent.width
                         height: Math.ceil(font.pixelSize * 1.4)
                         color: Commons.Color.menu.text
@@ -730,6 +732,8 @@ Item {
                     Rectangle { id: hairline; width: parent.width; height: Style.spacing.hairline; color: Commons.Color.menu.border; opacity: 0.4 }
                     ListView {
                         id: list
+                        Accessible.role: Accessible.List
+                        Accessible.name: "GitLab pipelines"
                         width: parent.width
                         height: Math.max(0, parent.height - y - footer.height - root.zs(Style.spacing.md))
                         clip: true
@@ -741,6 +745,9 @@ Item {
                             required property var rowData
                             readonly property var modelData: rowData
                             required property int index
+                            Accessible.role: Accessible.ListItem
+                            Accessible.name: Model.accessibleName(modelData)
+                            Accessible.selected: index === root.cursor
                             width: list.width
                             height: modelData.subtitle ? Math.max(root.zs(Style.space(64)), root.zf(Style.font.body) + root.zf(Style.font.caption) + root.zs(Style.space(16))) : Math.max(root.zs(Style.space(40)), root.zf(Style.font.body) + root.zs(Style.space(12)))
                             color: index === root.cursor ? Commons.Color.menu.selectedBackground : "transparent"
@@ -816,6 +823,8 @@ Item {
                         height: Math.max(hint.implicitHeight, zoomLabel.visible ? zoomLabel.implicitHeight : 0)
                         Text {
                             id: hint
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: hint.text
                             width: parent.width - (zoomLabel.visible ? zoomLabel.implicitWidth + root.zs(Style.spacing.sm) : 0)
                             text: root.notice || root.cooldownText || (root.filtering ? root.searchHint : root.listHint)
                             color: Commons.Color.menu.text
