@@ -45,7 +45,7 @@ Today the plugin has no write path at all:
   is always visible (`listHint`, line 51). Most letter keys are taken:
   `r R o y Y p t w g G e q ? / j k h l` (lines 629-651).
 - **A cut-off write has an unknown result.** The helper kills `glab` after
-  25 seconds (line 118) and the whole request after 90 (line 389). Closing
+  25 seconds (line 119) and the whole request after 90 (line 388). Closing
   the panel stops the running request process. For a read that is
   harmless; for a write, a killed call does not prove GitLab did nothing,
   and a blind retry could start a job twice.
