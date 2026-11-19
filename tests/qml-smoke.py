@@ -35,15 +35,19 @@ request=json.loads(sys.argv[2]); kind=request['kind']
 time.sleep(0.1)
 host=request.get('host'); assert host in ('gitlab.example.org','gitlab.other.org'), request
 run={'id':7,'name':'CI','status':'in_progress','conclusion':'running','run_attempt':'active','head_branch':'main','run_number':1}
-if host=='gitlab.other.org': data={} if kind=='run' else [{'repo':'three/repo'}] if kind=='catalogue' else []
-elif kind=='catalogue': data=[{'repo':'one/sub/repo','url':'https://gitlab.example.org/one/sub/repo'},{'repo':'two/repo'}]
+if kind=='mr' and os.path.exists(os.environ['MR_DELAY']): time.sleep(1.5)
+if host=='gitlab.other.org': data={} if kind in ('run','mr') else [{'id':3,'repo':'three/repo'}] if kind=='catalogue' else []
+elif kind=='catalogue': data=[{'id':1,'repo':'one/sub/repo','url':'https://gitlab.example.org/one/sub/repo'},{'id':2,'repo':'two/repo'}]
+elif kind=='mrs': data=[{'id':101,'iid':1,'project_id':1,'project':'one/sub/repo','title':'Update CI','source_branch':'ci','draft':False,'web_url':'https://gitlab.example.org/one/sub/repo/-/merge_requests/1','updated_at':'2026-11-19T00:00:00Z'},
+                        {'id':102,'iid':2,'project_id':99,'project':'outside/repo','title':'Outside change','source_branch':'other','draft':False,'web_url':'https://gitlab.example.org/outside/repo/-/merge_requests/2','updated_at':'2026-11-19T00:00:00Z'}]
+elif kind=='mr': data={'iid':request['iid'],'project_id':request['project'],'pipelineState':'ok','pipeline':dict(run,id=7 if request['project']==1 else 8,project_id=request['project'])}
 elif kind=='jobs': data=[{'id':8,'name':'compile','stage':'build','status':'in_progress','conclusion':'running'},{'id':9,'name':'unit','stage':'test','status':'queued','conclusion':'created'},{'id':10,'name':'lint','stage':'test','status':'completed','conclusion':'failed','allow_failure':True,'started_at':'2026-01-01T00:00:00Z','completed_at':'2026-01-01T00:01:02Z'}]
 elif kind=='bridges': data=[{'id':11,'name':'deploy','stage':'test','status':'in_progress','conclusion':'running','downstream':{'id':501,'iid':5,'project_id':2,'parent_project_id':1,'status':'in_progress','conclusion':'running','ref':'main','sha':'','url':'https://gitlab.example.org/two/repo/-/pipelines/501','project':'two/repo'}}]
 elif kind=='run':
     if os.path.exists(os.environ['RUN_DELAY']): time.sleep(1.5)
     data=dict(run,status='completed',conclusion='success') if os.path.exists(os.environ['RUN_DONE']) else run
 else: data=[run] if request['repo']=='one/sub/repo' and request.get('status','running') in ('recent','running') else []
-print(json.dumps({'requestId':request['requestId'],'data':data,'nextPage':0,'error':'','errorType':'','remaining':4000}))
+print(json.dumps({'requestId':request['requestId'],'data':data,'total':len(data) if kind=='mrs' else 0,'nextPage':0,'error':'','errorType':'','remaining':4000}))
 ''')
         (root / 'actions.log').write_text('')
         (root / 'action.sh').write_text('''#!/bin/sh
@@ -114,6 +118,7 @@ ShellRoot {
     function near(a, b, label) { check(Math.abs(a-b)<=1, label + ": " + a + " vs " + b) }
     readonly property string actionRepo: "actions/" + "long-project-name-".repeat(5)
     property var actionSaved: null
+    property var mrSaved: null
     property int actionBase: 0
     property double actionAt: 0
     FileView { id: actionLog; path: Quickshell.env("ACTION_LOG"); blockLoading: true; printErrors: false }
@@ -524,6 +529,133 @@ ShellRoot {
             if (!panel.searchItem.parent.parent.activeFocus) return false
             resetZoom()
             check(panel.polling.requests===zRequests,"the zoom stages made no requests")
+            stage=13
+        }
+    ]
+    property int mi: 0
+    property double mrWaitAt: 0
+    property var mrsteps: [
+        // The action stages restore a saved workerBusy that can be stale; let any real helper call end, then clear it.
+        function() { if (!mrWaitAt) mrWaitAt=Date.now(); if (Date.now()-mrWaitAt<2000) return false; panel.workerBusy=false },
+        function() {
+            mrSaved={polling:panel.polling,expanded:panel.expanded,filter:panel.filterText,
+                     collapsed:panel.searchCollapsed,key:panel.current && panel.current.key,viewState:panel.viewState}
+            var s=Polling.create(), now=Date.now()
+            s.opened=true; s.discover=false; s.catalogueComplete=true; s.catalogueAt=now
+            s.repos=[{id:1,repo:"one/sub/repo",checked:"x",activityAt:now,summaryAt:now,
+                      runs:[{id:7,name:"CI",status:"in_progress",conclusion:"running",run_number:1}]},
+                     {id:2,repo:"two/repo",checked:"x",activityAt:now,summaryAt:now,runs:[]}]
+            panel.polling=s
+            panel.expanded=({})
+            panel.filterText="repo"
+            panel.adopt()
+            listFocus()
+        },
+        function() {
+            if (!waitUntil(function() { return panel.searchItem.parent.parent.activeFocus },"MR1 list focus")) return false
+            cursorTo("repo:one/sub/repo")
+            pressKey(Qt.Key_Right)
+            pressKey(Qt.Key_Left)
+            check(panel.searchCollapsed["repo:one/sub/repo"],"MR1 project collapsed during search")
+            cursorTo("repo:two/repo"); panel.selectionChanged(false)
+            panel.confirm={text:"Confirm action"}
+            pressKey(Qt.Key_M)
+            eq(panel.view,"projects","MR2 m cannot switch during confirmation")
+            pressKey(Qt.Key_Escape)
+            pressKey(Qt.Key_M)
+            eq(panel.view,"mrs","MR1 m switches to merge requests")
+            eq(JSON.parse(panel.status()).view,"mrs","MR1 status reports view")
+        },
+        function() {
+            if (!waitUntil(function() { return panel.polling.mrs.list && panel.polling.mrs.status["1!1"] && panel.polling.mrs.status["99!2"] },"MR list and details")) return false
+            check(has("mr:1!1") && has("mr:99!2"),"MR1 both rows shown")
+            check(textStarts(panel.cardItem,"My merge requests"),"MR3 header")
+            eq(JSON.parse(panel.status()).mrs,2,"MR3 status count")
+            listFocus(); pressKey(Qt.Key_Slash); typeText("m")
+            eq(panel.view,"mrs","MR2 m in search stays in view")
+            eq(panel.filterText,"m","MR2 m in search is text")
+            pressKey(Qt.Key_Escape)
+            listFocus(); pressKey(Qt.Key_Slash); typeText("zzzz")
+            check(panel.entries.length===0 && panel.emptyItem.text.indexOf("No merge requests match")===0,"MR3 no-match text")
+            pressKey(Qt.Key_Escape)
+        },
+        function() {
+            listFocus(); cursorTo("mr:1!1")
+            pressKey(Qt.Key_P)
+            eq(panel.notice,"Not on a merge request; press Enter for its pipeline","MR5 p refusal")
+            pressKey(Qt.Key_A)
+            eq(panel.notice,"Not on a merge request; press Enter for its pipeline","MR5 a refusal")
+            tc.keyClick("?"); check(panel.helpOpen,"MR2 help opens")
+            pressKey(Qt.Key_M); eq(panel.view,"mrs","MR2 m cannot switch with help open")
+            pressKey(Qt.Key_Escape); check(!panel.helpOpen,"MR2 help closes")
+            pressKey(Qt.Key_M)
+            eq(panel.view,"projects","MR1 m switches back")
+            eq(panel.filterText,"repo","MR1 project filter restored")
+            eq(panel.current.key,"repo:two/repo","MR1 project cursor restored")
+            check(panel.searchCollapsed["repo:one/sub/repo"],"MR1 search collapse restored")
+            check(textStarts(panel.cardItem,"GitLab Pipelines"),"MR3 projects header")
+        },
+        function() {
+            listFocus(); pressKey(Qt.Key_M)
+            eq(panel.view,"mrs","MR4 return to merge requests")
+            cursorTo("mr:1!1"); panel.selectionChanged(false)
+            pressKey(Qt.Key_Return)
+            eq(panel.view,"projects","MR4 Enter jumps to projects")
+            eq(panel.current.key,"one/sub/repo:7","MR4 pipeline selected")
+            var at=panel.entries.findIndex(function(row) { return row.key==="one/sub/repo:7" })
+            panel.listItem.forceLayout()
+            var item=panel.listItem.itemAtIndex(at)
+            check(item && item.y>=panel.listItem.contentY-1 && item.y+item.height<=panel.listItem.contentY+panel.listItem.height+1,"MR4 pipeline visible")
+        },
+        function() {
+            listFocus(); pressKey(Qt.Key_M)
+            cursorTo("mr:99!2"); panel.selectionChanged(false)
+            pressKey(Qt.Key_Return)
+            eq(panel.view,"mrs","MR4 outside project stays in merge requests")
+            eq(panel.notice,"Project not in your list; o opens the merge request","MR4 outside project refusal")
+            panel.close(); panel.open("{}")
+            eq(panel.view,"mrs","MR6 close and reopen keeps view")
+            panel.close(); panel.open('{"filter":"one/sub/repo"}')
+            eq(panel.view,"projects","MR8 an explicit project filter opens the projects view")
+            eq(panel.filterText,"one/sub/repo","MR8 the requested filter applies to projects")
+            panel.toggleView()
+            eq(panel.view,"mrs","MR8 m returns to merge requests")
+            sh('touch "$MR_DELAY"')
+        },
+        function() {
+            if (!waitUntil(function() { return !shp.running && !panel.workerBusy },"MR7 delayed helper ready")) return false
+            listFocus(); pressKey(Qt.Key_R)
+        },
+        function() {
+            if (!waitUntil(function() { return panel.workerBusy && panel.requestInfo.kind==="mr" },"MR7 detail in flight")) return false
+            var before=panel.polling.generation
+            cfg("gitlab.other.org",{projects:["three/repo"]})
+            check(panel.polling.generation>before,"MR7 host generation changes")
+            eq(panel.view,"mrs","MR7 host change keeps view")
+            check(!has("mr:1!1") && !has("mr:99!2"),"MR7 old rows disappear")
+        },
+        function() {
+            if (!waitUntil(function() { return !panel.workerBusy && panel.polling.mrs.list!==null },"MR7 new host list")) return false
+            eq(panel.polling.mrs.list.length,0,"MR7 other host list loads empty")
+            check(!has("mr:1!1") && !has("mr:99!2"),"MR7 old reply ignored")
+            eq(panel.view,"mrs","MR7 view remains")
+            sh('rm -f "$MR_DELAY"')
+        },
+        function() {
+            if (!waitUntil(function() { return !shp.running },"MR fixture cleanup")) return false
+            cfg("gitlab.example.org")
+            panel.polling=mrSaved.polling
+            panel.expanded=mrSaved.expanded
+            panel.viewState=mrSaved.viewState
+            panel.switchView("projects",mrSaved.filter,mrSaved.key)
+            panel.searchCollapsed=mrSaved.collapsed
+            panel.adopt(mrSaved.key)
+            eq(panel.view,"projects","MR restore view")
+            eq(panel.filterText,mrSaved.filter,"MR restore filter")
+            listFocus()
+        },
+        function() {
+            if (!panel.searchItem.parent.parent.activeFocus) return false
             console.log("QML_CHECKS_PASSED")
             Qt.quit()
         }
@@ -538,6 +670,11 @@ ShellRoot {
         if (item.objectName===name) return item
         for (var i=0;i<item.children.length;i++) { var f=findByName(item.children[i], name); if (f) return f }
         return null
+    }
+    function textStarts(item, prefix) {
+        if (typeof item.text==="string" && item.text.indexOf(prefix)===0) return true
+        for (var i=0;i<item.children.length;i++) if (textStarts(item.children[i],prefix)) return true
+        return false
     }
     // A delegate's icon and info follow statusColor/statusOpacity, selected or not; icon is checked when given.
     function selCheck(item, status, icon) {
@@ -2176,6 +2313,9 @@ ShellRoot {
             } else if(stage===11) {
                 var step=zsteps[zi]
                 if (step() !== false) zi++
+            } else if(stage===13) {
+                var mrstep=mrsteps[mi]
+                if (mrstep() !== false) mi++
             }
         }
     }
@@ -2183,7 +2323,7 @@ ShellRoot {
 ''')
         try:
             result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=200,
-                                  env={**os.environ, 'HOME':str(home), 'XDG_STATE_HOME':str(home / '.local/state'), 'PINS_DELAY':str(root / 'pins-delay'), 'RUN_DONE':str(root / 'run-done'), 'RUN_DELAY':str(root / 'run-delay'), 'ACTION_SCRIPT':str(root / 'action.sh'), 'ACTION_LOG':str(root / 'actions.log'), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower()})
+                                  env={**os.environ, 'HOME':str(home), 'XDG_STATE_HOME':str(home / '.local/state'), 'PINS_DELAY':str(root / 'pins-delay'), 'RUN_DONE':str(root / 'run-done'), 'RUN_DELAY':str(root / 'run-delay'), 'MR_DELAY':str(root / 'mr-delay'), 'ACTION_SCRIPT':str(root / 'action.sh'), 'ACTION_LOG':str(root / 'actions.log'), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower()})
         except subprocess.TimeoutExpired as error:
             print(error.stdout, error.stderr)
             raise

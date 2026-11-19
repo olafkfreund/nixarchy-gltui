@@ -49,7 +49,11 @@ Item {
     property string copyLabel: ""
     readonly property string searchHint: "↑↓ select  Enter open  Tab navigate  Esc clear"
     readonly property string listHint: "↑↓ move  ←→ expand  g/G ends  / search  e failure  y/Y copy  p pin  t log  w watch" +
-        (actionsOn ? "  a/c/x/n act" : "") + "  o GitLab  ? help  q close"
+        (actionsOn ? "  a/c/x/n act" : "") + "  m MRs  o GitLab  ? help  q close"
+    readonly property string mrHint: "↑↓ move  Enter pipeline  / search  y copy  o GitLab  r refresh  m projects  ? help  q close"
+    property string view: "projects"
+    property bool switching: false
+    property var viewState: ({projects: {filter: "", collapsed: {}, key: ""}, mrs: {filter: "", collapsed: {}, key: ""}})
     property bool actionsOn: false
     property var confirm: null
     property var pendingAction: null
@@ -87,6 +91,7 @@ Item {
     readonly property string helper: localPath("gitlab.py")
     function localPath(name) { return decodeURIComponent(Qt.resolvedUrl(name).toString().replace(/^file:\/\//, "")) }
     onFilterTextChanged: {
+        if (switching) return
         searchCollapsed = ({})
         rebuild(true)
         selectionChanged(false)
@@ -154,7 +159,9 @@ Item {
         if (request.filter !== null) {
             helpOpen = false
             notice = ""; noticeTimer.stop()
-            if (filterText === request.filter) { rebuild(true); selectionChanged(false) }
+            // An explicit project filter always opens the projects view, even if merge requests were shown last.
+            if (view === "mrs") switchView("projects", request.filter)
+            else if (filterText === request.filter) { rebuild(true); selectionChanged(false) }
             else filterText = request.filter
         }
         if (request.notice) notify(request.notice)
@@ -219,17 +226,19 @@ Item {
             requests: polling.requests, inFlight: workerBusy, cooldown: polling.cooldown,
             lastRequest: polling.lastRequest, lastStarted: polling.lastStarted,
             filter: filterText, editing: filtering, selected: current ? current.key : "", scrollY: list.contentY,
-            actionsOn: actionsOn, confirm: confirm ? confirm.text : "", actionBusy: actionBusy})
+            actionsOn: actionsOn, confirm: confirm ? confirm.text : "", actionBusy: actionBusy,
+            view: view, mrs: ((polling.mrs || {}).list || []).length})
     }
 
-    function rebuild(resetSelection) {
-        shown = Model.merge(expanded, Model.autoOpen(repos, filterText), searchCollapsed)
-        var key = current ? current.key : ""
+    function rebuild(resetSelection, selectKey) {
+        if (view === "projects") shown = Model.merge(expanded, Model.autoOpen(repos, filterText), searchCollapsed)
+        var key = selectKey !== undefined ? selectKey : current ? current.key : ""
         var topIndex = list.indexAt(1, list.contentY + 1)
         var topItem = list.itemAtIndex(topIndex)
         var topKey = entries[topIndex] ? entries[topIndex].key : ""
         var topOffset = topItem ? topItem.y - list.contentY : 0
-        var next = Model.rows(repos, shown, details, filterText, now, pinned, watched)
+        var next = view === "mrs" ? Model.mrRows(polling.mrs, filterText, now, host, polling.mrSelected)
+            : Model.rows(repos, shown, details, filterText, now, pinned, watched)
         var structureChanged = Model.syncRows(visibleRows, next)
         entries = next
         cursor = resetSelection ? 0 : Model.selection(entries, key, cursor)
@@ -247,6 +256,53 @@ Item {
                 list.returnToBounds()
             }
         }
+    }
+    // Saves this view's state, shows `next` with its saved filter, collapsed set and row (or the given ones).
+    function switchView(next, filter, key) {
+        var saved = Object.assign({}, viewState)
+        saved[view] = {filter: filterText, collapsed: searchCollapsed, key: current ? current.key : ""}
+        viewState = saved
+        var target = saved[next]
+        switching = true
+        view = next
+        Polling.view(polling, next === "mrs", Date.now())
+        filterText = filter !== undefined ? filter : target.filter
+        searchCollapsed = filter !== undefined ? ({}) : target.collapsed
+        switching = false
+        cursor = 0
+        adopt(key !== undefined ? key : target.key)
+        list.forceLayout()
+        list.positionViewAtIndex(cursor, ListView.Contain)
+        selectionChanged(true)
+        pump()
+    }
+    function toggleView() { switchView(view === "mrs" ? "projects" : "mrs") }
+    // Keys that mean a project, pipeline or job; in the merge-request view they only explain themselves.
+    function mrKey(event, plain, shift) {
+        var letters = [Qt.Key_P, Qt.Key_T, Qt.Key_W, Qt.Key_E, Qt.Key_A, Qt.Key_C, Qt.Key_X, Qt.Key_N]
+        if (!plain || !((!shift && letters.indexOf(event.key) >= 0) || (shift && event.key === Qt.Key_Y) ||
+            (!shift && (event.key === Qt.Key_Left || event.key === Qt.Key_H)))) return false
+        notify("Not on a merge request; press Enter for its pipeline")
+        return true
+    }
+    function jumpMr() {
+        var row = current
+        if (!row) return
+        if (row.kind === "more") { notify("Open it with o"); return }
+        var st = polling.mrs.status[row.key.slice(3)]
+        if (!st) { notify("Not checked yet"); return }
+        if (st.state === "unavailable") { notify("Merge request unavailable; o opens it"); return }
+        if (st.state === "hidden") { notify("Pipeline hidden"); return }
+        if (st.state === "none" || !st.pipeline) { notify("No pipeline yet"); return }
+        var pipe = st.pipeline
+        var repo = repos.filter(function(r) { return r.id === pipe.project_id && !r.archived && !r.disabled })[0]
+        if (!repo) { notify("Project not in your list; o opens the merge request"); return }
+        var next = Object.assign({}, expanded)
+        next["repo:" + repo.repo] = true
+        next[repo.repo + ":" + pipe.id] = true
+        expanded = next
+        Polling.jump(polling, repo.repo, pipe, next, Date.now())
+        switchView("projects", "", repo.repo + ":" + pipe.id)
     }
     function move(delta) {
         cursor = Math.max(0, Math.min(entries.length - 1, cursor + delta))
@@ -351,6 +407,7 @@ Item {
     }
     function copy(what) {
         var r = Model.copyText(current, what)
+        if (!r.text && view === "mrs" && current && !current.url) r.label = "No link"
         if (!r.text) { notify(r.label); return }
         if (copyProc.running) return
         copyStarted = false
@@ -380,6 +437,7 @@ Item {
     function expand(collapse) {
         var row = current
         if (!row) return
+        if (view === "mrs") { jumpMr(); return }
         var next = Object.assign({}, expanded)
         var collapsed = Object.assign({}, searchCollapsed)
         var expandable = ["repo", "run", "stage"].indexOf(row.kind) >= 0
@@ -495,6 +553,7 @@ Item {
                 }
                 polling = Polling.resetHost(polling)
                 expanded = ({}); searchCollapsed = ({}); details = ({}); updated = ""; error = ""; cursor = 0
+                viewState = ({projects: {filter: "", collapsed: {}, key: ""}, mrs: {filter: "", collapsed: {}, key: ""}})
             }
             host = configuredHost
             var names = entry && Array.isArray(entry.projects) ? entry.projects : []
@@ -513,19 +572,26 @@ Item {
     }
     function selectionChanged(immediate) {
         if (!polling) return
+        if (view === "mrs") {
+            Polling.select(polling, "", "", shown, Date.now(), immediate)
+            Polling.selectMr(polling, current && current.kind === "mr" ? current.key.slice(3) : "")
+            return
+        }
         Polling.select(polling, current ? current.repo : "", current ? current.run : "", shown, Date.now(), immediate)
     }
-    function adopt() {
+    function adopt(selectKey) {
         repos = polling.repos.slice()
         details = Object.assign({}, polling.details)
         var map = {}
         Object.keys(polling.watches || {}).forEach(function(id) { map[id] = true })
         watched = map
-        error = polling.error || polling.catalogueError
+        error = polling.error || (view === "mrs" ? polling.mrs.error : polling.catalogueError)
         // Reassign the state reference to notify bindings after pure-JS mutations.
         polling = Object.assign({}, polling)
-        rebuild()
-        if ((current && current.repo || "") !== polling.selected || (current && current.run || "") !== polling.inspected) selectionChanged(false)
+        rebuild(false, selectKey)
+        if (view === "mrs") {
+            if ((current && current.kind === "mr" ? current.key.slice(3) : "") !== polling.mrSelected) selectionChanged(false)
+        } else if ((current && current.repo || "") !== polling.selected || (current && current.run || "") !== polling.inspected) selectionChanged(false)
     }
     function refresh(catalogue) {
         selectionChanged(true)
@@ -587,9 +653,10 @@ Item {
         if (stopped) return "then press " + escape + "r"
         return ""
     }
-    function emptyText(error, hint, cooldownText, discoveryComplete, repoCount, filter) {
+    function emptyText(error, hint, cooldownText, discoveryComplete, repoCount, filter, mrView, mrs) {
         if (error) return error + (hint ? " — " + hint : "")
         if (cooldownText) return cooldownText
+        if (mrView) return filter ? "No merge requests match “" + filter + "”" : !mrs.list ? "Loading merge requests…" : "No open merge requests"
         if (!discoveryComplete && filter) return "Still discovering projects… no matches so far"
         if (!discoveryComplete) return "Discovering projects…"
         if (repoCount === 0) return "No projects found on this account"
@@ -599,6 +666,7 @@ Item {
     function openBrowser() {
         if (current && Model.browsable(current.url, host))
             Quickshell.execDetached(["xdg-open", current.url])
+        else if (view === "mrs") notify("No link")
     }
 
     Component.onCompleted: {
@@ -752,6 +820,8 @@ Item {
                     var plain = !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
                     var shift = !!(event.modifiers & Qt.ShiftModifier)
                     if (plain && event.text === "?") root.toggleHelp()
+                    else if (plain && !shift && event.key === Qt.Key_M) root.toggleView()
+                    else if (root.view === "mrs" && root.mrKey(event, plain, shift)) {}
                     else if (plain && event.key === Qt.Key_Y) root.copy(shift ? "sha" : "url")
                     else if (plain && event.key === Qt.Key_G) root.move(shift ? root.entries.length : -root.entries.length)
                     else if (plain && event.key === Qt.Key_Q && !shift) root.close()
@@ -785,7 +855,8 @@ Item {
                     spacing: root.zs(Style.spacing.md)
                     Text {
                         width: parent.width
-                        text: "GitLab Pipelines  ·  " + root.repos.length + (root.repos.length === 1 ? " project" : " projects")
+                        text: root.view === "mrs" ? "My merge requests  ·  " + ((root.polling.mrs.list || []).length) + " open"
+                            : "GitLab Pipelines  ·  " + root.repos.length + (root.repos.length === 1 ? " project" : " projects")
                         color: Commons.Color.menu.text
                         font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.title); bold: true }
                         textFormat: Text.PlainText
@@ -793,7 +864,7 @@ Item {
                     TextInput {
                         id: searchField
                         Accessible.role: Accessible.EditableText
-                        Accessible.name: "Search projects"
+                        Accessible.name: root.view === "mrs" ? "Search merge requests" : "Search projects"
                         width: parent.width
                         height: Math.ceil(font.pixelSize * 1.4)
                         color: Commons.Color.menu.text
@@ -823,7 +894,7 @@ Item {
                             id: placeholder
                             anchors.fill: parent
                             visible: searchField.text.length === 0
-                            text: root.filtering ? "Search projects…" :
+                            text: root.view === "mrs" ? (root.filtering ? "Search merge requests…" : "/ search merge requests") : root.filtering ? "Search projects…" :
                                 (root.discoveryComplete ? "Activity checked " + root.checkedCount + "/" + root.repos.length + " · pinned and running first · / search projects" : "Discovering projects… " + root.repos.length + " found")
                             color: Commons.Color.menu.text
                             opacity: 0.75
@@ -864,7 +935,7 @@ Item {
                     ListView {
                         id: list
                         Accessible.role: Accessible.List
-                        Accessible.name: "GitLab pipelines"
+                        Accessible.name: root.view === "mrs" ? "My merge requests" : "GitLab pipelines"
                         width: parent.width
                         height: Math.max(0, parent.height - y - footer.height - root.zs(Style.spacing.md))
                         clip: true
@@ -945,7 +1016,7 @@ Item {
                             anchors.centerIn: parent
                             width: parent.width - 2 * root.zs(Style.space(16))
                             visible: root.entries.length === 0
-                            text: root.emptyText(root.error, root.errorHintText, root.cooldownText, root.discoveryComplete, root.repos.length, root.filterText)
+                            text: root.emptyText(root.error, root.errorHintText, root.cooldownText, root.discoveryComplete, root.repos.length, root.filterText, root.view === "mrs", root.polling.mrs)
                             color: root.error ? Commons.Color.urgent : Commons.Color.menu.text
                             font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.body) }
                             wrapMode: Text.Wrap
@@ -962,7 +1033,7 @@ Item {
                             Accessible.role: Accessible.StaticText
                             Accessible.name: hint.text
                             width: parent.width - (zoomLabel.visible ? zoomLabel.implicitWidth + root.zs(Style.spacing.sm) : 0)
-                            text: root.confirm ? root.confirm.text : (root.notice || root.cooldownText || (root.filtering ? root.searchHint : root.listHint))
+                            text: root.confirm ? root.confirm.text : (root.notice || root.cooldownText || (root.filtering ? root.searchHint : root.view === "mrs" ? root.mrHint : root.listHint))
                             color: root.actionFailed && root.notice ? Commons.Color.urgent : Commons.Color.menu.text
                             opacity: 0.65
                             font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.caption) }

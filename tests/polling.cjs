@@ -1286,6 +1286,148 @@ test('a write pauses reads for one second without consuming the read budget', ()
   assert.equal(s.starts.length,1);
 });
 
+function mrFixture(list=null) {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true; s.catalogueAt=10000000;
+  s.mrs.list=list; s.mrs.listAt=list===null?undefined:0; polling.view(s,true,0);
+  return s;
+}
+const mr=(project_id,iid,updated_at='old')=>({project_id,iid,updated_at});
+test('merge requests schedule nothing while the view is off', () => {
+  const s=mrFixture([mr(1,1)]); polling.view(s,false,0); s.mrs.listAt=undefined;
+  polling.seed(s,0); assert.equal(Object.values(s.tasks).some(t=>t.kind==='mrs'||t.kind==='mr'),false);
+});
+test('merge request list is due at once and every 60 seconds', () => {
+  const s=mrFixture(); polling.seed(s,0); assert.equal(s.tasks['mrs::'].group,'interactive');
+  let q=polling.next(s,0); assert.equal(q.kind,'mrs'); polling.complete(s,response(q,[]),100);
+  assert.equal(s.mrs.listAt,100); assert.equal(s.mrs.total,undefined);
+  polling.seed(s,101); assert.equal(s.wakeAt,60100);
+  assert.equal(polling.next(s,60099),null);
+  q=polling.next(s,60100); assert.equal(q.kind,'mrs');
+});
+test('same iid in two projects creates distinct requests with both numeric targets', () => {
+  const s=mrFixture([mr(1,7),mr(2,7)]); s.mrs.listAt=1000; polling.seed(s,0);
+  assert.ok(s.tasks['mr::1!7']); assert.ok(s.tasks['mr::2!7']);
+  let q=polling.next(s,0); assert.equal(q.kind,'mr'); assert.equal(q.project,1); assert.equal(q.iid,7);
+  polling.complete(s,response(q,{iid:7,project_id:1,pipeline:null,pipelineState:'none'}),100);
+  q=polling.next(s,1000); assert.equal(q.project,2); assert.equal(q.iid,7);
+});
+test('empty catalogue and watches still wake for list and status deadlines', () => {
+  const s=mrFixture([mr(1,1)]); s.mrs.status['1!1']={state:'none',pipeline:null,at:0,mrUpdated:'old'};
+  polling.seed(s,0); assert.equal(s.wakeAt,60000);
+  s.mrs.listAt=1000000; polling.seed(s,0); assert.equal(s.wakeAt,600000);
+});
+test('selected unchecked merge request is interactive and others are background', () => {
+  const s=mrFixture([mr(1,1),mr(2,2)]); polling.selectMr(s,'1!1'); polling.seed(s,0);
+  assert.equal(s.tasks['mr::1!1'].group,'interactive'); assert.equal(s.tasks['mr::2!2'].group,'background');
+});
+test('selected merge request refreshes unfinished at ten seconds and others at one minute', () => {
+  const s=mrFixture([mr(1,1)]); s.mrs.listAt=1000000; polling.selectMr(s,'1!1');
+  s.mrs.status['1!1']={state:'ok',pipeline:{status:'in_progress'},at:0,mrUpdated:'old'};
+  polling.seed(s,9999); assert.equal(s.wakeAt,10000);
+  polling.seed(s,10000); assert.equal(s.tasks['mr::1!1'].group,'interactive');
+  delete s.tasks['mr::1!1']; s.mrs.status['1!1'].pipeline.status='completed';
+  polling.seed(s,1000); assert.equal(s.wakeAt,60000);
+  polling.seed(s,60000); assert.equal(s.tasks['mr::1!1'].group,'interactive');
+});
+test('unfinished merge request checks every 30 seconds behind active tasks', () => {
+  const s=mrFixture([mr(1,1)]); s.mrs.status['1!1']={state:'ok',pipeline:{status:'in_progress'},at:0,mrUpdated:'old'};
+  polling.seed(s,29999); assert.equal(s.wakeAt,30000);
+  polling.seed(s,30000); assert.equal(s.tasks['mr::1!1'].group,'pinned');
+  polling.ensure(s,'run','a/b',7,'active',30000); s.repos=[{repo:'a/b'}]; s.slot=3;
+  assert.equal(polling.next(s,30000).kind,'run');
+});
+test('manual and scheduled head pipelines use the finished interval', () => {
+  for(const conclusion of ['manual','scheduled']) {
+    const s=mrFixture([mr(1,1)]);
+    s.mrs.status['1!1']={state:'ok',pipeline:{status:'completed',conclusion},at:0,mrUpdated:'old'};
+    polling.seed(s,30000); assert.equal(s.tasks['mr::1!1'],undefined); assert.equal(s.wakeAt,60000);
+    s.mrs.listAt=100000; polling.seed(s,600000); assert.equal(s.tasks['mr::1!1'].group,'background');
+  }
+});
+test('finished merge requests refresh at ten minutes or on list update', () => {
+  const s=mrFixture([mr(1,1)]); s.mrs.listAt=100000;
+  s.mrs.status['1!1']={state:'ok',pipeline:{status:'completed'},at:0,mrUpdated:'old'};
+  polling.seed(s,599999); assert.equal(s.tasks['mr::1!1'],undefined);
+  polling.seed(s,600000); assert.ok(s.tasks['mr::1!1']); delete s.tasks['mr::1!1'];
+  s.mrs.list[0].updated_at='new'; polling.seed(s,1000); assert.equal(s.tasks['mr::1!1'].due,1000);
+});
+test('unavailable merge request retries at ten minutes and on manual refresh', () => {
+  const s=mrFixture([mr(1,1)]); s.mrs.listAt=100000;
+  s.mrs.status['1!1']={state:'unavailable',pipeline:null,at:0,mrUpdated:'old'};
+  polling.seed(s,1000); assert.equal(s.tasks['mr::1!1'],undefined);
+  polling.manual(s,1000,false); assert.equal(s.tasks['mr::1!1'].due,1000);
+  assert.equal(s.mrs.status['1!1'].at,0); assert.equal(s.tasks['mrs::'].due,1000);
+  delete s.tasks['mr::1!1']; s.mrs.listAt=100000;
+  polling.seed(s,600000); assert.ok(s.tasks['mr::1!1']);
+});
+test('list churn drops a failed merge request flight without caching it', () => {
+  const s=mrFixture([mr(1,1)]); s.mrs.listAt=100000;
+  const q=polling.next(s,0); assert.equal(q.kind,'mr');
+  s.mrs.list=[]; polling.seed(s,100); assert.ok(s.tasks['mr::1!1']);
+  assert.equal(polling.complete(s,{requestId:q.requestId,errorType:'network',error:'offline'},100),false);
+  assert.equal(s.tasks['mr::1!1'],undefined); assert.equal(s.mrs.status['1!1'],undefined);
+});
+test('a new list prunes removed statuses and queued row checks', () => {
+  const s=mrFixture([mr(1,1),mr(2,2)]); s.mrs.listAt=undefined;
+  s.mrs.status['1!1']={state:'none',pipeline:null,at:0,mrUpdated:'old'};
+  polling.seed(s,0); assert.ok(s.tasks['mr::2!2']);
+  const q=polling.next(s,0); assert.equal(q.kind,'mrs');
+  polling.complete(s,{...response(q,[mr(3,3)]),total:3},100);
+  assert.deepEqual(Array.from(s.mrs.list,row=>row.project_id),[3]);
+  assert.equal(s.mrs.total,3); assert.equal(s.mrs.status['1!1'],undefined);
+  assert.equal(s.tasks['mr::2!2'],undefined);
+});
+test('merge request network retry keeps cached status and respects backoff', () => {
+  const s=mrFixture([mr(1,1)]); s.mrs.listAt=100000;
+  s.mrs.status['1!1']={state:'ok',pipeline:{status:'completed'},at:-600000,mrUpdated:'old'};
+  const q=polling.next(s,0); assert.equal(q.kind,'mr');
+  polling.complete(s,{requestId:q.requestId,errorType:'network',error:'offline'},100);
+  assert.equal(s.mrs.status['1!1'].state,'ok'); assert.equal(s.tasks['mr::1!1'].due,5100);
+  polling.seed(s,101); assert.equal(s.tasks['mr::1!1'].due,5100);
+});
+test('turning the view off prunes queued merge request tasks', () => {
+  const s=mrFixture([mr(1,1)]); polling.seed(s,0); assert.ok(s.tasks['mr::1!1']);
+  polling.view(s,false,1); polling.seed(s,1); assert.equal(s.tasks['mr::1!1'],undefined);
+  assert.equal(s.mrSelected,'');
+});
+test('merge request permission is local and list permission retries in a minute', () => {
+  const s=mrFixture([mr(1,1)]); s.mrs.listAt=100000; s.repos=[{repo:'a/b'}];
+  let q=polling.next(s,0); polling.complete(s,{requestId:q.requestId,errorType:'permission',error:'Merge request unavailable'},100);
+  assert.equal(s.mrs.status['1!1'].state,'unavailable'); assert.equal(s.repos[0].blocked,undefined);
+  s.mrs.listAt=undefined; q=polling.next(s,1000); assert.equal(q.kind,'mrs');
+  polling.complete(s,{requestId:q.requestId,errorType:'permission',error:'Merge request unavailable'},1100);
+  assert.equal(s.mrs.error,'Merge request unavailable'); assert.equal(s.mrs.listAt,1100);
+  polling.seed(s,1100); assert.equal(s.tasks['mrs::'],undefined);
+});
+test('resetHost keeps the view but ignores old-generation replies', () => {
+  const s=mrFixture(); const q=polling.next(s,0); const fresh=polling.resetHost(s);
+  assert.equal(fresh.mrView,true); assert.equal(fresh.mrSelected,''); assert.equal(fresh.mrs.list,null);
+  fresh.flight=s.flight; fresh.tasks=s.tasks;
+  assert.equal(polling.complete(fresh,response(q,[mr(1,1)]),100),false);
+  assert.equal(fresh.mrs.list,null);
+});
+test('jump retains an old finished pipeline and starts its full lookup', () => {
+  const s=mrFixture([]); s.repos=[{repo:'a/b',runs:Array.from({length:10},(_,i)=>({id:i+11,status:'completed'}))}];
+  const run={id:1,status:'completed'}, expanded={'a/b:1':true}; polling.jump(s,'a/b',run,expanded,1000);
+  assert.ok(polling.runFor(s,'a/b',1)); assert.equal(s.selected,'a/b'); assert.equal(s.inspected,'1');
+  assert.notEqual(polling.runFor(s,'a/b',1),run);
+  assert.equal(s.tasks['run:a/b:1'].due,1000);
+});
+test('a rate limit on a merge request that left the list still pauses polling', () => {
+  const s=mrFixture([mr(1,1)]); s.opened=true;
+  polling.ensure(s,'mr','','1!1','background',0).project=1;
+  s.flight={key:'mr::1!1',request:{requestId:5},generation:s.generation};
+  s.mrs.list=[];
+  polling.complete(s,{requestId:5,errorType:'rate',error:'GitLab rate limit',retryAt:90000},1000);
+  assert.equal(s.cooldown,90000); assert.ok(!s.tasks['mr::1!1']);
+});
+test('background merge requests start under sustained active load in the fifth slot', () => {
+  const s=mrFixture([mr(1,1)]); s.mrs.listAt=100000;
+  s.repos=[{repo:'a/b',active:1,activityAt:0}];
+  for(let i=0;i<4;i++) polling.ensure(s,'run','a/b',i+1,'active',0);
+  s.slot=4; const q=polling.next(s,0); assert.equal(q.kind,'mr');
+});
+
 // Measurement (#35): 137 projects (5 active within a day, 15 within a week, 117 older), org/r0 selected, 1s responses.
 // Baseline before #35: realistic 30 min 713 requests (idle 408); realistic 2 h 2830 (idle 1632); queued 30 min 1800 (lookups 1413).
 function scenario({duration, queued=0}) {

@@ -520,3 +520,59 @@ console.log('Model: stage hierarchy, aggregation, filtering, progress, selection
   assert.deepEqual(plain(model.actionReply('[1]', 0, 5)), unknown);
   assert.deepEqual(plain(model.actionReply(ok, 0, 5)), {requestId:5, ok:true});
 }
+
+{
+  const H = 'gitlab.example.org', now = 10_000_000;
+  const mk = (iid, extra = {}) => ({id: iid, iid, project_id: 5, project: 'g/p', title: 'Fix ' + iid, source_branch: 'feat-' + iid,
+    draft: false, web_url: `https://${H}/g/p/-/merge_requests/${iid}`, updated_at: 'u', ...extra});
+  const done = {status: 'completed', conclusion: 'success'}, busy = {status: 'in_progress', conclusion: 'running'};
+  const st = (state, pipeline, at) => ({state, pipeline, at, mrUpdated: 'u'});
+  const rows = (mrs, filter = '', sel = '') => plain(model.mrRows({total: 0, status: {}, ...mrs}, filter, now, H, sel));
+
+  let r = rows({list: [mk(1), mk(2, {draft: true, project: ''}), mk(3, {web_url: 'https://evil.example/x'})]});
+  assert.deepEqual(r.map(x => x.key), ['mr:5!1', 'mr:5!2', 'mr:5!3']);
+  assert.equal(r[0].title, 'g/p !1 Fix 1');
+  assert.equal(r[0].subtitle, 'feat-1');
+  assert.equal(r[0].info, 'not checked');
+  assert.equal(r[0].status, 'neutral');
+  assert.equal(r[0].url, `https://${H}/g/p/-/merge_requests/1`);
+  assert.equal(r[1].title, 'Draft · unknown project !2 Fix 2');
+  assert.equal(r[2].url, '');
+  assert.equal(model.mrRows({list: [mk(1, {web_url: `https://${H}/x`})], status: {}, total: 0}, '', now, '', '')[0].url, '');
+
+  const s = {'5!1': st('ok', done, now - 1000), '5!2': st('none', null, now - 1000), '5!3': st('hidden', null, now - 1000),
+    '5!4': st('unavailable', null, now - 1000), '5!5': st('ok', busy, now - 1000)};
+  r = rows({list: [1, 2, 3, 4, 5].map(i => mk(i)), status: s});
+  assert.deepEqual(r.map(x => [x.status, x.info]), [['success', ''], ['neutral', 'no pipeline'], ['neutral', 'pipeline hidden'],
+    ['neutral', 'unavailable'], ['running', '']]);
+
+  // age text appears once the status is older than its refresh target
+  const age = (pipe, at, sel) => rows({list: [mk(1)], status: {'5!1': st('ok', pipe, now - at)}}, '', sel ? '5!1' : '')[0].info;
+  assert.equal(age(busy, 11_000, true), 'checked 11s ago');
+  assert.equal(age(busy, 9_000, true), '');
+  assert.equal(age(busy, 11_000, false), '');
+  assert.equal(age(busy, 31_000, false), 'checked 31s ago');
+  assert.equal(age(done, 61_000, true), 'checked 1m ago');
+  assert.equal(age(done, 59_000, true), '');
+  assert.equal(age(done, 61_000, false), '');
+  assert.equal(age(done, 120_000 * 5, false), '');
+  assert.equal(age(done, 600_000 + 120_000, false), 'checked 12m ago');
+
+  r = rows({list: [mk(1)], total: 3});
+  assert.equal(r[1].kind, 'more');
+  assert.equal(r[1].title, '2 more on GitLab');
+  assert.equal(r[1].url, `https://${H}/dashboard/merge_requests?scope=created_by_me&state=opened`);
+  assert.equal(rows({list: [mk(1)], total: -1})[1].title, 'more on GitLab');
+  assert.equal(rows({list: [mk(1)], total: 1}).length, 1);
+
+  r = rows({list: [mk(1), mk(2, {source_branch: 'hotfix'}), mk(3, {project: 'other/q'})], status: {'5!1': st('ok', done, now)}});
+  assert.deepEqual(rows({list: [mk(1), mk(2, {source_branch: 'hotfix'})]}, 'HOTFIX').map(x => x.key), ['mr:5!2']);
+  assert.deepEqual(rows({list: [mk(1), mk(3, {project: 'other/q'})]}, 'other/q').map(x => x.key), ['mr:5!3']);
+  assert.deepEqual(rows({list: [mk(1)], status: {'5!1': st('ok', done, now)}}, 'success').map(x => x.key), ['mr:5!1']);
+  assert.deepEqual(rows({list: [mk(1)]}, 'zzz'), []);
+  assert.deepEqual(rows({list: null}), []);
+
+  assert.equal(model.accessibleName(rows({list: [mk(1)], status: s})[0]), 'g/p !1 Fix 1, merge request, passed');
+  assert.equal(model.accessibleName(rows({list: [mk(1)], total: 3})[1]), '2 more on GitLab');
+  assert.equal(model.infoText(rows({list: [mk(1)]})[0], now), 'neutral · not checked');
+}
