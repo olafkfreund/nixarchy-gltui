@@ -34,7 +34,7 @@ The row's `status` is already mapped and has no raw GitLab status, so a key
 resolves the raw object first: a pipeline with `Polling.runFor(polling,
 row.repo, row.run)` (`Polling.js` line 29), a job by `id` from
 `polling.details[row.repo + ":" + row.run].jobs`. `conclusion` is GitLab's
-raw status (`gitlab.py` lines 234, 243). If the raw object is gone, the key
+raw status (`gitlab.py` lines 232, 243). If the raw object is gone, the key
 says "Select the row again" and does nothing.
 
 | Key | Row | Action | Offered when raw `conclusion` is | Request |
