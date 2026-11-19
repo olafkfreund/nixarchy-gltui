@@ -422,6 +422,12 @@ review against this plan and an Opus review of the diff.
 
 - Step 3: the "more on GitLab" row is left out while a filter is active,
   since it does not match any query and would show under a no-match filter.
+- Step 4: `emptyText` takes two more arguments (`mrView`, `mrs`);
+  `rebuild` and `adopt` take an optional key to select; the "more" row gets
+  the same "Not on a merge request" refusals as `mr` rows; Enter on an
+  `unavailable` row says "Merge request unavailable; o opens it" (the
+  spec named no text); Shift+R in the merge-request view refreshes the view
+  like `r` (`manual` returns early there).
 
 ## Rollback
 
