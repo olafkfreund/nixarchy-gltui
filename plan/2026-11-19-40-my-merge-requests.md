@@ -428,6 +428,13 @@ review against this plan and an Opus review of the diff.
   `unavailable` row says "Merge request unavailable; o opens it" (the
   spec named no text); Shift+R in the merge-request view refreshes the view
   like `r` (`manual` returns early there).
+- Step 5 (lead fixes after the VM run): MR1 presses Right before Left, since
+  under the `repo` filter the project is not expanded and Left only moves to
+  the parent; and a first MR step waits 2 s, then clears `workerBusy`,
+  because the action stages restore a saved `workerBusy` that is stale in
+  the managed scenario (the request it was saved for has finished). No
+  timeout change was needed: the run took about 286 s with the 180 s QML
+  timer per scenario.
 
 ## Rollback
 
