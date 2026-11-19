@@ -46,9 +46,10 @@ New parsers, next to `pipeline()` (line 251):
 - **`merge_request(row)`** → `{id, iid, project_id, project, title,
   source_branch, draft, web_url, updated_at}`. `id`, `iid` and `project_id`
   must be positive ints, or the row raises `ValueError` (like `entry`).
-  `project` is `references.full` without its `!iid` suffix, kept only if
-  `project_path()` accepts it, else `""` (display falls back to the web URL's
-  path, never to raw text). `title` and `source_branch` go through `plain()`
+  `project` is `references.full` without its `!iid` suffix; if
+  `project_path()` refuses it, the path of `web_url` before `/-/` is tried
+  the same way; else `""`. Raw text never reaches the panel as a project.
+  `title` and `source_branch` go through `plain()`
   (#15). `draft` is `bool(row.get("draft") or row.get("work_in_progress"))`.
 - **`mr_detail(row)`** → `{iid, project_id, pipeline, pipelineState}`:
   - `head_pipeline` key **absent** → `pipelineState: "hidden"`, `pipeline:
@@ -148,10 +149,7 @@ as it does `status` and `route`. `mrs` is the single key `mrs::`.
     10 min otherwise) adds "checked 2m ago".
   - `url` is the merge request's `web_url` only if `browsable(url, host)`
     (line 9), else `""`, so `o` and `y` say "No link".
-  - A merge request whose `project` is `""` shows the URL's path, run
-    through the same `plain()` rules (a model copy of the helper's check is
-    not needed: the path comes from a `browsable` URL, else "unknown
-    project").
+  - A merge request whose `project` is `""` shows "unknown project".
   - When `total` exceeds the list, or is −1, a last `kind:"more"` row says
     "N more on GitLab" or "more on GitLab". Its `url` is
     `https://<host>/dashboard/merge_requests?scope=created_by_me&state=opened`
