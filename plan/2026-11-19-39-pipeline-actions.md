@@ -418,6 +418,15 @@ nix build ./ci#checks.x86_64-linux.qml-smoke -L --override-input gltui path:$PWD
 - The CI `qml-smoke` job passes on the PR.
 - No test sends a request to a real GitLab.
 
+## Deviations
+
+- Step 2: `next()` waits one second after `s.writeAt` only when
+  `writeAt` is set (`s.writeAt && now - s.writeAt < 1000`), so the
+  default `0` never delays the first read (e.g. a test clock at 0).
+- Step 3: a pipeline with no usable ref gets its own reason, "This
+  pipeline has no branch or tag to start from", instead of the
+  merge-request reason.
+
 ## Rollback
 
 - Before deploy: close the PR.

@@ -8,11 +8,11 @@ function create() {
     return {opened:false, generation:0, serial:0, order:0, slot:0, starts:[], cooldown:0,
         rateFailures:0, auth:false, tasks:{}, flight:null, repos:[], details:{}, selected:"", inspected:"",
         stableAt:0, expanded:{}, pinned:{}, catalogueAt:0, catalogueComplete:false, discover:true, periodic:false,
-        error:"", catalogueError:"", requests:0, lastRequest:"", lastStarted:0, wakeAt:0, seeds:0,
+        error:"", catalogueError:"", requests:0, lastRequest:"", lastStarted:0, writeAt:0, wakeAt:0, seeds:0,
         watches:{}, queued:{}, events:[], bridgeRoute:"bridges"};
 }
 function resetHost(s) {
-    return Object.assign(create(),{opened:s.opened,starts:s.starts,serial:s.serial,generation:s.generation+1});
+    return Object.assign(create(),{opened:s.opened,starts:s.starts,writeAt:s.writeAt,serial:s.serial,generation:s.generation+1});
 }
 function key(kind, repo, run) { return kind + ":" + (repo || "") + ":" + (run || ""); }
 function age(at, interval) { return at === undefined ? -Infinity : at + interval; }
@@ -69,6 +69,15 @@ function restart(s,t,now) {
     s.wakeAt=0;
     if (s.flight && s.flight.key===t.key) { t.restart=true; return; }
     t.page=1; t.phase=0; t.items=[]; t.all=[]; t.failures=0; t.due=now;
+}
+function touch(s,repo,run,now) {
+    restart(s,ensure(s,"run",repo,run,"interactive",now),now);
+    var r=repoFor(s,repo), summary=s.tasks[key("summary",repo,"")];
+    if (r) {
+        delete r.summaryAt;
+        if (summary) restart(s,summary,now);
+    }
+    if (s.expanded[repo+":"+run]) restart(s,ensure(s,"jobs",repo,run,"interactive",now),now);
 }
 function open(s, now) {
     s.wakeAt=0;
@@ -220,7 +229,7 @@ function next(s, now) {
     var watching=Object.keys(s.watches).length>0;
     if ((!s.opened && !watching) || s.flight || s.auth || now < s.cooldown) return null;
     s.starts = s.starts.filter(function(at) { return now - at < 60000 });
-    if (s.starts.length >= 60 || s.starts.length && now - s.starts[s.starts.length-1] < 1000) return null;
+    if (s.starts.length >= 60 || s.starts.length && now - s.starts[s.starts.length-1] < 1000 || s.writeAt && now - s.writeAt < 1000) return null;
     s.clock=now;
     if (s.opened) { if (now>=s.wakeAt) seed(s,now); }
     else {
@@ -312,6 +321,16 @@ function activity(s,r,items,now,total) {
     if (typeof total==="number") r.hidden=Object.assign({},r.hidden,{running:hiddenCount(total,items)});
     r.activityAt=now; r.checked=new Date(now).toISOString(); r.error="";
 }
+function cool(s,reply,now) {
+    if (reply.errorType==="rate" || reply.remaining===0 || reply.retryAt>now) {
+        var deadline=Math.max(reply.retryAt || 0,reply.remaining===0 ? reply.resetAt || 0 : 0);
+        if (deadline<=now) deadline=now+Math.min(900000,60000*Math.pow(2,s.rateFailures));
+        s.cooldown=Math.max(s.cooldown,Math.min(deadline,now+3600000)); // ponytail: 1h cap, a real longer limit just 429s again
+        if (reply.errorType==="rate") s.rateFailures++;
+    }
+}
+function noteWrite(s,reply,now) { cool(s,reply,now); s.wakeAt=0; }
+function writeStarted(s,now) { s.writeAt=now; }
 function complete(s,reply,now) {
     var flight=s.flight;
     if (!flight || reply.requestId!==flight.request.requestId) return false;
@@ -323,12 +342,7 @@ function complete(s,reply,now) {
     var bad=reply.data===null || typeof reply.data!=="object" || Array.isArray(reply.data)!==(t.kind!=="run")
         || Array.isArray(reply.data) && !reply.data.every(function(x) { return x && typeof x==="object" });
     if (!reply.errorType && !reply.error && bad) reply={requestId:reply.requestId,error:"GitLab helper returned invalid data",errorType:"setup"};
-    if (reply.errorType==="rate" || reply.remaining===0 || reply.retryAt>now) {
-        var deadline=Math.max(reply.retryAt || 0,reply.remaining===0 ? reply.resetAt || 0 : 0);
-        if (deadline<=now) deadline=now+Math.min(900000,60000*Math.pow(2,s.rateFailures));
-        s.cooldown=Math.max(s.cooldown,Math.min(deadline,now+3600000)); // ponytail: 1h cap, a real longer limit just 429s again
-        if (reply.errorType==="rate") s.rateFailures++;
-    }
+    cool(s,reply,now);
     if (t.restart) { restart(s,t,now); delete t.restart; return true; }
     var r=repoFor(s,t.repo);
     if (t.kind==="bridges" && reply.errorType==="route") {
