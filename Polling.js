@@ -9,10 +9,11 @@ function create() {
         rateFailures:0, auth:false, tasks:{}, flight:null, repos:[], details:{}, selected:"", inspected:"",
         stableAt:0, expanded:{}, pinned:{}, catalogueAt:0, catalogueComplete:false, discover:true, periodic:false,
         error:"", catalogueError:"", requests:0, lastRequest:"", lastStarted:0, writeAt:0, wakeAt:0, seeds:0,
-        watches:{}, queued:{}, events:[], bridgeRoute:"bridges"};
+        watches:{}, queued:{}, events:[], bridgeRoute:"bridges", mrView:false, mrSelected:"",
+        mrs:{list:null,total:0,listAt:undefined,error:"",status:{}}};
 }
 function resetHost(s) {
-    return Object.assign(create(),{opened:s.opened,starts:s.starts,writeAt:s.writeAt,serial:s.serial,generation:s.generation+1});
+    return Object.assign(create(),{opened:s.opened,starts:s.starts,writeAt:s.writeAt,serial:s.serial,generation:s.generation+1,mrView:s.mrView});
 }
 function key(kind, repo, run) { return kind + ":" + (repo || "") + ":" + (run || ""); }
 function age(at, interval) { return at === undefined ? -Infinity : at + interval; }
@@ -106,6 +107,16 @@ function select(s, repo, run, expanded, now, immediate) {
     else if (immediate) s.stableAt = now;
     s.selected = repo || ""; s.inspected = String(run || ""); s.expanded = expanded || {};
 }
+function view(s, on, now) {
+    s.mrView=on; s.wakeAt=0;
+    if (!on) s.mrSelected="";
+}
+function selectMr(s, key) { s.mrSelected=key || ""; s.wakeAt=0; }
+function jump(s, repo, run, expanded, now) {
+    select(s,repo,run,expanded,now,true);
+    mergeRuns(s,repoFor(s,repo),[run]);
+    touch(s,repo,run.id,now);
+}
 function pin(s, names) {
     s.wakeAt=0;
     s.pinned={};
@@ -117,6 +128,17 @@ function pin(s, names) {
 function manual(s, now, catalogue) {
     s.wakeAt=0;
     s.auth = false;
+    if (s.mrView) {
+        restart(s,ensure(s,"mrs","","","interactive",now),now);
+        (s.mrs.list || []).forEach(function(row) {
+            var id=row.project_id+"!"+row.iid, status=s.mrs.status[id];
+            var group=id===s.mrSelected ? "interactive" : status && status.pipeline && status.pipeline.status!=="completed" ? "pinned" : "background";
+            var t=ensure(s,"mr","",id,group,now);
+            t.project=row.project_id; t.iid=row.iid;
+            restart(s,t,now);
+        });
+        return;
+    }
     if (catalogue) {
         s.repos.forEach(function(r) { r.idle=0; });
         s.catalogueError = ""; s.discover = true; s.periodic=false;
@@ -146,6 +168,10 @@ function seed(s, now) {
     Object.keys(s.tasks).forEach(function(id) {
         var t = s.tasks[id];
         if (s.flight && s.flight.key === id) return;
+        if (t.kind==="mrs" || t.kind==="mr") {
+            if (!s.mrView || t.kind==="mr" && !(s.mrs.list || []).some(function(row) { return row.project_id+"!"+row.iid===t.run; })) delete s.tasks[id];
+            return;
+        }
         var owner=repoFor(s,t.repo);
         var watched=t.kind==="run" && s.watches[t.repo+":"+t.run];
         if (owner && owner.blocked && !watched) { delete s.tasks[id]; return; }
@@ -154,6 +180,21 @@ function seed(s, now) {
             ((t.kind === "jobs" || t.kind === "bridges") && (t.repo !== s.selected || t.run !== s.inspected || !s.expanded[t.repo + ":" + t.run])))
             delete s.tasks[id];
     });
+    if (s.opened && s.mrView) {
+        var listDue=age(s.mrs.listAt,60000);
+        if (now>=listDue) ensure(s,"mrs","","","interactive",listDue);
+        else wake=Math.min(wake,listDue);
+        (s.mrs.list || []).forEach(function(row) {
+            var id=row.project_id+"!"+row.iid, status=s.mrs.status[id], selected=id===s.mrSelected;
+            var unfinished=status && status.pipeline && status.pipeline.status!=="completed";
+            var due=!status ? now : !selected && !unfinished && status.mrUpdated!==row.updated_at ? now :
+                age(status.at,selected ? unfinished ? 10000 : 60000 : unfinished ? 30000 : 600000);
+            if (now>=due) {
+                var t=ensure(s,"mr","",id,selected ? "interactive" : unfinished ? "pinned" : "background",due);
+                t.project=row.project_id; t.iid=row.iid;
+            } else wake=Math.min(wake,due);
+        });
+    }
     if (!s.discover && s.catalogueComplete && !s.catalogueError) {
         if (now>=s.catalogueAt+300000) { s.discover=true; s.periodic=true; }
         else wake=Math.min(wake,s.catalogueAt+300000);
@@ -248,6 +289,7 @@ function next(s, now) {
     if (!t) return null;
     s.slot++; s.starts.push(now); s.requests++; s.lastStarted=now; s.lastRequest=t.kind + (t.repo ? " " + t.repo : "");
     var request = {kind:t.kind,repo:t.repo,run:t.run,page:t.page,requestId:++s.serial};
+    if (t.kind === "mr") { request.project=t.project; request.iid=t.iid; }
     if (t.kind === "summary") request.status = phases[t.phase];
     if (t.kind === "bridges") request.route = t.route;
     s.flight = {key:t.key, request:request, generation:s.generation};
@@ -339,11 +381,22 @@ function complete(s,reply,now) {
     var t=s.tasks[flight.key]; s.flight=null;
     if (!t) return false;
     s.wakeAt=0;
-    var bad=reply.data===null || typeof reply.data!=="object" || Array.isArray(reply.data)!==(t.kind!=="run")
+    if (t.kind==="mr" && !(s.mrs.list || []).some(function(row) { return row.project_id+"!"+row.iid===t.run; })) {
+        delete s.tasks[t.key]; return false;
+    }
+    var bad=reply.data===null || typeof reply.data!=="object" || Array.isArray(reply.data)!==(t.kind!=="run" && t.kind!=="mr")
         || Array.isArray(reply.data) && !reply.data.every(function(x) { return x && typeof x==="object" });
     if (!reply.errorType && !reply.error && bad) reply={requestId:reply.requestId,error:"GitLab helper returned invalid data",errorType:"setup"};
     cool(s,reply,now);
     if (t.restart) { restart(s,t,now); delete t.restart; return true; }
+    if (reply.errorType==="permission" && (t.kind==="mr" || t.kind==="mrs")) {
+        if (t.kind==="mrs") { s.mrs.error=reply.error; s.mrs.listAt=now; }
+        else {
+            var row=(s.mrs.list || []).filter(function(item) { return item.project_id+"!"+item.iid===t.run; })[0];
+            s.mrs.status[t.run]={state:"unavailable",pipeline:null,at:now,mrUpdated:row.updated_at};
+        }
+        delete s.tasks[t.key]; return true;
+    }
     var r=repoFor(s,t.repo);
     if (t.kind==="bridges" && reply.errorType==="route") {
         if (t.route==="bridges") { restart(s,t,now); t.route="trigger_jobs"; return true; }
@@ -382,6 +435,18 @@ function complete(s,reply,now) {
     s.error=""; s.rateFailures=0; t.failures=0;
     if (r) r.error="";
     var data=reply.data;
+    if (t.kind==="mrs") {
+        s.mrs.list=data.slice(0,50); s.mrs.total=reply.total; s.mrs.listAt=now; s.mrs.error="";
+        var listed={}; s.mrs.list.forEach(function(row) { listed[row.project_id+"!"+row.iid]=true; });
+        Object.keys(s.mrs.status).forEach(function(id) { if (!listed[id]) delete s.mrs.status[id]; });
+        Object.keys(s.tasks).forEach(function(id) { if (s.tasks[id].kind==="mr" && !listed[s.tasks[id].run]) delete s.tasks[id]; });
+        delete s.tasks[t.key]; return true;
+    }
+    if (t.kind==="mr") {
+        var row=(s.mrs.list || []).filter(function(item) { return item.project_id+"!"+item.iid===t.run; })[0];
+        s.mrs.status[t.run]={state:data.pipelineState,pipeline:data.pipeline,at:now,mrUpdated:row.updated_at};
+        delete s.tasks[t.key]; return true;
+    }
     if (t.kind==="run") {
         if (s.watches[t.repo+":"+t.run]) s.watches[t.repo+":"+t.run].checkedAt=now;
         if (r) {
