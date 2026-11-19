@@ -267,6 +267,19 @@ for (const [group, icon, statuses] of groups) for (const status of statuses) {
 assert.equal(model.group('constructor'), 'unknown');
 assert.equal(model.icon('constructor'), '○');
 assert.equal(new Set(groups.map(([, icon]) => icon)).size, 11);
+for (const [kind, word] of [['repo', 'project'], ['run', 'pipeline'], ['stage', 'stage'],
+  ['job', 'job'], ['trigger', 'downstream pipeline']])
+  assert.equal(model.accessibleName({kind, title:'Build', status:'running'}), `Build, ${word}, running`);
+for (const [group, , statuses] of groups) for (const status of statuses) {
+  const word = {success:'passed', allowed:'failed, allowed', neutral:'no status', unknown:'no status'}[group] || group;
+  assert.equal(model.accessibleName({kind:'job', title:'Build', status}), `Build, job, ${word}`, status);
+}
+assert.equal(model.accessibleName({kind:'repo', title:'a/one', pinned:true, status:'failed'}),
+  'a/one, project, pinned, failed');
+assert.equal(model.accessibleName({kind:'run', title:'CI', watched:true, status:'success', started:at(60)}),
+  'CI, pipeline, watched, passed');
+for (const kind of ['more', 'message'])
+  assert.equal(model.accessibleName({kind, title:'Loading jobs…', status:'failed'}), 'Loading jobs…');
 assert.equal(model.reply('{"repos":[]}', 0, 5), '{"repos":[]}');
 // A failing helper yields fixed text; stderr never reaches the panel.
 assert.deepEqual(JSON.parse(model.reply('', 127, 5)), {requestId: 5, errorType: 'setup', error: 'python3 not found'});
