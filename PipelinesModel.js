@@ -398,3 +398,63 @@ function zoomStep(percent, direction) {
     if (direction < 0) return Math.max(75, Math.ceil(percent / 10) * 10 - 10);
     return 100;
 }
+
+// Pipeline and job actions (#39). The raw GitLab object decides, never the mapped row status.
+var activeStates = ["created", "waiting_for_resource", "preparing", "pending", "running", "scheduled"];
+
+function actionFor(key, row, raw) {
+    var isRun = !!row && row.kind === "run", isJob = !!row && row.kind === "job";
+    if (!isRun && !isJob) return {reason: "Select a pipeline or job"};
+    if (!raw) return {reason: "Select the row again"};
+    var what = isRun ? "pipeline" : "job", c = raw.conclusion;
+    if (key === "a") {
+        return c === "failed" || c === "canceled" ? {action: "retry-" + what}
+            : {reason: "Only a failed or canceled " + what + " can be retried"};
+    }
+    if (key === "c") {
+        return activeStates.indexOf(c) >= 0 ? {action: "cancel-" + what}
+            : {reason: "Only a running or queued " + what + " can be canceled"};
+    }
+    if (key === "x") {
+        return isJob && c === "manual" ? {action: "play-job"} : {reason: "Only a manual job can be played"};
+    }
+    if (key === "n" && isRun) {
+        var ref = raw.ref;
+        if (raw.source === "merge_request_event" || typeof ref === "string" && ref.indexOf("refs/merge-requests/") === 0)
+            return {reason: "Merge-request pipelines cannot be started from the panel"};
+        return typeof ref === "string" && ref ? {action: "new-pipeline"} : {reason: "This pipeline has no branch or tag to start from"};
+    }
+    return {reason: "Select a pipeline or job"};
+}
+
+function cut(text) {
+    text = String(text);
+    return text.length > 30 ? text.slice(0, 29) + "…" : text;
+}
+
+function describe(action, repo, run, job) {
+    var ref = cut(run.head_branch || ""), name = cut(run.name || "Pipeline");
+    var pipe = "#" + run.run_number + " " + name + " (" + ref + ") in " + repo;
+    var one = job ? cut(job.name) + " (job " + job.id + ") of #" + run.run_number + " in " + repo : "";
+    var yes = " y yes · Esc no", undone = " Cannot be undone.";
+    switch (action) {
+    case "retry-pipeline": return {confirm: "Retry pipeline " + pipe + "?" + yes, done: "Retry requested: pipeline " + pipe};
+    case "cancel-pipeline": return {confirm: "Cancel pipeline " + pipe + "?" + undone + yes, done: "Cancel requested: pipeline " + pipe};
+    case "retry-job": return {confirm: "Retry job " + one + "?" + yes, done: "Retry requested: job " + one};
+    case "cancel-job": return {confirm: "Cancel job " + one + "?" + undone + yes, done: "Cancel requested: job " + one};
+    case "play-job": return {confirm: "Play manual job " + one + " with its default variables?" + yes, done: "Play requested: job " + one};
+    default: return {confirm: "Start a new pipeline on " + ref + " in " + repo + " with default variables?" + yes,
+        done: "New pipeline requested on " + ref + " in " + repo};
+    }
+}
+
+function actionReply(stdout, code, requestId) {
+    var unknown = {requestId: requestId, errorType: "unknown", error: "Outcome unknown; check GitLab before retrying"};
+    if (!String(stdout).trim()) return code === 127 ? {errorType: "setup", error: "python3 not found"} : unknown;
+    try {
+        var value = JSON.parse(stdout);
+        return value && typeof value === "object" && !Array.isArray(value) && value.requestId === requestId ? value : unknown;
+    } catch (error) {
+        return unknown;
+    }
+}
