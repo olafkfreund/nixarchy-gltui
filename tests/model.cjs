@@ -91,6 +91,8 @@ assert.equal(rows[3].title, 'compile');
 assert.equal(rows[3].status, 'success');
 assert.equal(rows[3].url, 'https://gitlab.com/p/-/jobs/8');
 assert.equal(rows[3].job, '8', 'a job row carries its id');
+assert.equal(rows[0].host, '');
+assert.equal(rows[1].run, '7');
 const twin = model.rows(repos, expanded, {[runKey]: {jobs: [
   {id: 11, name: 'lint', stage: 'build', status: 'completed', conclusion: 'success'},
   {id: 12, name: 'lint', stage: 'build', status: 'completed', conclusion: 'success'}]}}, '', Date.now());
@@ -397,7 +399,7 @@ model.syncRows(list, [first[0]]);
 assert.equal(list.count, 1);
 assert.equal(backing[0].rowKey, 'a');
 for (const field of ['checked','started','ended','finished','fetched','done','total','complete',
-  'serverDuration','queued','reason','pinned','watched','lastStatus','lastAt']) {
+  'serverDuration','queued','reason','pinned','watched','lastStatus','lastAt','host','hostLabel']) {
   const value = field === 'serverDuration' ? 0 : field === 'complete' ? false : 'value';
   model.syncRows(list, [{...first[0], [field]:value}]);
   assert.equal(backing[0].rowData[field], value, field + ' appeared');
@@ -439,6 +441,8 @@ assert.ok(structural <= 51, `one removal and 50 inserts cost ${structural} model
 // o opens only plain https URLs on the configured host (#15).
 assert.equal(model.browsable('https://gitlab.com/g/p/-/pipelines/1', 'gitlab.com'), true);
 assert.equal(model.browsable('https://git.example.org:8443/g/p', 'git.example.org:8443'), true);
+assert.equal(model.browsable('https://GIT.EXAMPLE.ORG:8443/g/p', 'git.example.org:8443'), true);
+assert.equal(model.browsable('https://git.example.org:8444/g/p', 'git.example.org:8443'), false);
 for (const url of ['https://evil.com/x', 'https://gitlab.com.evil/x', 'https://gitlabXcom/x', 'https://gitlab.com/a\u0007b', 'https://gitlab.com/a b', 'http://gitlab.com/x', 5, undefined])
   assert.equal(model.browsable(url, 'gitlab.com'), false, String(url));
 // Zoom steps: 75..200, multiples of 10 from 100, no allowed level skipped (#22).
@@ -564,6 +568,8 @@ console.log('Model: stage hierarchy, aggregation, filtering, progress, selection
   let r = rows({list: [mk(1), mk(2, {draft: true, project: ''}), mk(3, {web_url: 'https://evil.example/x'})]});
   assert.deepEqual(r.map(x => x.key), ['mr:5!1', 'mr:5!2', 'mr:5!3']);
   assert.equal(r[0].title, 'g/p !1 Fix 1');
+  assert.equal(r[0].host, H);
+  assert.equal(r[0].mrKey, '5!1');
   assert.equal(r[0].subtitle, 'feat-1');
   assert.equal(r[0].info, 'not checked');
   assert.equal(r[0].status, 'neutral');
@@ -607,4 +613,59 @@ console.log('Model: stage hierarchy, aggregation, filtering, progress, selection
   assert.equal(model.accessibleName(rows({list: [mk(1)], status: s})[0]), 'g/p !1 Fix 1, merge request, passed');
   assert.equal(model.accessibleName(rows({list: [mk(1)], total: 3})[1]), '2 more on GitLab');
   assert.equal(model.infoText(rows({list: [mk(1)]})[0], now), 'neutral · not checked');
+}
+
+{
+  const hosts=['one.test','two.test'];
+  const repos=hosts.map(host => ({host,q:host+'|',repo:'g/p',runs:[{id:7,name:'CI',status:'in_progress',run_number:7}]}));
+  const expanded=Object.fromEntries(hosts.flatMap(host => [
+    ['repo:'+host+'|g/p',true],[host+'|g/p:7',true],[host+'|g/p:7:stage:build',true]]));
+  const details=Object.fromEntries(hosts.map(host => [host+'|g/p:7', {jobs:[{id:8,name:'compile',stage:'build',status:'completed',conclusion:'success'}]}]));
+  const all=plain(model.rows(repos,expanded,details,'',0,{'two.test|g/p':true},{'two.test|g/p:7':true}));
+  assert.deepEqual(all.filter(row => row.kind==='repo').map(row => row.key),['repo:two.test|g/p','repo:one.test|g/p']);
+  assert.deepEqual(all.filter(row => row.kind==='run').map(row => row.key),['two.test|g/p:7','one.test|g/p:7']);
+  assert.deepEqual(all.filter(row => row.kind==='job').map(row => [row.key,row.job]),[['two.test|g/p:7:8','8'],['one.test|g/p:7:8','8']]);
+  assert.equal(all.find(row => row.key==='two.test|g/p:7').watched,true);
+  assert.equal(all.find(row => row.key==='one.test|g/p:7').watched,false);
+  for (const row of all) {
+    assert.equal(row.host, row.key.includes('two.test|') ? 'two.test' : 'one.test');
+    assert.ok(model.accessibleName(row).endsWith(' on '+row.host),row.kind);
+  }
+  const other=plain(model.rows([{...repos[0],hidden:{running:1}}],expanded,
+    {'one.test|g/p:7':{bridges:[{id:9,name:'child',stage:'build',status:'in_progress',downstream:null}]}},'',0));
+  assert.ok(other.some(row => row.kind==='more'));
+  assert.ok(other.some(row => row.kind==='trigger'));
+  for (const row of other) assert.ok(model.accessibleName(row).endsWith(' on one.test'),row.kind);
+  const loading=plain(model.rows([repos[0]],expanded,{},'',0));
+  assert.ok(model.accessibleName(loading.find(row => row.kind==='message')).endsWith(' on one.test'));
+  assert.equal(all.find(row => row.kind==='repo').hostLabel,'two.test');
+  assert.deepEqual(plain(model.rows(repos,expanded,details,'',0,{}, {}, 'two.test')).filter(row => row.kind==='repo').map(row => row.host),['two.test']);
+  assert.deepEqual(plain(model.rows(repos,{}, {},'one.test',0)).map(row => row.host),['one.test']);
+  assert.deepEqual(plain(model.autoOpen(repos.map(repo => ({...repo,runs:[{name:'needle'}]})),'needle','two.test')),
+    {'repo:two.test|g/p':true});
+
+  const mr={project_id:1,iid:1,project:'g/p',title:'Fix',source_branch:'main'};
+  const mrs={list:[mr],status:{},total:3};
+  const one=model.mrRows(mrs,'',0,'one.test','', 'one.test|');
+  const two=model.mrRows(mrs,'',0,'two.test','', 'two.test|');
+  assert.equal(one[0].key,'mr:one.test|1!1'); assert.equal(two[0].key,'mr:two.test|1!1');
+  assert.equal(one[0].mrKey,'1!1'); assert.equal(one[0].hostLabel,'one.test');
+  assert.equal(one[1].key,'mr:more:one.test'); assert.equal(two[1].key,'mr:more:two.test');
+  assert.equal(one[1].title,'2 more on GitLab · one.test');
+  assert.equal(one[1].hostLabel,'one.test');
+  for (const row of one) assert.ok(model.accessibleName(row).endsWith(' on one.test'));
+  assert.deepEqual(plain(model.mrRows(mrs,'two.test',0,'two.test','', 'two.test|')).map(row => row.key),['mr:two.test|1!1']);
+
+  assert.deepEqual(open({filter:'g/p'},hosts),{filter:'g/p',host:'',notice:''});
+  assert.deepEqual(open({filter:'g/p',host:'TWO.TEST'},hosts),{filter:'g/p',host:'two.test',notice:''});
+  assert.deepEqual(open({filter:'g/p',host:'one.test'},['one.test:443','ONE.TEST:8443']),{filter:'g/p',host:'',notice:''});
+  assert.deepEqual(open({filter:'g/p',host:'one.test:443'},['one.test:443','ONE.TEST:8443']),{filter:'g/p',host:'',notice:''});
+  assert.deepEqual(open({filter:'g/p',host:'other.test'},hosts),
+    {filter:null,host:'',notice:'Repository is on other.test; this panel shows one.test, two.test'});
+  assert.deepEqual(open('{bad',hosts),{filter:null,host:'',notice:''});
+
+  model.syncRows(list,[{key:'same',title:'same',host:'one.test',hostLabel:'one.test'}]);
+  edits=0;
+  model.syncRows(list,[{key:'same',title:'same',host:'two.test',hostLabel:'two.test'}]);
+  assert.equal(backing[0].rowData.host,'two.test'); assert.equal(edits,1);
 }
