@@ -39,6 +39,21 @@ class ValidationTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 gitlab.host_name(value)
 
+    def test_host_config_matches_action_gate(self):
+        cases = json.loads((Path(__file__).parent / "host-config.json").read_text())
+        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"HOME": home}):
+            config = Path(home) / ".config/omarchy/shell.json"
+            config.parent.mkdir(parents=True)
+            for case in cases:
+                with self.subTest(case=case["name"]):
+                    entry = next((item for item in case["plugins"] if isinstance(item, dict) and
+                                  item.get("id") == "olafkfreund.gitlab-pipelines"), None)
+                    actual = gitlab.host_config(entry)
+                    self.assertEqual({**actual, "error": bool(actual["error"])}, case["expect"])
+                    config.write_text(json.dumps({"plugins": case["plugins"]}))
+                    for host, enabled in case["actions"].items():
+                        self.assertEqual(gitlab.actions_enabled(host), enabled, host)
+
     def test_endpoints(self):
         base = "projects/g%2Fsub%2Fp/pipelines"
         cases = [({"kind": "catalogue", "page": 2}, "projects?membership=true&per_page=100&page=2"),

@@ -5,15 +5,45 @@ function reply(stdout, code, requestId) {
         error: code === 127 ? "python3 not found" : "GitLab helper failed (exit " + code + "); see the shell log"});
 }
 
+function hostConfig(entry) {
+    var result = {hosts:[], ignored:[], error:""};
+    entry = entry || {};
+    if (entry.hosts !== undefined && !Array.isArray(entry.hosts)) {
+        result.error = "invalid hosts";
+        return result;
+    }
+    var items = entry.hosts && entry.hosts.length ? entry.hosts : [entry];
+    var seen = Object.create(null);
+    for (var i=0; i<items.length; i++) {
+        var item = items[i];
+        var host = item && typeof item === "object" && !Array.isArray(item) ? item.host : undefined;
+        if (!(entry.hosts && entry.hosts.length) && typeof host !== "string") host = "gitlab.com";
+        if (typeof host !== "string" || !/^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$/.test(host)) {
+            result.error = "invalid host " + (host === undefined ? "" : host);
+            result.hosts = []; result.ignored = [];
+            return result;
+        }
+        if (seen[host.toLowerCase()]) continue;
+        seen[host.toLowerCase()] = true;
+        var value = {host:host, actions:item.actions === true,
+            projects:Array.isArray(item.projects) ? item.projects : [],
+            pinned:Array.isArray(item.pinned) ? item.pinned : []};
+        if (result.hosts.length < 4) result.hosts.push(value);
+        else result.ignored.push(host);
+    }
+    return result;
+}
+
 // The trailing slash pins the host; no whitespace or Cc control may reach xdg-open's helpers (#15, ghtui #32).
 function browsable(url, host) {
     if (typeof url !== "string" || typeof host !== "string") return false;
     var pinned = host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp("^https://" + pinned + "/[^\\s\\x00-\\x1f\\x7f-\\x9f]+$").test(url);
+    return new RegExp("^https://" + pinned + "/[^\\s\\x00-\\x1f\\x7f-\\x9f]+$", "i").test(url);
 }
 
 function openFilter(payload, panelHost) {
-    var empty = {filter: null, notice: ""};
+    var multi = Array.isArray(panelHost);
+    var empty = multi ? {filter: null, host: "", notice: ""} : {filter: null, notice: ""};
     try {
         var value = typeof payload === "string" ? JSON.parse(payload) : payload;
         if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.filter !== "string") return empty;
@@ -21,12 +51,18 @@ function openFilter(payload, panelHost) {
         if (!filter || filter.length > 200) return empty;
         if ("host" in value) {
             if (typeof value.host !== "string" || !value.host) return empty;
+            if (multi) {
+                var matches = panelHost.filter(function(host) { return value.host.replace(/:[0-9]+$/, "").toLowerCase() === host.replace(/:[0-9]+$/, "").toLowerCase(); });
+                if (matches.length) return {filter: filter, host: matches.length === 1 ? matches[0] : "", notice: ""};
+                var shownHost = value.host.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").slice(0, 100);
+                return {filter: null, host: "", notice: "Repository is on " + shownHost + "; this panel shows " + panelHost.join(", ")};
+            }
             if (value.host.toLowerCase() !== panelHost.replace(/:[0-9]+$/, "").toLowerCase()) {
                 var shown = value.host.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").slice(0, 100);
                 return {filter: null, notice: "Repository is on " + shown + "; this panel shows " + panelHost};
             }
         }
-        return {filter: filter, notice: ""};
+        return multi ? {filter: filter, host: "", notice: ""} : {filter: filter, notice: ""};
     } catch (error) {
         return empty;
     }
@@ -83,15 +119,37 @@ function barCounts(repos) {
     return {running:running,failed:failed};
 }
 
-function barStatus(polling, configError, host, instance, now) {
+function barHost(polling, configError, host, now) {
     var counts=barCounts(polling.repos);
     var reason=configError || (polling.auth ? polling.error : polling.catalogueError) || "";
     var state=configError || polling.auth || polling.catalogueError ? "stopped" :
         polling.cooldown>now ? "rate" : polling.countsAt===undefined ? "none" : "ok";
-    return {version:1,instance:instance,host:host,
-        state:state,
-        running:counts.running,failed:counts.failed,countsAt:polling.countsAt===undefined ? 0 : polling.countsAt,
-        cooldownUntil:state==="rate" ? polling.cooldown : 0,reason:reason,writtenAt:now};
+    return {host:host,state:state,running:counts.running,failed:counts.failed,
+        countsAt:polling.countsAt===undefined ? 0 : polling.countsAt,
+        cooldownUntil:state==="rate" ? polling.cooldown : 0,reason:reason};
+}
+
+function barStatus(polling, configError, host, instance, now, more) {
+    var first=barHost(polling, configError, host, now);
+    if (!Array.isArray(more) || !more.length) return {version:1,instance:instance,host:host,
+        state:first.state,running:first.running,failed:first.failed,countsAt:first.countsAt,
+        cooldownUntil:first.cooldownUntil,reason:first.reason,writtenAt:now};
+    var hosts=[first].concat(more.map(function(item) { return barHost(item.state, configError, item.host, now); }));
+    var running=0, failed=0, countsAt=0, cooldown=0, reason="", hasOk=false, hasRate=false, hasStopped=false;
+    hosts.forEach(function(h) {
+        if ((h.state==="ok" || h.state==="rate") && h.countsAt>0) {
+            running+=h.running;
+            failed+=h.failed;
+            countsAt=countsAt ? Math.min(countsAt, h.countsAt) : h.countsAt;
+        }
+        if (h.state==="ok") hasOk=true;
+        else if (h.state==="rate") { hasRate=true; cooldown=Math.max(cooldown, h.cooldownUntil); }
+        else if (h.state==="stopped") { hasStopped=true; if (!reason && h.reason) reason=h.host+": "+h.reason; }
+    });
+    var state=configError ? "stopped" : hasOk ? "ok" : hasRate ? "rate" : hasStopped ? "stopped" : "none";
+    return {version:1,instance:instance,host:host+" +"+more.length,
+        state:state,running:running,failed:failed,countsAt:countsAt,
+        cooldownUntil:state==="rate" ? cooldown : 0,reason:configError || reason,writtenAt:now,hosts:hosts};
 }
 
 function group(status) {
@@ -205,7 +263,8 @@ function infoText(row, now) {
 }
 
 function accessibleName(row) {
-    if (row.kind === "more" || row.kind === "message") return row.title;
+    var host = row.host && (row.hostLabel || row.multi) ? " on " + row.host : "";
+    if (row.kind === "more" || row.kind === "message") return row.title + host;
     var kinds = {repo: "project", run: "pipeline", stage: "stage", job: "job", trigger: "downstream pipeline", mr: "merge request"};
     var parts = [row.title, kinds[row.kind]];
     if (row.kind === "repo" && row.pinned) parts.push("pinned");
@@ -213,11 +272,12 @@ function accessibleName(row) {
     var status = group(row.status);
     var names = {success: "passed", allowed: "failed, allowed", neutral: "no status", unknown: "no status"};
     parts.push(names[status] || status);
-    return parts.join(", ");
+    return parts.join(", ") + host;
 }
 
 // Merge-request view (#40). selectedKey is the scheduler key "<project_id>!<iid>".
-function mrRows(mrs, filter, now, host, selectedKey) {
+function mrRows(mrs, filter, now, host, selectedKey, q) {
+    q = q || "";
     var query = filter.toLowerCase(), list = (mrs && mrs.list) || [], result = [];
     list.forEach(function(mr) {
         var key = mr.project_id + "!" + mr.iid, st = (mrs.status || {})[key];
@@ -231,15 +291,17 @@ function mrRows(mrs, filter, now, host, selectedKey) {
         }
         var project = mr.project || "unknown project";
         var title = project + " !" + mr.iid + " " + mr.title;
-        if (query && [title, mr.source_branch, status].join(" ").toLowerCase().indexOf(query) < 0) return;
-        result.push({key: "mr:" + key, parent: "", kind: "mr", depth: 0, title: (mr.draft ? "Draft · " : "") + title,
-            subtitle: mr.source_branch || "", status: status, info: info, repo: mr.project || "",
+        if (query && [title, mr.source_branch, status, q ? host : ""].join(" ").toLowerCase().indexOf(query) < 0) return;
+        result.push({key: "mr:" + q + key, parent: "", kind: "mr", depth: 0, title: (mr.draft ? "Draft · " : "") + title,
+            subtitle: mr.source_branch || "", status: status, info: info, repo: mr.project || "", mrKey: key,
+            host: host, hostLabel: q ? host : "", multi: !!q,
             url: browsable(mr.web_url, host) ? mr.web_url : ""});
     });
     var total = mrs && typeof mrs.total === "number" ? mrs.total : 0;
-    if (!query && (total === -1 || total > list.length)) result.push({key: "mr:more", parent: "", kind: "more", depth: 0,
-        title: total === -1 ? "more on GitLab" : (total - list.length) + " more on GitLab", subtitle: "o opens GitLab",
-        status: "", info: "", repo: "", url: "https://" + host + "/dashboard/merge_requests?scope=created_by_me&state=opened"});
+    if (!query && (total === -1 || total > list.length)) result.push({key: q ? "mr:more:" + host : "mr:more", parent: "", kind: "more", depth: 0,
+        title: (total === -1 ? "more on GitLab" : (total - list.length) + " more on GitLab") + (q ? " · " + host : ""), subtitle: "o opens GitLab",
+        status: "", info: "", repo: "", host: host, hostLabel: "", multi: !!q,
+        url: "https://" + host + "/dashboard/merge_requests?scope=created_by_me&state=opened"});
     return result;
 }
 
@@ -249,20 +311,21 @@ function subtitleText(row, now) {
 }
 
 function repoMatches(repo, query) {
-    return (repo.repo + " " + (repo.description || "")).toLowerCase().indexOf(query) >= 0;
+    return (repo.repo + " " + (repo.description || "") + (repo.q ? " " + repo.host : "")).toLowerCase().indexOf(query) >= 0;
 }
 
 function runMatches(run, query) {
     return [run.name, run.display_title, run.head_branch, shortRef(run.head_branch), state(run)].join(" ").toLowerCase().indexOf(query) >= 0;
 }
 
-function autoOpen(repos, filter) {
+function autoOpen(repos, filter, openHost) {
     var result = {};
     var query = filter.toLowerCase();
     if (!query) return result;
     repos.forEach(function(repo) {
+        if (openHost && repo.host !== openHost) return;
         if (!repoMatches(repo, query) && (repo.runs || []).some(function(run) { return runMatches(run, query); }))
-            result["repo:" + repo.repo] = true;
+            result["repo:" + (repo.q || "") + repo.repo] = true;
     });
     return result;
 }
@@ -275,12 +338,14 @@ function merge(expanded, auto, collapsed) {
     return result;
 }
 
-function rows(repos, expanded, details, filter, now, pinned, watched) {
+function rows(repos, expanded, details, filter, now, pinned, watched, openHost) {
     var result = [];
     var query = filter.toLowerCase();
     pinned = pinned || {};
     watched = watched || {};
-    repos.slice().sort(function(a, b) { return (!!pinned[b.repo]) - (!!pinned[a.repo]) || (b.active || 0) - (a.active || 0); }).forEach(function(repo) {
+    repos.slice().sort(function(a, b) { return (!!pinned[(b.q || "") + b.repo]) - (!!pinned[(a.q || "") + a.repo]) || (b.active || 0) - (a.active || 0); }).forEach(function(repo) {
+        if (openHost && repo.host !== openHost) return;
+        var q = repo.q || "", host = repo.host || "";
         var repoMatch = repoMatches(repo, query);
         var runs = (repo.runs || []).filter(function(run) {
             return repoMatch || runMatches(run, query);
@@ -288,13 +353,14 @@ function rows(repos, expanded, details, filter, now, pinned, watched) {
         if (query && !repoMatch && !runs.length) return;
         var active = repo.active === undefined ? (repo.runs || []).filter(function(run) { return run.status === "in_progress"; }).length : repo.active;
         var last = repo.error ? null : latest(repo.runs || []);
-        var repoKey = "repo:" + repo.repo;
-        result.push({key: repoKey, parent: "", kind: "repo", depth: 0, title: repo.repo, pinned: !!pinned[repo.repo],
+        var repoKey = "repo:" + q + repo.repo;
+        result.push({key: repoKey, parent: "", kind: "repo", depth: 0, title: repo.repo, pinned: !!pinned[q + repo.repo],
             subtitle: repo.error || repo.description || "", status: repo.error ? "error" : (active ? "running" : (last ? state(last) : "neutral")),
             info: repo.archived ? "archived" : repo.disabled ? "disabled" : repo.error ? "unavailable" :
                 !active && repo.summaryAt !== undefined && !(repo.runs || []).length ? "no pipelines" : repo.checked || repo.runs ? active + " running" : "not checked",
             lastStatus: last ? state(last) : "", lastAt: last ? last.completed_at || last.updated_at || "" : "",
-            checked: repo.checked || "", repo: repo.repo, url: repo.url ? repo.url + "/-/pipelines" : ""});
+            checked: repo.checked || "", repo: repo.repo, host: host, hostLabel: q ? host : "", multi: !!q,
+            url: repo.url ? repo.url + "/-/pipelines" : ""});
         if (!expanded[repoKey]) return;
         // Pipelines past the first page of each unfinished status are counted, not fetched (#15).
         var hidden = repo.hidden || {};
@@ -304,22 +370,22 @@ function rows(repos, expanded, details, filter, now, pinned, watched) {
                 return hidden[s] === -1 ? "+more " + name : "+" + (hidden[s] > 1000 ? "about " : "") + hidden[s] + " more " + name;
             });
         var more = parts.length && (!query || repoMatch) ? {key: repoKey + ":more", parent: repoKey, kind: "more", depth: 1,
-            title: parts.join(" · "), subtitle: "o opens GitLab", status: "", info: "", repo: repo.repo,
+            title: parts.join(" · "), subtitle: "o opens GitLab", status: "", info: "", repo: repo.repo, host: host, multi: !!q,
             url: repo.url ? repo.url + "/-/pipelines" : ""} : null;
         runs.forEach(function(run) {
             if (more && run.status === "completed") { result.push(more); more = null; }
-            var runKey = repo.repo + ":" + run.id;
+            var runKey = q + repo.repo + ":" + run.id;
             var detail = details[runKey];
             result.push({key: runKey, parent: repoKey, kind: "run", depth: 1, title: run.name || "Pipeline",
                 subtitle: (shortRef(run.head_branch) || "") + " · #" + run.run_number + " · " + (run.display_title || ""),
                 status: state(run), info: duration(run, now), started: run.started_at || run.run_started_at || "",
                 ended: run.completed_at || (run.status === "completed" ? run.updated_at : "") || "",
                 finished: run.completed_at || "", fetched: detail && detail.updated || "",
-                repo: repo.repo, run: String(run.id), url: run.html_url, sha: run.sha || "",
-                watched: !!watched[repo.repo + ":" + run.id]});
+                repo: repo.repo, run: String(run.id), host: host, multi: !!q, url: run.html_url, sha: run.sha || "",
+                watched: !!watched[runKey]});
             if (!expanded[runKey]) return;
             if (!detail || detail.error || !detail.jobs) result.push({key: runKey + ":message", parent: runKey, kind: "message", depth: 2,
-                title: detail && detail.error ? detail.error : "Loading jobs…", subtitle: "", status: detail && detail.error ? "error" : "queued", info: "", repo: repo.repo, run: String(run.id)});
+                title: detail && detail.error ? detail.error : "Loading jobs…", subtitle: "", status: detail && detail.error ? "error" : "queued", info: "", repo: repo.repo, run: String(run.id), host: host, multi: !!q});
             var entries = ((detail && detail.jobs) || []).concat((detail && detail.bridges) || []);
             entries.sort(function(a, b) { return Number(a.id) - Number(b.id); });
             stages(entries).forEach(function(stage) {
@@ -328,7 +394,7 @@ function rows(repos, expanded, details, filter, now, pinned, watched) {
                 result.push({key: stageKey, parent: runKey, kind: "stage", depth: 2, title: stage.name, subtitle: "",
                     status: stage.status, info: done + "/" + stage.jobs.length + " jobs · " + duration(stage.span, now),
                     started: stage.span.started_at || "", ended: stage.span.completed_at || "", done: done, total: stage.jobs.length,
-                    repo: repo.repo, run: String(run.id), url: run.html_url, sha: run.sha || ""});
+                    repo: repo.repo, run: String(run.id), host: host, multi: !!q, url: run.html_url, sha: run.sha || ""});
                 if (!expanded[stageKey]) return;
                 stage.jobs.forEach(function(job) {
                     if (Object.prototype.hasOwnProperty.call(job, "downstream")) {
@@ -342,7 +408,7 @@ function rows(repos, expanded, details, filter, now, pinned, watched) {
                                 " · #" + (downstream.iid || downstream.id) + " · " + shortRef(downstream.ref) : "downstream not created or unavailable",
                             status: status === "failed" && job.allow_failure ? "allowed to fail" : status,
                             info: duration(job, now), started: job.started_at || "", ended: job.completed_at || "",
-                            finished: job.completed_at || "", repo: repo.repo, run: String(run.id),
+                            finished: job.completed_at || "", repo: repo.repo, run: String(run.id), job: String(job.id), host: host, multi: !!q,
                             url: downstream && downstream.url || job.html_url, sha: downstream ? downstream.sha : run.sha || ""});
                         return;
                     }
@@ -352,12 +418,12 @@ function rows(repos, expanded, details, filter, now, pinned, watched) {
                         finished: job.completed_at || "", complete: job.status === "completed",
                         serverDuration: job.duration == null ? null : job.duration,
                         queued: job.queued_duration == null ? null : job.queued_duration,
-                        reason: job.failure_reason || "", repo: repo.repo, run: String(run.id), url: job.html_url,
+                        reason: job.failure_reason || "", repo: repo.repo, run: String(run.id), host: host, multi: !!q, url: job.html_url,
                         sha: run.sha || ""});
                 });
             });
             if (detail && detail.bridgesError) result.push({key: runKey + ":bridges-message", parent: runKey, kind: "message", depth: 2,
-                title: "Downstream pipelines: " + detail.bridgesError, subtitle: "", status: "error", info: "", repo: repo.repo, run: String(run.id)});
+                title: "Downstream pipelines: " + detail.bridgesError, subtitle: "", status: "error", info: "", repo: repo.repo, run: String(run.id), host: host, multi: !!q});
         });
         if (more) result.push(more);
     });
@@ -385,11 +451,12 @@ function copyText(row, what) {
 
 // ponytail: the fields the delegate reads that can change for a key; add any new one the delegate reads.
 var shownFields = ["title", "subtitle", "status", "info", "checked", "started", "ended", "finished",
-    "fetched", "done", "total", "complete", "serverDuration", "queued", "reason", "sha", "pinned", "watched", "lastStatus", "lastAt"];
+    "fetched", "done", "total", "complete", "serverDuration", "queued", "reason", "sha", "pinned", "watched", "lastStatus", "lastAt", "host", "hostLabel"];
 
-function watchNotice(code, repo, number) {
-    if (code === "watching") return "Watching #" + number + " in " + repo;
-    if (code === "unwatched") return "Stopped watching #" + number;
+function watchNotice(code, repo, number, host) {
+    var on = host ? " on " + host : "";
+    if (code === "watching") return "Watching #" + number + " in " + repo + on;
+    if (code === "unwatched") return "Stopped watching #" + number + on;
     if (code === "finished") return "Pipeline already finished";
     if (code === "cap") return "At most 5 watched pipelines";
     return "Select a pipeline to watch";
@@ -398,22 +465,23 @@ function watchNotice(code, repo, number) {
 // Notification daemons may read the body as markup; a branch name can contain & or <.
 function bodyText(text) { return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
-function watchMessage(event, oldHost, newHost) {
-    var m = watchText(event, oldHost, newHost);
+function watchMessage(event, oldHost, newHost, host) {
+    var m = watchText(event, oldHost, newHost, host);
     return {summary: m.summary, body: bodyText(m.body)};
 }
 
-function watchText(event, oldHost, newHost) {
-    var w = event.watch || {}, n = event.count;
-    var label = (w.repo + " #" + w.number) + (w.ref ? " · " + w.ref : "");
+function watchText(event, oldHost, newHost, host) {
+    var w = event.watch || {}, n = event.count, on = host ? " on " + host : "";
+    var label = (w.repo + " #" + w.number) + (w.ref ? " · " + w.ref : "") + on;
     var many = n + " " + (n === 1 ? "pipeline" : "pipelines");
     if (event.type === "finished") {
         var word = event.conclusion === "success" ? "passed" : event.conclusion;
         return {summary: "Pipeline " + word, body: label};
     }
-    if (event.type === "expired") return {summary: "Stopped watching a pipeline", body: w.repo + " #" + w.number + ": still running after 6 hours"};
-    if (event.type === "unavailable") return {summary: "Pipeline unavailable", body: w.repo + " #" + w.number};
-    if (event.type === "auth") return {summary: "GitLab sign-in needed", body: "Stopped watching " + many + ". Run glab auth login."};
+    if (event.type === "expired") return {summary: "Stopped watching a pipeline", body: w.repo + " #" + w.number + ": still running after 6 hours" + on};
+    if (event.type === "unavailable") return {summary: "Pipeline unavailable", body: w.repo + " #" + w.number + on};
+    if (event.type === "auth") return {summary: "GitLab sign-in needed", body: "Stopped watching " + many + ". Run glab auth login" + (host ? " --hostname " + host : "") + "."};
+    if (event.type === "removed") return {summary: "Stopped watching " + many, body: n + " " + (n === 1 ? "watch" : "watches") + " on " + (host || oldHost) + " ended: the host was removed."};
     return {summary: "Stopped watching " + many, body: "The panel now uses " + newHost + ", not " + oldHost + "."};
 }
 
@@ -481,10 +549,10 @@ function cut(text) {
     return text.length > 30 ? text.slice(0, 29) + "…" : text;
 }
 
-function describe(action, repo, run, job) {
-    var ref = cut(run.head_branch || ""), name = cut(run.name || "Pipeline");
-    var pipe = "#" + run.run_number + " " + name + " (" + ref + ") in " + repo;
-    var one = job ? cut(job.name) + " (job " + job.id + ") of #" + run.run_number + " in " + repo : "";
+function describe(action, repo, run, job, host) {
+    var ref = cut(run.head_branch || ""), name = cut(run.name || "Pipeline"), on = host ? " on " + host : "";
+    var pipe = "#" + run.run_number + " " + name + " (" + ref + ") in " + repo + on;
+    var one = job ? cut(job.name) + " (job " + job.id + ") of #" + run.run_number + " in " + repo + on : "";
     var yes = " y yes · Esc no", undone = " Cannot be undone.";
     switch (action) {
     case "retry-pipeline": return {confirm: "Retry pipeline " + pipe + "?" + yes, done: "Retry requested: pipeline " + pipe};
@@ -492,8 +560,8 @@ function describe(action, repo, run, job) {
     case "retry-job": return {confirm: "Retry job " + one + "?" + yes, done: "Retry requested: job " + one};
     case "cancel-job": return {confirm: "Cancel job " + one + "?" + undone + yes, done: "Cancel requested: job " + one};
     case "play-job": return {confirm: "Play manual job " + one + " with its default variables?" + yes, done: "Play requested: job " + one};
-    default: return {confirm: "Start a new pipeline on " + ref + " in " + repo + " with default variables?" + yes,
-        done: "New pipeline requested on " + ref + " in " + repo};
+    default: return {confirm: "Start a new pipeline on " + ref + " in " + repo + " with default variables" + on + "?" + yes,
+        done: "New pipeline requested on " + ref + " in " + repo + on};
     }
 }
 

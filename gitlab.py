@@ -113,6 +113,37 @@ def host_name(value):
     return value
 
 
+def host_config(entry):
+    result = {"hosts": [], "ignored": [], "error": ""}
+    entry = entry if isinstance(entry, dict) else {}
+    if "hosts" in entry and not isinstance(entry["hosts"], list):
+        result["error"] = "invalid hosts"
+        return result
+    items = entry.get("hosts") or [entry]
+    multi = bool(entry.get("hosts"))
+    seen = set()
+    for item in items:
+        host = item.get("host") if isinstance(item, dict) else None
+        if not multi and not isinstance(host, str):
+            host = "gitlab.com"
+        try:
+            host_name(host)
+        except ValueError:
+            result.update(hosts=[], ignored=[], error=f"invalid host {host if host is not None else ''}")
+            return result
+        if host.lower() in seen:
+            continue
+        seen.add(host.lower())
+        value = {"host": host, "actions": item.get("actions") is True,
+                 "projects": item.get("projects") if isinstance(item.get("projects"), list) else [],
+                 "pinned": item.get("pinned") if isinstance(item.get("pinned"), list) else []}
+        if len(result["hosts"]) < 4:
+            result["hosts"].append(value)
+        else:
+            result["ignored"].append(host)
+    return result
+
+
 def request(endpoint, host="gitlab.com", method=None):
     child = subprocess.Popen(
         ["glab", "api", "--hostname", host_name(host), "--include"] +
@@ -392,10 +423,13 @@ def actions_enabled(host):
     try:
         config = json.loads((Path(os.environ["HOME"]) / ".config/omarchy/shell.json").read_text())
         entries = config.get("plugins", [])
-        return isinstance(entries, list) and any(
-            isinstance(entry, dict) and entry.get("id") == "olafkfreund.gitlab-pipelines" and
-            entry.get("actions") is True and
-            (entry.get("host") if isinstance(entry.get("host"), str) else "gitlab.com").lower() == host.lower() for entry in entries)
+        if not isinstance(entries, list):
+            return False
+        entry = next((item for item in entries if isinstance(item, dict) and
+                      item.get("id") == "olafkfreund.gitlab-pipelines"), None)
+        hosts = host_config(entry)
+        return not hosts["error"] and any(item["host"].lower() == host.lower() and item["actions"]
+                                          for item in hosts["hosts"])
     except (KeyError, OSError, ValueError, TypeError, AttributeError):
         return False
 

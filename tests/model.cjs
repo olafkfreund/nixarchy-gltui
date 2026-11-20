@@ -5,6 +5,11 @@ const model = {};
 vm.createContext(model);
 vm.runInContext(fs.readFileSync('PipelinesModel.js', 'utf8'), model);
 const plain = value => JSON.parse(JSON.stringify(value));
+for (const test of JSON.parse(fs.readFileSync('tests/host-config.json', 'utf8'))) {
+  const entry=test.plugins.find(item => item && item.id === 'olafkfreund.gitlab-pipelines');
+  const actual=plain(model.hostConfig(entry));
+  assert.deepEqual({...actual,error:!!actual.error},test.expect,test.name);
+}
 const failedRun = (id, conclusion) => ({id,status:'completed',conclusion});
 assert.deepEqual(plain(model.barCounts([
   {repo:'no/runs'},
@@ -86,6 +91,8 @@ assert.equal(rows[3].title, 'compile');
 assert.equal(rows[3].status, 'success');
 assert.equal(rows[3].url, 'https://gitlab.com/p/-/jobs/8');
 assert.equal(rows[3].job, '8', 'a job row carries its id');
+assert.equal(rows[0].host, '');
+assert.equal(rows[1].run, '7');
 const twin = model.rows(repos, expanded, {[runKey]: {jobs: [
   {id: 11, name: 'lint', stage: 'build', status: 'completed', conclusion: 'success'},
   {id: 12, name: 'lint', stage: 'build', status: 'completed', conclusion: 'success'}]}}, '', Date.now());
@@ -392,7 +399,7 @@ model.syncRows(list, [first[0]]);
 assert.equal(list.count, 1);
 assert.equal(backing[0].rowKey, 'a');
 for (const field of ['checked','started','ended','finished','fetched','done','total','complete',
-  'serverDuration','queued','reason','pinned','watched','lastStatus','lastAt']) {
+  'serverDuration','queued','reason','pinned','watched','lastStatus','lastAt','host','hostLabel']) {
   const value = field === 'serverDuration' ? 0 : field === 'complete' ? false : 'value';
   model.syncRows(list, [{...first[0], [field]:value}]);
   assert.equal(backing[0].rowData[field], value, field + ' appeared');
@@ -434,6 +441,8 @@ assert.ok(structural <= 51, `one removal and 50 inserts cost ${structural} model
 // o opens only plain https URLs on the configured host (#15).
 assert.equal(model.browsable('https://gitlab.com/g/p/-/pipelines/1', 'gitlab.com'), true);
 assert.equal(model.browsable('https://git.example.org:8443/g/p', 'git.example.org:8443'), true);
+assert.equal(model.browsable('https://GIT.EXAMPLE.ORG:8443/g/p', 'git.example.org:8443'), true);
+assert.equal(model.browsable('https://git.example.org:8444/g/p', 'git.example.org:8443'), false);
 for (const url of ['https://evil.com/x', 'https://gitlab.com.evil/x', 'https://gitlabXcom/x', 'https://gitlab.com/a\u0007b', 'https://gitlab.com/a b', 'http://gitlab.com/x', 5, undefined])
   assert.equal(model.browsable(url, 'gitlab.com'), false, String(url));
 // Zoom steps: 75..200, multiples of 10 from 100, no allowed level skipped (#22).
@@ -559,6 +568,8 @@ console.log('Model: stage hierarchy, aggregation, filtering, progress, selection
   let r = rows({list: [mk(1), mk(2, {draft: true, project: ''}), mk(3, {web_url: 'https://evil.example/x'})]});
   assert.deepEqual(r.map(x => x.key), ['mr:5!1', 'mr:5!2', 'mr:5!3']);
   assert.equal(r[0].title, 'g/p !1 Fix 1');
+  assert.equal(r[0].host, H);
+  assert.equal(r[0].mrKey, '5!1');
   assert.equal(r[0].subtitle, 'feat-1');
   assert.equal(r[0].info, 'not checked');
   assert.equal(r[0].status, 'neutral');
@@ -602,4 +613,141 @@ console.log('Model: stage hierarchy, aggregation, filtering, progress, selection
   assert.equal(model.accessibleName(rows({list: [mk(1)], status: s})[0]), 'g/p !1 Fix 1, merge request, passed');
   assert.equal(model.accessibleName(rows({list: [mk(1)], total: 3})[1]), '2 more on GitLab');
   assert.equal(model.infoText(rows({list: [mk(1)]})[0], now), 'neutral · not checked');
+}
+
+{
+  const hosts=['one.test','two.test'];
+  const repos=hosts.map(host => ({host,q:host+'|',repo:'g/p',runs:[{id:7,name:'CI',status:'in_progress',run_number:7}]}));
+  const expanded=Object.fromEntries(hosts.flatMap(host => [
+    ['repo:'+host+'|g/p',true],[host+'|g/p:7',true],[host+'|g/p:7:stage:build',true]]));
+  const details=Object.fromEntries(hosts.map(host => [host+'|g/p:7', {jobs:[{id:8,name:'compile',stage:'build',status:'completed',conclusion:'success'}]}]));
+  const all=plain(model.rows(repos,expanded,details,'',0,{'two.test|g/p':true},{'two.test|g/p:7':true}));
+  assert.deepEqual(all.filter(row => row.kind==='repo').map(row => row.key),['repo:two.test|g/p','repo:one.test|g/p']);
+  assert.deepEqual(all.filter(row => row.kind==='run').map(row => row.key),['two.test|g/p:7','one.test|g/p:7']);
+  assert.deepEqual(all.filter(row => row.kind==='job').map(row => [row.key,row.job]),[['two.test|g/p:7:8','8'],['one.test|g/p:7:8','8']]);
+  assert.equal(all.find(row => row.key==='two.test|g/p:7').watched,true);
+  assert.equal(all.find(row => row.key==='one.test|g/p:7').watched,false);
+  for (const row of all) {
+    assert.equal(row.host, row.key.includes('two.test|') ? 'two.test' : 'one.test');
+    assert.ok(model.accessibleName(row).endsWith(' on '+row.host),row.kind);
+  }
+  const other=plain(model.rows([{...repos[0],hidden:{running:1}}],expanded,
+    {'one.test|g/p:7':{bridges:[{id:9,name:'child',stage:'build',status:'in_progress',downstream:null}]}},'',0));
+  assert.ok(other.some(row => row.kind==='more'));
+  assert.ok(other.some(row => row.kind==='trigger'));
+  for (const row of other) assert.ok(model.accessibleName(row).endsWith(' on one.test'),row.kind);
+  const loading=plain(model.rows([repos[0]],expanded,{},'',0));
+  assert.ok(model.accessibleName(loading.find(row => row.kind==='message')).endsWith(' on one.test'));
+  assert.equal(all.find(row => row.kind==='repo').hostLabel,'two.test');
+  assert.deepEqual(plain(model.rows(repos,expanded,details,'',0,{}, {}, 'two.test')).filter(row => row.kind==='repo').map(row => row.host),['two.test']);
+  assert.deepEqual(plain(model.rows(repos,{}, {},'one.test',0)).map(row => row.host),['one.test']);
+  assert.deepEqual(plain(model.autoOpen(repos.map(repo => ({...repo,runs:[{name:'needle'}]})),'needle','two.test')),
+    {'repo:two.test|g/p':true});
+
+  const mr={project_id:1,iid:1,project:'g/p',title:'Fix',source_branch:'main'};
+  const mrs={list:[mr],status:{},total:3};
+  const one=model.mrRows(mrs,'',0,'one.test','', 'one.test|');
+  const two=model.mrRows(mrs,'',0,'two.test','', 'two.test|');
+  assert.equal(one[0].key,'mr:one.test|1!1'); assert.equal(two[0].key,'mr:two.test|1!1');
+  assert.equal(one[0].mrKey,'1!1'); assert.equal(one[0].hostLabel,'one.test');
+  assert.equal(one[1].key,'mr:more:one.test'); assert.equal(two[1].key,'mr:more:two.test');
+  assert.equal(one[1].title,'2 more on GitLab · one.test');
+  assert.equal(one[1].hostLabel,'');
+  for (const row of one) assert.ok(model.accessibleName(row).endsWith(' on one.test'));
+  assert.deepEqual(plain(model.mrRows(mrs,'two.test',0,'two.test','', 'two.test|')).map(row => row.key),['mr:two.test|1!1']);
+
+  assert.deepEqual(open({filter:'g/p'},hosts),{filter:'g/p',host:'',notice:''});
+  assert.deepEqual(open({filter:'g/p',host:'TWO.TEST'},hosts),{filter:'g/p',host:'two.test',notice:''});
+  assert.deepEqual(open({filter:'g/p',host:'one.test'},['one.test:443','ONE.TEST:8443']),{filter:'g/p',host:'',notice:''});
+  assert.deepEqual(open({filter:'g/p',host:'one.test:443'},['one.test:443','ONE.TEST:8443']),{filter:'g/p',host:'',notice:''});
+  assert.deepEqual(open({filter:'g/p',host:'other.test'},hosts),
+    {filter:null,host:'',notice:'Repository is on other.test; this panel shows one.test, two.test'});
+  assert.deepEqual(open('{bad',hosts),{filter:null,host:'',notice:''});
+
+  model.syncRows(list,[{key:'same',title:'same',host:'one.test',hostLabel:'one.test'}]);
+  edits=0;
+  model.syncRows(list,[{key:'same',title:'same',host:'two.test',hostLabel:'two.test'}]);
+  assert.equal(backing[0].rowData.host,'two.test'); assert.equal(edits,1);
+
+  const p={run_number:7,name:'CI',head_branch:'main'},j={id:99,name:'build'};
+  assert.deepEqual(plain(model.describe('retry-pipeline','g/p',p,null,'one.test')),
+    {confirm:'Retry pipeline #7 CI (main) in g/p on one.test? y yes · Esc no',done:'Retry requested: pipeline #7 CI (main) in g/p on one.test'});
+  assert.deepEqual(plain(model.describe('cancel-pipeline','g/p',p,null,'one.test')),
+    {confirm:'Cancel pipeline #7 CI (main) in g/p on one.test? Cannot be undone. y yes · Esc no',done:'Cancel requested: pipeline #7 CI (main) in g/p on one.test'});
+  assert.deepEqual(plain(model.describe('retry-job','g/p',p,j,'one.test')),
+    {confirm:'Retry job build (job 99) of #7 in g/p on one.test? y yes · Esc no',done:'Retry requested: job build (job 99) of #7 in g/p on one.test'});
+  assert.deepEqual(plain(model.describe('cancel-job','g/p',p,j,'one.test')),
+    {confirm:'Cancel job build (job 99) of #7 in g/p on one.test? Cannot be undone. y yes · Esc no',done:'Cancel requested: job build (job 99) of #7 in g/p on one.test'});
+  assert.deepEqual(plain(model.describe('play-job','g/p',p,j,'one.test')),
+    {confirm:'Play manual job build (job 99) of #7 in g/p on one.test with its default variables? y yes · Esc no',done:'Play requested: job build (job 99) of #7 in g/p on one.test'});
+  assert.deepEqual(plain(model.describe('new-pipeline','g/p',p,null,'one.test')),
+    {confirm:'Start a new pipeline on main in g/p with default variables on one.test? y yes · Esc no',done:'New pipeline requested on main in g/p on one.test'});
+
+  assert.deepEqual(['watching','unwatched','finished','cap','missing'].map(c => model.watchNotice(c,'g/p',3,'one.test')),
+    ['Watching #3 in g/p on one.test','Stopped watching #3 on one.test','Pipeline already finished','At most 5 watched pipelines','Select a pipeline to watch']);
+  const w={repo:'g/p',number:3,ref:'main'};
+  const msg=(event,a,b,h) => plain(model.watchMessage(event,a,b,h));
+  assert.deepEqual(msg({type:'finished',watch:w,conclusion:'success'},'','','one.test'),
+    {summary:'Pipeline passed',body:'g/p #3 · main on one.test'});
+  assert.deepEqual(msg({type:'finished',watch:{...w,ref:''},conclusion:'failed'},'','','one.test'),
+    {summary:'Pipeline failed',body:'g/p #3 on one.test'});
+  assert.deepEqual(msg({type:'expired',watch:w},'','','one.test'),
+    {summary:'Stopped watching a pipeline',body:'g/p #3: still running after 6 hours on one.test'});
+  assert.deepEqual(msg({type:'unavailable',watch:w},'','','one.test'),
+    {summary:'Pipeline unavailable',body:'g/p #3 on one.test'});
+  assert.deepEqual(msg({type:'auth',count:1},'','','one.test'),
+    {summary:'GitLab sign-in needed',body:'Stopped watching 1 pipeline. Run glab auth login --hostname one.test.'});
+  assert.deepEqual(msg({type:'auth',count:2},'','','one.test'),
+    {summary:'GitLab sign-in needed',body:'Stopped watching 2 pipelines. Run glab auth login --hostname one.test.'});
+  assert.deepEqual(msg({type:'removed',count:1},'one.test','','one.test'),
+    {summary:'Stopped watching 1 pipeline',body:'1 watch on one.test ended: the host was removed.'});
+  assert.deepEqual(msg({type:'removed',count:3},'two.test',''),
+    {summary:'Stopped watching 3 pipelines',body:'3 watches on two.test ended: the host was removed.'});
+
+  assert.deepEqual(plain(model.barStatus(polling,'','gitlab.com','instance-1',200,[])),status());
+  const poll=(repos,extra={}) => ({repos,countsAt:100,cooldown:0,auth:false,error:'',catalogueError:'',...extra});
+  const pOk=poll([{repo:'a/b',active:2,runs:[failedRun(1,'failed')]}],{countsAt:150});
+  const pRate=poll([{repo:'c/d',active:3,runs:[failedRun(2,'failed'),failedRun(3,'success')]}],{countsAt:90,cooldown:400});
+  const pRateNoCounts=poll([{repo:'e/f',active:9,runs:[failedRun(4,'failed')]}],{countsAt:undefined,cooldown:500});
+  const pStopped=poll([{repo:'g/h',active:5,runs:[failedRun(5,'failed')]}],{countsAt:80,auth:true,error:'sign in'});
+  const pNone=poll([],{countsAt:undefined});
+
+  const okRate=plain(model.barStatus(pOk,'','one.test','inst',200,[{host:'two.test',state:pRate},{host:'three.test',state:pRateNoCounts}]));
+  assert.deepEqual(okRate,{
+    version:1,instance:'inst',host:'one.test +2',state:'ok',running:5,failed:1,countsAt:90,cooldownUntil:0,reason:'',writtenAt:200,
+    hosts:[
+      {host:'one.test',state:'ok',running:2,failed:1,countsAt:150,cooldownUntil:0,reason:''},
+      {host:'two.test',state:'rate',running:3,failed:0,countsAt:90,cooldownUntil:400,reason:''},
+      {host:'three.test',state:'rate',running:9,failed:1,countsAt:0,cooldownUntil:500,reason:''}
+    ]
+  });
+
+  const stoppedNone=plain(model.barStatus(pNone,'','one.test','inst',200,[
+    {host:'two.test',state:pStopped},
+    {host:'three.test',state:poll([],{catalogueError:'denied'})}
+  ]));
+  assert.equal(stoppedNone.state,'stopped');
+  assert.equal(stoppedNone.host,'one.test +2');
+  assert.equal(stoppedNone.running,0);
+  assert.equal(stoppedNone.failed,0);
+  assert.equal(stoppedNone.countsAt,0);
+  assert.equal(stoppedNone.reason,'two.test: sign in');
+
+  const allRate=plain(model.barStatus(pRate,'','one.test','inst',200,[{host:'two.test',state:pRateNoCounts}]));
+  assert.equal(allRate.state,'rate');
+  assert.equal(allRate.cooldownUntil,500);
+  assert.equal(allRate.running,3);
+  assert.equal(allRate.countsAt,90);
+
+  const allNone=plain(model.barStatus(pNone,'','one.test','inst',200,[{host:'two.test',state:pNone}]));
+  assert.equal(allNone.state,'none');
+  assert.equal(allNone.countsAt,0);
+
+  const cfgErr=plain(model.barStatus(pOk,'bad hosts','one.test','inst',200,[{host:'two.test',state:pRate}]));
+  assert.equal(cfgErr.state,'stopped');
+  assert.equal(cfgErr.reason,'bad hosts');
+  assert.equal(cfgErr.running,0);
+  assert.equal(cfgErr.failed,0);
+  assert.equal(cfgErr.cooldownUntil,0);
+  assert.ok(cfgErr.hosts.every(h => h.state==='stopped' && h.reason==='bad hosts'));
 }

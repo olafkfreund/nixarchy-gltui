@@ -127,6 +127,32 @@ test('a spare slot serves a due pin before background work', () => {
   s.wakeAt=Infinity; s.slot=0; // an interactive slot with nothing interactive or active due
   assert.equal(polling.next(s,0).repo,'pin/p');
 });
+test('choose follows explicit group order without dispatching', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.wakeAt=Infinity;
+  s.repos=[{repo:'active/p'},{repo:'idle/p'}];
+  polling.ensure(s,'activity','active/p','','active',0);
+  polling.ensure(s,'activity','idle/p','','background',0);
+  s.wakeAt=Infinity;
+  assert.equal(polling.choose(s,0,['background']).repo,'idle/p');
+  assert.equal(polling.choose(s,0,['active']).repo,'active/p');
+  assert.deepEqual(Array.from(polling.orderFor(3)),['active','pinned']);
+  assert.equal(s.flight,null);
+});
+test('choose prunes old starts while commit alone records the request', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.wakeAt=Infinity;
+  s.repos=[{repo:'a/b'}]; s.starts=[0,69000];
+  polling.ensure(s,'activity','a/b','','active',0);
+  s.wakeAt=Infinity;
+  const before={slot:s.slot,requests:s.requests,serial:s.serial,flight:s.flight};
+  const task=polling.choose(s,70000,['active']);
+  assert.equal(task.repo,'a/b'); assert.deepEqual(Array.from(s.starts),[69000]);
+  for(const field of Object.keys(before)) assert.equal(s[field],before[field],field);
+  const request=polling.commit(s,task,70000);
+  assert.equal(request.kind,'activity'); assert.deepEqual(Array.from(s.starts),[69000,70000]);
+  assert.equal(s.slot,1); assert.equal(s.requests,1); assert.equal(s.serial,1);
+  assert.equal(s.lastStarted,70000); assert.equal(s.lastRequest,'activity a/b');
+  assert.equal(s.flight.request,request);
+});
 test('completed catalogue removes an orphan retry but keeps its flight until completion', () => {
   const s=polling.create(); polling.open(s,0); s.discover=false;
   polling.pin(s,['old/p']); polling.ensure(s,'activity','old/p','','pinned',0).failures=1;
@@ -1155,6 +1181,14 @@ test('watch codes, finished conclusions, cap, and unfinished statuses', () => {
   assert.equal(polling.watch(s,'x/y',1,0),'watching');
   s.repos[0].runs.push({id:6,status:'in_progress'});
   assert.equal(polling.watch(s,'x/y',6,0),'cap');
+});
+test('other hosts count toward the watch cap after unwatch and finished checks', () => {
+  const s=watchFixture(2);
+  assert.equal(polling.watch(s,'x/y',2,0,4),'unwatched');
+  s.repos[0].runs[1].conclusion='success';
+  assert.equal(polling.watch(s,'x/y',2,0,4),'finished');
+  s.repos[0].runs[1].conclusion='';
+  assert.equal(polling.watch(s,'x/y',2,0,4),'cap');
 });
 test('closed mode requests only watched runs every thirty seconds', () => {
   const s=watchFixture(); polling.select(s,'x/y','1',{'x/y:1':true},0,true); polling.close(s);
