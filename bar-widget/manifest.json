@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "olafkfreund.gitlab-pipelines-bar",
   "name": "GitLab Pipelines bar",
-  "version": "1.16.0",
+  "version": "1.17.0",
   "author": "olafkfreund",
   "description": "Running pipelines and failed projects in the bar",
   "kinds": ["bar-widget"],
