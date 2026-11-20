@@ -32,14 +32,14 @@ function runFor(s, repo, id) {
     return r && (r.runs || []).filter(function(run) { return String(run.id) === String(id) })[0];
 }
 function finished(run) { return !!run && FINISHED.indexOf(run.conclusion)>=0; }
-function watch(s, repo, run, now) {
+function watch(s, repo, run, now, others) {
     s.wakeAt=0;
     var id=repo+":"+run;
     if (s.watches[id]) { delete s.watches[id]; return "unwatched"; }
     var r=runFor(s,repo,run);
     if (!r) return "missing";
     if (finished(r)) return "finished";
-    if (Object.keys(s.watches).length>=WATCH_CAP) return "cap";
+    if ((others || 0) + Object.keys(s.watches).length>=WATCH_CAP) return "cap";
     s.watches[id]={repo:repo,run:String(run),number:r.run_number,ref:r.head_branch||"",
         until:now+WATCH_TTL,checkedAt:0};
     return "watching";
@@ -266,7 +266,11 @@ function seedWatches(s, now) {
     });
     return wake;
 }
-function next(s, now) {
+function orderFor(slot) {
+    var group = ["interactive","interactive","interactive","active","background"][slot % 5];
+    return group === "active" ? ["active","pinned"] : [group];
+}
+function choose(s, now, order) {
     settle(s,now);
     var watching=Object.keys(s.watches).length>0;
     if ((!s.opened && !watching) || s.flight || s.auth || now < s.cooldown) return null;
@@ -281,13 +285,13 @@ function next(s, now) {
     }
     var due = Object.keys(s.tasks).map(function(id) { return s.tasks[id] }).filter(function(t) { return t.due <= now });
     due.sort(function(a,b) { return a.due === b.due ? a.order-b.order : a.due-b.due });
-    var group = ["interactive","interactive","interactive","active","background"][s.slot % 5];
-    var order = group === "active" ? ["active","pinned"] : [group];
     var t;
     order.concat(["interactive","active","pinned","background"]).some(function(g) {
         t = due.filter(function(x) { return x.group === g })[0]; return !!t;
     });
-    if (!t) return null;
+    return t || null;
+}
+function commit(s, t, now) {
     s.slot++; s.starts.push(now); s.requests++; s.lastStarted=now; s.lastRequest=t.kind + (t.repo ? " " + t.repo : "");
     var request = {kind:t.kind,repo:t.repo,run:t.run,page:t.page,requestId:++s.serial};
     if (t.kind === "mr") { request.project=t.project; request.iid=t.iid; }
@@ -295,6 +299,10 @@ function next(s, now) {
     if (t.kind === "bridges") request.route = t.route;
     s.flight = {key:t.key, request:request, generation:s.generation};
     return request;
+}
+function next(s, now) {
+    var t=choose(s,now,orderFor(s.slot));
+    return t ? commit(s,t,now) : null;
 }
 function union(a,b) {
     var map={};
