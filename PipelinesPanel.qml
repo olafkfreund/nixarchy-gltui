@@ -774,7 +774,7 @@ Item {
     }
     function refresh(catalogue) {
         selectionChanged(true)
-        pollers().forEach(function(p) { if (catalogue || !multi() || (current ? current.host : host) === p.host) Polling.manual(p.state, Date.now(), !!catalogue) })
+        pollers().forEach(function(p) { if (catalogue || !multi() || !current || current.host === p.host) Polling.manual(p.state, Date.now(), !!catalogue) })
         pump()
     }
     function pump() {
