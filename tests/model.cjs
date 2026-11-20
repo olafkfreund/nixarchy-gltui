@@ -668,4 +668,86 @@ console.log('Model: stage hierarchy, aggregation, filtering, progress, selection
   edits=0;
   model.syncRows(list,[{key:'same',title:'same',host:'two.test',hostLabel:'two.test'}]);
   assert.equal(backing[0].rowData.host,'two.test'); assert.equal(edits,1);
+
+  const p={run_number:7,name:'CI',head_branch:'main'},j={id:99,name:'build'};
+  assert.deepEqual(plain(model.describe('retry-pipeline','g/p',p,null,'one.test')),
+    {confirm:'Retry pipeline #7 CI (main) in g/p on one.test? y yes · Esc no',done:'Retry requested: pipeline #7 CI (main) in g/p on one.test'});
+  assert.deepEqual(plain(model.describe('cancel-pipeline','g/p',p,null,'one.test')),
+    {confirm:'Cancel pipeline #7 CI (main) in g/p on one.test? Cannot be undone. y yes · Esc no',done:'Cancel requested: pipeline #7 CI (main) in g/p on one.test'});
+  assert.deepEqual(plain(model.describe('retry-job','g/p',p,j,'one.test')),
+    {confirm:'Retry job build (job 99) of #7 in g/p on one.test? y yes · Esc no',done:'Retry requested: job build (job 99) of #7 in g/p on one.test'});
+  assert.deepEqual(plain(model.describe('cancel-job','g/p',p,j,'one.test')),
+    {confirm:'Cancel job build (job 99) of #7 in g/p on one.test? Cannot be undone. y yes · Esc no',done:'Cancel requested: job build (job 99) of #7 in g/p on one.test'});
+  assert.deepEqual(plain(model.describe('play-job','g/p',p,j,'one.test')),
+    {confirm:'Play manual job build (job 99) of #7 in g/p on one.test with its default variables? y yes · Esc no',done:'Play requested: job build (job 99) of #7 in g/p on one.test'});
+  assert.deepEqual(plain(model.describe('new-pipeline','g/p',p,null,'one.test')),
+    {confirm:'Start a new pipeline on main in g/p with default variables on one.test? y yes · Esc no',done:'New pipeline requested on main in g/p on one.test'});
+
+  assert.deepEqual(['watching','unwatched','finished','cap','missing'].map(c => model.watchNotice(c,'g/p',3,'one.test')),
+    ['Watching #3 in g/p on one.test','Stopped watching #3 on one.test','Pipeline already finished','At most 5 watched pipelines','Select a pipeline to watch']);
+  const w={repo:'g/p',number:3,ref:'main'};
+  const msg=(event,a,b,h) => plain(model.watchMessage(event,a,b,h));
+  assert.deepEqual(msg({type:'finished',watch:w,conclusion:'success'},'','','one.test'),
+    {summary:'Pipeline passed',body:'g/p #3 · main on one.test'});
+  assert.deepEqual(msg({type:'finished',watch:{...w,ref:''},conclusion:'failed'},'','','one.test'),
+    {summary:'Pipeline failed',body:'g/p #3 on one.test'});
+  assert.deepEqual(msg({type:'expired',watch:w},'','','one.test'),
+    {summary:'Stopped watching a pipeline',body:'g/p #3: still running after 6 hours on one.test'});
+  assert.deepEqual(msg({type:'unavailable',watch:w},'','','one.test'),
+    {summary:'Pipeline unavailable',body:'g/p #3 on one.test'});
+  assert.deepEqual(msg({type:'auth',count:1},'','','one.test'),
+    {summary:'GitLab sign-in needed',body:'Stopped watching 1 pipeline. Run glab auth login --hostname one.test.'});
+  assert.deepEqual(msg({type:'auth',count:2},'','','one.test'),
+    {summary:'GitLab sign-in needed',body:'Stopped watching 2 pipelines. Run glab auth login --hostname one.test.'});
+  assert.deepEqual(msg({type:'removed',count:1},'one.test','','one.test'),
+    {summary:'Stopped watching 1 pipeline',body:'1 watch on one.test ended: the host was removed.'});
+  assert.deepEqual(msg({type:'removed',count:3},'two.test',''),
+    {summary:'Stopped watching 3 pipelines',body:'3 watches on two.test ended: the host was removed.'});
+
+  assert.deepEqual(plain(model.barStatus(polling,'','gitlab.com','instance-1',200,[])),status());
+  const poll=(repos,extra={}) => ({repos,countsAt:100,cooldown:0,auth:false,error:'',catalogueError:'',...extra});
+  const pOk=poll([{repo:'a/b',active:2,runs:[failedRun(1,'failed')]}],{countsAt:150});
+  const pRate=poll([{repo:'c/d',active:3,runs:[failedRun(2,'failed'),failedRun(3,'success')]}],{countsAt:90,cooldown:400});
+  const pRateNoCounts=poll([{repo:'e/f',active:9,runs:[failedRun(4,'failed')]}],{countsAt:undefined,cooldown:500});
+  const pStopped=poll([{repo:'g/h',active:5,runs:[failedRun(5,'failed')]}],{countsAt:80,auth:true,error:'sign in'});
+  const pNone=poll([],{countsAt:undefined});
+
+  const okRate=plain(model.barStatus(pOk,'','one.test','inst',200,[{host:'two.test',state:pRate},{host:'three.test',state:pRateNoCounts}]));
+  assert.deepEqual(okRate,{
+    version:1,instance:'inst',host:'one.test +2',state:'ok',running:5,failed:1,countsAt:90,cooldownUntil:0,reason:'',writtenAt:200,
+    hosts:[
+      {host:'one.test',state:'ok',running:2,failed:1,countsAt:150,cooldownUntil:0,reason:''},
+      {host:'two.test',state:'rate',running:3,failed:0,countsAt:90,cooldownUntil:400,reason:''},
+      {host:'three.test',state:'rate',running:9,failed:1,countsAt:0,cooldownUntil:500,reason:''}
+    ]
+  });
+
+  const stoppedNone=plain(model.barStatus(pNone,'','one.test','inst',200,[
+    {host:'two.test',state:pStopped},
+    {host:'three.test',state:poll([],{catalogueError:'denied'})}
+  ]));
+  assert.equal(stoppedNone.state,'stopped');
+  assert.equal(stoppedNone.host,'one.test +2');
+  assert.equal(stoppedNone.running,0);
+  assert.equal(stoppedNone.failed,0);
+  assert.equal(stoppedNone.countsAt,0);
+  assert.equal(stoppedNone.reason,'two.test: sign in');
+
+  const allRate=plain(model.barStatus(pRate,'','one.test','inst',200,[{host:'two.test',state:pRateNoCounts}]));
+  assert.equal(allRate.state,'rate');
+  assert.equal(allRate.cooldownUntil,500);
+  assert.equal(allRate.running,3);
+  assert.equal(allRate.countsAt,90);
+
+  const allNone=plain(model.barStatus(pNone,'','one.test','inst',200,[{host:'two.test',state:pNone}]));
+  assert.equal(allNone.state,'none');
+  assert.equal(allNone.countsAt,0);
+
+  const cfgErr=plain(model.barStatus(pOk,'bad hosts','one.test','inst',200,[{host:'two.test',state:pRate}]));
+  assert.equal(cfgErr.state,'stopped');
+  assert.equal(cfgErr.reason,'bad hosts');
+  assert.equal(cfgErr.running,0);
+  assert.equal(cfgErr.failed,0);
+  assert.equal(cfgErr.cooldownUntil,0);
+  assert.ok(cfgErr.hosts.every(h => h.state==='stopped' && h.reason==='bad hosts'));
 }

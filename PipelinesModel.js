@@ -119,15 +119,37 @@ function barCounts(repos) {
     return {running:running,failed:failed};
 }
 
-function barStatus(polling, configError, host, instance, now) {
+function barHost(polling, configError, host, now) {
     var counts=barCounts(polling.repos);
     var reason=configError || (polling.auth ? polling.error : polling.catalogueError) || "";
     var state=configError || polling.auth || polling.catalogueError ? "stopped" :
         polling.cooldown>now ? "rate" : polling.countsAt===undefined ? "none" : "ok";
-    return {version:1,instance:instance,host:host,
-        state:state,
-        running:counts.running,failed:counts.failed,countsAt:polling.countsAt===undefined ? 0 : polling.countsAt,
-        cooldownUntil:state==="rate" ? polling.cooldown : 0,reason:reason,writtenAt:now};
+    return {host:host,state:state,running:counts.running,failed:counts.failed,
+        countsAt:polling.countsAt===undefined ? 0 : polling.countsAt,
+        cooldownUntil:state==="rate" ? polling.cooldown : 0,reason:reason};
+}
+
+function barStatus(polling, configError, host, instance, now, more) {
+    var first=barHost(polling, configError, host, now);
+    if (!Array.isArray(more) || !more.length) return {version:1,instance:instance,host:host,
+        state:first.state,running:first.running,failed:first.failed,countsAt:first.countsAt,
+        cooldownUntil:first.cooldownUntil,reason:first.reason,writtenAt:now};
+    var hosts=[first].concat(more.map(function(item) { return barHost(item.state, configError, item.host, now); }));
+    var running=0, failed=0, countsAt=0, cooldown=0, reason="", hasOk=false, hasRate=false, hasStopped=false;
+    hosts.forEach(function(h) {
+        if ((h.state==="ok" || h.state==="rate") && h.countsAt>0) {
+            running+=h.running;
+            failed+=h.failed;
+            countsAt=countsAt ? Math.min(countsAt, h.countsAt) : h.countsAt;
+        }
+        if (h.state==="ok") hasOk=true;
+        else if (h.state==="rate") { hasRate=true; cooldown=Math.max(cooldown, h.cooldownUntil); }
+        else if (h.state==="stopped") { hasStopped=true; if (!reason && h.reason) reason=h.host+": "+h.reason; }
+    });
+    var state=configError ? "stopped" : hasOk ? "ok" : hasRate ? "rate" : hasStopped ? "stopped" : "none";
+    return {version:1,instance:instance,host:host+" +"+more.length,
+        state:state,running:running,failed:failed,countsAt:countsAt,
+        cooldownUntil:state==="rate" ? cooldown : 0,reason:configError || reason,writtenAt:now,hosts:hosts};
 }
 
 function group(status) {
@@ -431,9 +453,10 @@ function copyText(row, what) {
 var shownFields = ["title", "subtitle", "status", "info", "checked", "started", "ended", "finished",
     "fetched", "done", "total", "complete", "serverDuration", "queued", "reason", "sha", "pinned", "watched", "lastStatus", "lastAt", "host", "hostLabel"];
 
-function watchNotice(code, repo, number) {
-    if (code === "watching") return "Watching #" + number + " in " + repo;
-    if (code === "unwatched") return "Stopped watching #" + number;
+function watchNotice(code, repo, number, host) {
+    var on = host ? " on " + host : "";
+    if (code === "watching") return "Watching #" + number + " in " + repo + on;
+    if (code === "unwatched") return "Stopped watching #" + number + on;
     if (code === "finished") return "Pipeline already finished";
     if (code === "cap") return "At most 5 watched pipelines";
     return "Select a pipeline to watch";
@@ -442,22 +465,23 @@ function watchNotice(code, repo, number) {
 // Notification daemons may read the body as markup; a branch name can contain & or <.
 function bodyText(text) { return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
-function watchMessage(event, oldHost, newHost) {
-    var m = watchText(event, oldHost, newHost);
+function watchMessage(event, oldHost, newHost, host) {
+    var m = watchText(event, oldHost, newHost, host);
     return {summary: m.summary, body: bodyText(m.body)};
 }
 
-function watchText(event, oldHost, newHost) {
-    var w = event.watch || {}, n = event.count;
-    var label = (w.repo + " #" + w.number) + (w.ref ? " · " + w.ref : "");
+function watchText(event, oldHost, newHost, host) {
+    var w = event.watch || {}, n = event.count, on = host ? " on " + host : "";
+    var label = (w.repo + " #" + w.number) + (w.ref ? " · " + w.ref : "") + on;
     var many = n + " " + (n === 1 ? "pipeline" : "pipelines");
     if (event.type === "finished") {
         var word = event.conclusion === "success" ? "passed" : event.conclusion;
         return {summary: "Pipeline " + word, body: label};
     }
-    if (event.type === "expired") return {summary: "Stopped watching a pipeline", body: w.repo + " #" + w.number + ": still running after 6 hours"};
-    if (event.type === "unavailable") return {summary: "Pipeline unavailable", body: w.repo + " #" + w.number};
-    if (event.type === "auth") return {summary: "GitLab sign-in needed", body: "Stopped watching " + many + ". Run glab auth login."};
+    if (event.type === "expired") return {summary: "Stopped watching a pipeline", body: w.repo + " #" + w.number + ": still running after 6 hours" + on};
+    if (event.type === "unavailable") return {summary: "Pipeline unavailable", body: w.repo + " #" + w.number + on};
+    if (event.type === "auth") return {summary: "GitLab sign-in needed", body: "Stopped watching " + many + ". Run glab auth login" + (host ? " --hostname " + host : "") + "."};
+    if (event.type === "removed") return {summary: "Stopped watching " + many, body: n + " " + (n === 1 ? "watch" : "watches") + " on " + (host || oldHost) + " ended: the host was removed."};
     return {summary: "Stopped watching " + many, body: "The panel now uses " + newHost + ", not " + oldHost + "."};
 }
 
@@ -525,10 +549,10 @@ function cut(text) {
     return text.length > 30 ? text.slice(0, 29) + "…" : text;
 }
 
-function describe(action, repo, run, job) {
-    var ref = cut(run.head_branch || ""), name = cut(run.name || "Pipeline");
-    var pipe = "#" + run.run_number + " " + name + " (" + ref + ") in " + repo;
-    var one = job ? cut(job.name) + " (job " + job.id + ") of #" + run.run_number + " in " + repo : "";
+function describe(action, repo, run, job, host) {
+    var ref = cut(run.head_branch || ""), name = cut(run.name || "Pipeline"), on = host ? " on " + host : "";
+    var pipe = "#" + run.run_number + " " + name + " (" + ref + ") in " + repo + on;
+    var one = job ? cut(job.name) + " (job " + job.id + ") of #" + run.run_number + " in " + repo + on : "";
     var yes = " y yes · Esc no", undone = " Cannot be undone.";
     switch (action) {
     case "retry-pipeline": return {confirm: "Retry pipeline " + pipe + "?" + yes, done: "Retry requested: pipeline " + pipe};
@@ -536,8 +560,8 @@ function describe(action, repo, run, job) {
     case "retry-job": return {confirm: "Retry job " + one + "?" + yes, done: "Retry requested: job " + one};
     case "cancel-job": return {confirm: "Cancel job " + one + "?" + undone + yes, done: "Cancel requested: job " + one};
     case "play-job": return {confirm: "Play manual job " + one + " with its default variables?" + yes, done: "Play requested: job " + one};
-    default: return {confirm: "Start a new pipeline on " + ref + " in " + repo + " with default variables?" + yes,
-        done: "New pipeline requested on " + ref + " in " + repo};
+    default: return {confirm: "Start a new pipeline on " + ref + " in " + repo + " with default variables" + on + "?" + yes,
+        done: "New pipeline requested on " + ref + " in " + repo + on};
     }
 }
 
