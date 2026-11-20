@@ -5,6 +5,35 @@ function reply(stdout, code, requestId) {
         error: code === 127 ? "python3 not found" : "GitLab helper failed (exit " + code + "); see the shell log"});
 }
 
+function hostConfig(entry) {
+    var result = {hosts:[], ignored:[], error:""};
+    entry = entry || {};
+    if (entry.hosts !== undefined && !Array.isArray(entry.hosts)) {
+        result.error = "invalid hosts";
+        return result;
+    }
+    var items = entry.hosts && entry.hosts.length ? entry.hosts : [entry];
+    var seen = Object.create(null);
+    for (var i=0; i<items.length; i++) {
+        var item = items[i];
+        var host = item && typeof item === "object" && !Array.isArray(item) ? item.host : undefined;
+        if (!(entry.hosts && entry.hosts.length) && typeof host !== "string") host = "gitlab.com";
+        if (typeof host !== "string" || !/^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$/.test(host)) {
+            result.error = "invalid host " + (host === undefined ? "" : host);
+            result.hosts = []; result.ignored = [];
+            return result;
+        }
+        if (seen[host.toLowerCase()]) continue;
+        seen[host.toLowerCase()] = true;
+        var value = {host:host, actions:item.actions === true,
+            projects:Array.isArray(item.projects) ? item.projects : [],
+            pinned:Array.isArray(item.pinned) ? item.pinned : []};
+        if (result.hosts.length < 4) result.hosts.push(value);
+        else result.ignored.push(host);
+    }
+    return result;
+}
+
 // The trailing slash pins the host; no whitespace or Cc control may reach xdg-open's helpers (#15, ghtui #32).
 function browsable(url, host) {
     if (typeof url !== "string" || typeof host !== "string") return false;

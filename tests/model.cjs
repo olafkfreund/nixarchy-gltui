@@ -5,6 +5,11 @@ const model = {};
 vm.createContext(model);
 vm.runInContext(fs.readFileSync('PipelinesModel.js', 'utf8'), model);
 const plain = value => JSON.parse(JSON.stringify(value));
+for (const test of JSON.parse(fs.readFileSync('tests/host-config.json', 'utf8'))) {
+  const entry=test.plugins.find(item => item && item.id === 'olafkfreund.gitlab-pipelines');
+  const actual=plain(model.hostConfig(entry));
+  assert.deepEqual({...actual,error:!!actual.error},test.expect,test.name);
+}
 const failedRun = (id, conclusion) => ({id,status:'completed',conclusion});
 assert.deepEqual(plain(model.barCounts([
   {repo:'no/runs'},
