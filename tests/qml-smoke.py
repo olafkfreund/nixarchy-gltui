@@ -40,11 +40,20 @@ if sys.argv[1] == 'pins':
     real = importlib.util.module_from_spec(spec); spec.loader.exec_module(real)
     sys.exit(real.main())
 request=json.loads(sys.argv[2]); kind=request['kind']
+with open(os.environ['HOST_LOG'], 'a') as log: log.write(request.get('host', '') + '\\n')
 time.sleep(0.1)
 host=request.get('host'); assert host in ('gitlab.example.org','gitlab.other.org'), request
-run={'id':7,'name':'CI','status':'in_progress','conclusion':'running','run_attempt':'active','head_branch':'main','run_number':1}
+multi=os.path.exists(os.environ['MULTI']) and host=='gitlab.other.org'
+delayed=host=='gitlab.other.org' and os.path.exists(os.environ['OTHER_DELAY'])
+if delayed: time.sleep(1.5)
+if host=='gitlab.other.org' and os.path.exists(os.environ['OTHER_AUTH']):
+    print(json.dumps({'requestId':request['requestId'],'error':'Authenticate with glab auth login','errorType':'auth','remaining':4000})); sys.exit()
+run={'id':7,'name':'LATE' if delayed else 'CI','status':'in_progress','conclusion':'running','run_attempt':'active','head_branch':'main','run_number':1}
+if multi: run['html_url']='https://gitlab.other.org/one/sub/repo/-/pipelines/7'
 if kind=='mr' and os.path.exists(os.environ['MR_DELAY']): time.sleep(1.5)
-if host=='gitlab.other.org': data={} if kind in ('run','mr') else [{'id':3,'repo':'three/repo'}] if kind=='catalogue' else []
+if host=='gitlab.other.org' and not multi: data={} if kind in ('run','mr') else [{'id':3,'repo':'three/repo'}] if kind=='catalogue' else []
+elif multi and kind=='catalogue': data=[{'id':1,'repo':'one/sub/repo','url':'https://gitlab.other.org/one/sub/repo','description':'LATE' if delayed else ''},{'id':2,'repo':'two/repo','url':'https://gitlab.other.org/two/repo'}]
+elif multi and kind=='mrs': data=[{'id':101,'iid':1,'project_id':1,'project':'one/sub/repo','title':'Update CI','source_branch':'ci','draft':False,'web_url':'https://gitlab.other.org/one/sub/repo/-/merge_requests/1','updated_at':'2026-11-19T00:00:00Z'}]
 elif kind=='catalogue': data=[{'id':1,'repo':'one/sub/repo','url':'https://gitlab.example.org/one/sub/repo'},{'id':2,'repo':'two/repo'}]
 elif kind=='mrs': data=[{'id':101,'iid':1,'project_id':1,'project':'one/sub/repo','title':'Update CI','source_branch':'ci','draft':False,'web_url':'https://gitlab.example.org/one/sub/repo/-/merge_requests/1','updated_at':'2026-11-19T00:00:00Z'},
                         {'id':102,'iid':2,'project_id':99,'project':'outside/repo','title':'Outside change','source_branch':'other','draft':False,'web_url':'https://gitlab.example.org/outside/repo/-/merge_requests/2','updated_at':'2026-11-19T00:00:00Z'}]
@@ -55,9 +64,13 @@ elif kind=='run':
     if os.path.exists(os.environ['RUN_DELAY']): time.sleep(1.5)
     data=dict(run,status='completed',conclusion='success') if os.path.exists(os.environ['RUN_DONE']) else run
 else: data=[run] if request['repo']=='one/sub/repo' and request.get('status','running') in ('recent','running') else []
+if delayed and kind in ('jobs','bridges') and data: data[0]['name']='LATE'
+if delayed and kind=='mrs' and data: data[0]['title']='LATE'
+if delayed and kind=='mr' and isinstance(data,dict) and data.get('pipeline'): data['pipeline']['name']='LATE'
 print(json.dumps({'requestId':request['requestId'],'data':data,'total':len(data) if kind=='mrs' else 0,'nextPage':0,'error':'','errorType':'','remaining':4000}))
 ''')
         (root / 'actions.log').write_text('')
+        (root / 'host.log').write_text('')
         (root / 'omarchy-shell.log').write_text('')
         (root / 'bin').mkdir()
         toggle = root / 'bin' / 'omarchy-shell'
@@ -179,6 +192,9 @@ ShellRoot {
     property int actionBase: 0
     property double actionAt: 0
     FileView { id: actionLog; path: Quickshell.env("ACTION_LOG"); blockLoading: true; printErrors: false }
+    FileView { id: hostLog; path: Quickshell.env("HOST_LOG"); blockLoading: true; printErrors: false }
+    FileView { id: multiStatus; path: Quickshell.env("STATUS_PATH"); blockLoading: true; printErrors: false }
+    function hostLines() { hostLog.reload(); var t=hostLog.text().trim(); return t ? t.split("\\n") : [] }
     function actionLines() {
         actionLog.reload()
         var t=actionLog.text().trim()
@@ -711,10 +727,216 @@ ShellRoot {
             eq(panel.filterText,mrSaved.filter,"MR restore filter")
             listFocus()
             if (widgetAvailable) stage=14
-            else console.log("SKIP widget: no bar-widget directory")
+            else { console.log("SKIP widget: no bar-widget directory"); stage=15 }
         },
         function() {
             if (!panel.searchItem.parent.parent.activeFocus) return false
+            stage=15
+        }
+    ]
+    readonly property string firstHost: "gitlab.example.org"
+    readonly property string secondHost: "gitlab.other.org"
+    property int mhi: 0
+    property var mh: ({})
+    function multiCfg(names) {
+        panel.configure(JSON.stringify({plugins:[{id:"olafkfreund.gitlab-pipelines",hosts:names.map(function(h) {
+            return {host:h,actions:true,projects:["one/sub/repo","two/repo"]}
+        })}]}))
+    }
+    function multiPoller(h) { return panel.pollerFor(h).state }
+    function multiRun() { return {id:7,name:"CI",status:"in_progress",conclusion:"running",run_number:1,head_branch:"main",ref:"main",source:"push"} }
+    property var mhsteps: [
+        function() {
+            if (!mh.setupAt) mh.setupAt=Date.now()
+            if (panel.workerBusy && Date.now()-mh.setupAt<2000) return false
+            panel.close()
+            panel.workerBusy=true
+            sh('touch "$MULTI"; : > "$HOST_LOG"')
+        },
+        function() {
+            if (!waitUntil(function() { return !shp.running },"multihost flags")) return false
+            panel.polling=Polling.create()
+            multiCfg([firstHost])
+            panel.polling.repos=[{id:1,repo:"one/sub/repo",checked:"x",runs:[multiRun()]},{id:2,repo:"two/repo",checked:"x",runs:[]}]
+            panel.expanded=({"repo:one/sub/repo":true})
+            panel.adopt()
+            var old=panel.polling
+            multiCfg([firstHost,secondHost])
+            check(panel.polling.repos===old.repos && panel.more.length===1,"M 1 to 2 keeps host data")
+            eq(Object.keys(panel.expanded).length,0,"M host-count change clears expansion")
+            check(has("repo:"+firstHost+"|one/sub/repo") && has("repo:"+secondHost+"|one/sub/repo"),"M duplicate project paths have distinct rows")
+            eq(panel.entries.filter(function(r) { return r.key==="repo:"+firstHost+"|one/sub/repo" })[0].hostLabel,firstHost,"M first host label")
+            eq(panel.entries.filter(function(r) { return r.key==="repo:"+secondHost+"|one/sub/repo" })[0].hostLabel,secondHost,"M second host label")
+            panel.open("{}")
+            cursorTo("repo:"+secondHost+"|one/sub/repo"); panel.selectionChanged(true)
+            Polling.manual(multiPoller(secondHost),Date.now(),false)
+            panel.workerBusy=false; panel.pump()
+        },
+        function() {
+            if (!waitUntil(function() { var r=multiPoller(secondHost).repos.filter(function(x) { return x.repo==="one/sub/repo" })[0]; return r && r.runs && r.runs.length && !panel.workerBusy },"M second host pipeline")) return false
+            if (!waitUntil(function() { return hostLines().indexOf(secondHost)>=0 },"M helper read second host")) return false
+            cursorTo("repo:"+secondHost+"|one/sub/repo"); panel.expand(false)
+            cursorTo(secondHost+"|one/sub/repo:7"); panel.expand(false)
+            panel.expanded[secondHost+"|one/sub/repo:7:stage:build"]=true
+            panel.rebuild()
+            panel.selectionChanged(true); panel.pump()
+        },
+        function() {
+            if (!waitUntil(function() { var d=multiPoller(secondHost).details["one/sub/repo:7"]; return d && d.jobs && d.jobs.length && !panel.workerBusy },"M second host jobs")) return false
+            check(has(secondHost+"|one/sub/repo:7:8"),"M second host job row")
+            var row=panel.entries.filter(function(r) { return r.key===secondHost+"|one/sub/repo:7:8" })[0]
+            check(Model.accessibleName(row).indexOf("on "+secondHost)>=0,"M job accessible name includes host")
+            panel.workerBusy=true
+            multiPoller(firstHost).details["one/sub/repo:7"]={jobs:[{id:8,name:"compile",stage:"build",status:"completed",conclusion:"success"}]}
+            multiPoller(secondHost).details["one/sub/repo:7"]={jobs:[{id:8,name:"compile",stage:"build",status:"completed",conclusion:"failed"}]}
+            panel.adopt()
+            cursorTo(secondHost+"|one/sub/repo:7:8")
+            panel.startAction("a")
+            check(panel.confirm && panel.confirm.action==="retry-job" && panel.confirm.host===secondHost,"M job action uses second host raw job")
+            actionReply(true,"","",0)
+            mh.actionBase=actionLines().length
+            panel.confirmAction()
+        },
+        function() {
+            if (!waitUntil(function() { return actionLines().length>mh.actionBase && !panel.actionBusy },"M second host action")) return false
+            eq(actionLines()[mh.actionBase].host,secondHost,"M action request names second host")
+            check(panel.notice.indexOf("on "+secondHost)>=0,"M action result names second host")
+            if (!waitUntil(function() { return panel.pinState[secondHost] && panel.pinState[secondHost].loaded },"M second host pins loaded")) return false
+            cursorTo("repo:"+secondHost+"|two/repo"); panel.togglePin()
+            check(panel.pinned[secondHost+"|two/repo"] && !panel.pinned[firstHost+"|two/repo"],"M pin belongs only to second host")
+            multiPoller(secondHost).repos.filter(function(r) { return r.repo==="one/sub/repo" })[0].id=1
+            panel.workerBusy=false
+            panel.switchView("mrs")
+        },
+        function() {
+            if (!waitUntil(function() { return has("mr:"+secondHost+"|1!1") && has("mr:"+firstHost+"|1!1") && !panel.workerBusy },"M both hosts' MR lists")) return false
+            cursorTo("mr:"+secondHost+"|1!1"); panel.selectionChanged(true); panel.pump()
+        },
+        function() {
+            if (!waitUntil(function() { return multiPoller(secondHost).mrs.status["1!1"] && !panel.workerBusy },"M second host MR pipeline")) return false
+            panel.jumpMr()
+            eq(panel.view,"projects","M MR jump changes view")
+            eq(panel.current.key,secondHost+"|one/sub/repo:7","M MR jump selects second host pipeline")
+            eq(panel.openHost,"","M MR jump clears host filter")
+            sh('touch "$OTHER_AUTH"')
+        },
+        function() {
+            if (!waitUntil(function() { return !shp.running && !panel.workerBusy },"M auth flag ready")) return false
+            var s=multiPoller(secondHost)
+            s.auth=false; s.error=""
+            Polling.manual(s,Date.now(),false)
+            panel.pump()
+        },
+        function() {
+            if (!waitUntil(function() { return multiPoller(secondHost).auth && !panel.workerBusy },"M second host auth error")) return false
+            check(panel.errorItem.text.indexOf(secondHost+":")>=0,"M strip names stopped host")
+            check(!multiPoller(firstHost).auth,"M first host remains usable")
+            mh.firstRequests=multiPoller(firstHost).requests
+            sh('rm -f "$OTHER_AUTH"')
+        },
+        function() {
+            if (!waitUntil(function() { return !shp.running && !panel.workerBusy },"M auth flag cleared")) return false
+            Polling.manual(multiPoller(firstHost),Date.now(),true)
+            panel.pump()
+        },
+        function() {
+            if (!waitUntil(function() { return multiPoller(firstHost).requests>mh.firstRequests && !panel.workerBusy },"M first host keeps polling")) return false
+            check(multiPoller(secondHost).auth,"M second host stays stopped")
+            sh('touch "$OTHER_DELAY"')
+        },
+        function() {
+            if (!waitUntil(function() { return !shp.running && !panel.workerBusy },"M delay flag ready")) return false
+            var s=multiPoller(secondHost)
+            s.auth=false; s.error=""
+            Polling.manual(s,Date.now(),false)
+            panel.pump()
+        },
+        function() {
+            if (!waitUntil(function() { return panel.workerBusy && panel.requestInfo.host===secondHost },"M delayed second host read")) return false
+            mh.oldLife=panel.pollerFor(secondHost).life
+            multiCfg([firstHost])
+            sh('rm -f "$OTHER_DELAY"')
+            multiCfg([firstHost,secondHost])
+            check(panel.pollerFor(secondHost).life!==mh.oldLife,"M readded host has a new life")
+        },
+        function() {
+            if (!waitUntil(function() { return !shp.running && !panel.workerBusy },"M delayed reply finishes")) return false
+            check(JSON.stringify(multiPoller(secondHost).repos).indexOf("LATE")<0,"M old reply did not reach readded host")
+            panel.workerBusy=true
+            multiCfg([firstHost])
+            panel.switchView("mrs")
+            multiCfg([firstHost,secondHost])
+            panel.workerBusy=false; panel.pump()
+        },
+        function() {
+            if (!waitUntil(function() { return multiPoller(secondHost).mrs.list && has("mr:"+secondHost+"|1!1") && !panel.workerBusy },"M added host loads MRs while open")) return false
+            mh.secondLife=panel.pollerFor(secondHost).life
+            multiCfg([secondHost])
+            check(panel.host===secondHost && panel.hostLife===mh.secondLife,"M removing first host moves second host state and life")
+            check(has("mr:1!1"),"M remaining host keeps MR rows")
+            panel.switchView("projects")
+            check(panel.entries.some(function(r) { return r.host===secondHost }),"M remaining host keeps project rows")
+        },
+        function() {
+            if (!waitUntil(function() { return !panel.workerBusy },"M watch setup idle")) return false
+            panel.workerBusy=true
+            multiCfg([firstHost,secondHost])
+            var s=multiPoller(secondHost), r=s.repos.filter(function(x) { return x.repo==="one/sub/repo" })[0]
+            check(r,"M second host project exists for watch")
+            r.runs=[multiRun()]
+            panel.expanded=({})
+            panel.expanded["repo:"+secondHost+"|one/sub/repo"]=true
+            panel.adopt()
+            cursorTo(secondHost+"|one/sub/repo:7"); panel.toggleWatch()
+            check(!!s.watches["one/sub/repo:7"] && panel.watching,"M only second host watches")
+            mh.watchRequests=s.requests
+            mh.hostReads=hostLines().length
+            s.watches["one/sub/repo:7"].checkedAt=0
+            panel.close(); panel.workerBusy=false
+        },
+        function() {
+            if (!waitUntil(function() { return multiPoller(secondHost).requests>mh.watchRequests && hostLines().length>mh.hostReads },"M second host watch polls while closed")) return false
+            eq(hostLines()[hostLines().length-1],secondHost,"M closed watch used second host helper")
+            if (!waitUntil(function() { return !panel.workerBusy },"M closed watch reply")) return false
+            panel.workerBusy=true; panel.open("{}")
+            var s=multiPoller(firstHost)
+            s.repos=[{repo:"one/sub/repo",runs:[10,11,12,13].map(function(id) { return {id:id,status:"in_progress",conclusion:"running",run_number:id} })}]
+            ;[10,11,12,13].forEach(function(id) { eq(Polling.watch(s,"one/sub/repo",String(id),Date.now()),"watching","M cap fixture watch") })
+            panel.adopt()
+            cursorTo(secondHost+"|one/sub/repo:7"); panel.toggleWatch()
+            check(!multiPoller(secondHost).watches["one/sub/repo:7"],"M unwatch succeeds at five-watch cap")
+            s.watches=({}); panel.adopt()
+        },
+        function() {
+            panel.open(JSON.stringify({filter:"one/sub/repo",host:firstHost}))
+            eq(panel.openHost,firstHost,"M first open selects first host")
+            check(panel.entries.length>0 && panel.entries.every(function(r) { return r.host===firstHost }),"M first open filters rows by host")
+            panel.open(JSON.stringify({filter:"one/sub/repo",host:secondHost}))
+            eq(panel.openHost,secondHost,"M same text selects second host")
+            check(panel.entries.length>0 && panel.entries.every(function(r) { return r.host===secondHost }),"M second open rebuilds rows")
+            panel.filterText=""
+            panel.now=Date.now()
+            var a=multiPoller(firstHost), b=multiPoller(secondHost)
+            a.auth=false; a.error=""; a.catalogueError=""; a.countsAt=Date.now()
+            b.auth=false; b.error=""; b.catalogueError=""; b.countsAt=a.countsAt
+            a.repos=[{repo:"one/sub/repo",checked:"x",active:2,runs:[{id:7,status:"completed",conclusion:"failed"}]}]
+            b.repos=[{repo:"one/sub/repo",checked:"x",active:3,runs:[{id:7,status:"completed",conclusion:"success"}]}]
+            panel.adopt()
+        },
+        function() {
+            var file
+            if (!waitUntil(function() { multiStatus.reload(); try { file=JSON.parse(multiStatus.text()) } catch (e) { return false }; return file && file.hosts && file.running===5 },"M status file totals")) return false
+            eq(file.hosts.length,2,"M status file has both hosts")
+            eq(file.failed,1,"M status file sums failures")
+            eq(file.host,firstHost+" +1","M status file labels hosts")
+            var status=JSON.parse(panel.status())
+            eq(status.hosts.length,2,"M status reports hosts")
+            eq(status.requests,status.hosts[0].requests+status.hosts[1].requests,"M status sums requests")
+            eq(status.mrs,status.hosts[0].mrs+status.hosts[1].mrs,"M status sums MRs")
+            sh('rm -f "$MULTI" "$OTHER_AUTH" "$OTHER_DELAY"')
+        },
+        function() {
+            if (!waitUntil(function() { return !shp.running },"M flags cleaned")) return false
             console.log("QML_CHECKS_PASSED")
             Qt.quit()
         }
@@ -2572,6 +2794,9 @@ ShellRoot {
             } else if(stage===14) {
                 var widgetStep=widgetSteps[wi]
                 if (widgetStep() !== false) wi++
+            } else if(stage===15) {
+                var multiStep=mhsteps[mhi]
+                if (multiStep() !== false) mhi++
             }
         }
     }
@@ -2579,7 +2804,7 @@ ShellRoot {
 ''')
         try:
             result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=200,
-                                  env={**os.environ, 'HOME':str(home), 'XDG_STATE_HOME':str(home / '.local/state'), 'PINS_DELAY':str(root / 'pins-delay'), 'RUN_DONE':str(root / 'run-done'), 'RUN_DELAY':str(root / 'run-delay'), 'MR_DELAY':str(root / 'mr-delay'), 'ACTION_SCRIPT':str(root / 'action.sh'), 'ACTION_LOG':str(root / 'actions.log'), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower(), 'STATUS_PATH':str(root / 'status.json'), 'WIDGET_STATUS_PATH':str(root / 'widget-status.json'), 'TOGGLE_LOG':str(root / 'omarchy-shell.log'), 'WIDGET_AVAILABLE':'1' if widget_available else '0', 'PATH':f"{root / 'bin'}:{os.environ.get('PATH', '')}"})
+                                  env={**os.environ, 'HOME':str(home), 'XDG_STATE_HOME':str(home / '.local/state'), 'PINS_DELAY':str(root / 'pins-delay'), 'RUN_DONE':str(root / 'run-done'), 'RUN_DELAY':str(root / 'run-delay'), 'MR_DELAY':str(root / 'mr-delay'), 'MULTI':str(root / 'multi'), 'OTHER_DELAY':str(root / 'other-delay'), 'OTHER_AUTH':str(root / 'other-auth'), 'HOST_LOG':str(root / 'host.log'), 'ACTION_SCRIPT':str(root / 'action.sh'), 'ACTION_LOG':str(root / 'actions.log'), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower(), 'STATUS_PATH':str(root / 'status.json'), 'WIDGET_STATUS_PATH':str(root / 'widget-status.json'), 'TOGGLE_LOG':str(root / 'omarchy-shell.log'), 'WIDGET_AVAILABLE':'1' if widget_available else '0', 'PATH':f"{root / 'bin'}:{os.environ.get('PATH', '')}"})
         except subprocess.TimeoutExpired as error:
             print(error.stdout, error.stderr)
             raise
