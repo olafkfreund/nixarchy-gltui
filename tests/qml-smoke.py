@@ -975,12 +975,20 @@ ShellRoot {
         return false
     }
     function cfg(h, extra) { panel.configure(JSON.stringify({plugins:[Object.assign({id:"olafkfreund.gitlab-pipelines",host:h}, extra || {})]})) }
+    function setPin(changes) {
+        var next=Object.assign({},panel.pinState)
+        next[panel.host]=Object.assign({},next[panel.host],changes)
+        panel.pinState=next
+    }
     property var startPins: null
     readonly property string stateDir: Quickshell.env("XDG_STATE_HOME") + "/omarchy-gitlab-pipelines"
     // Records the list the real start-up load read for gitlab.com, before the first test step changes host.
     Connections {
         target: panel
-        function onPinsLoadedChanged() { if (panel.pinsLoaded && startPins===null && panel.host==="gitlab.com") startPins=panel.savedPins.slice() }
+        function onPinStateChanged() {
+            var pin=panel.pinState[panel.host]
+            if (pin && pin.loaded && startPins===null && panel.host==="gitlab.com") startPins=pin.saved.slice()
+        }
     }
     FileView { id: stateFile; path: stateDir + "/pinned.json"; blockLoading: true; printErrors: false }
     Process { id: shp }
@@ -1686,7 +1694,7 @@ ShellRoot {
             pinFixture()
         },
         function() {
-            if (!waitUntil(function() { return panel.pinsLoaded && panel.host==="gitlab.example.org" },"P1 pins loaded")) return false
+            if (!waitUntil(function() { return panel.host==="gitlab.example.org" && panel.pinState[panel.host].loaded },"P1 pins loaded")) return false
             eq(JSON.stringify(startPins),'["zz/saved"]',"P1 start-up load read the file")
             panel.pinsError=""
             check(panel.pinned["o/gamma"] && !panel.pinned["o/alpha"],"P1 config pin applied")
@@ -1729,10 +1737,10 @@ ShellRoot {
         },
         function() {
             cursorTo("repo:o/beta")
-            var before=JSON.stringify([panel.savedPins,panel.pinned])
+            var before=JSON.stringify([panel.pinState[panel.host].saved,panel.pinned])
             kPress(Qt.Key_P, Qt.ControlModifier)
             eq(panel.notice,"","P7 Ctrl+P shows no notice")
-            eq(JSON.stringify([panel.savedPins,panel.pinned]),before,"P7 Ctrl+P changes no pins")
+            eq(JSON.stringify([panel.pinState[panel.host].saved,panel.pinned]),before,"P7 Ctrl+P changes no pins")
             sh("chmod 500 '" + stateDir + "'")
         },
         function() {
@@ -1761,7 +1769,7 @@ ShellRoot {
             cfg("gitlab.other.org")
         },
         function() {
-            if (!waitUntil(function() { return panel.pinsLoaded && panel.host==="gitlab.other.org" },"P9 other loaded")) return false
+            if (!waitUntil(function() { return panel.host==="gitlab.other.org" && panel.pinState[panel.host].loaded },"P9 other loaded")) return false
             panel.polling.repos=[{repo:"three/repo",checked:"x",runs:[]}]
             panel.adopt()
             cursorTo("repo:three/repo")
@@ -1780,7 +1788,7 @@ ShellRoot {
             cfg("gitlab.example.org")
         },
         function() {
-            if (!waitUntil(function() { return panel.pinsLoaded && panel.host==="gitlab.example.org" },"P10 example loaded")) return false
+            if (!waitUntil(function() { return panel.host==="gitlab.example.org" && panel.pinState[panel.host].loaded },"P10 example loaded")) return false
             pinFixture()
             cursorTo("repo:o/delta")
             kPress(Qt.Key_P)
@@ -1801,8 +1809,8 @@ ShellRoot {
             cfg("gitlab.example.org")
         },
         function() {
-            if (!waitUntil(function() { return panel.pinsLoaded && panel.host==="gitlab.example.org" },"P11 reload finished")) return false
-            eq(JSON.stringify(panel.savedPins),'["o/beta"]',"P11 session list, not the file's older one")
+            if (!waitUntil(function() { return panel.host==="gitlab.example.org" && panel.pinState[panel.host].loaded },"P11 reload finished")) return false
+            eq(JSON.stringify(panel.pinState[panel.host].saved),'["o/beta"]',"P11 session list, not the file's older one")
             sh("rm -f '" + Quickshell.env("PINS_DELAY") + "'")
         },
         function() {
@@ -1813,7 +1821,7 @@ ShellRoot {
             panel.polling.catalogueComplete=false
             panel.configured=false
             panel.polling.repos=[]
-            panel.savedPins=["o/beta"]
+            setPin({saved:["o/beta"]})
             var before=JSON.stringify(panel.pinned)
             panel.applyPins()
             eq(JSON.stringify(panel.pinned),before,"P12 applyPins before configured does nothing")
@@ -1822,42 +1830,43 @@ ShellRoot {
             check(names.indexOf("o/alpha")>=0 && names.indexOf("o/beta")>=0,"P12 config first: " + names)
             panel.configured=false
             panel.polling.repos=[]
-            panel.savedPins=[]
+            setPin({saved:[]})
             panel.sessionPins=({})
             cfg("gitlab.example.org",{projects:["o/alpha"]})
             panel.pinsLoadHost=panel.host
+            panel.pinsLoadLife=panel.hostLife
             panel.finishPinsLoad(0,'{"pins":["o/gamma2"]}')
             names=panel.polling.repos.map(function(r) { return r.repo })
             check(names.indexOf("o/alpha")>=0 && names.indexOf("o/gamma2")>=0,"P12 load last: " + names)
             panel.polling.catalogueComplete=true
-            panel.savedPins=[]
+            setPin({saved:[]})
         },
         function() {
             // P13: a pin helper that cannot start.
             pinFixture()
             panel.pinsCommand=["/nonexistent-python"]
-            panel.pinsLoaded=false
+            setPin({loaded:false})
             panel.loadPins()
         },
         function() {
-            if (!waitUntil(function() { return panel.pinsLoaded && panel.pinsError.indexOf("Pins not loaded:")===0 },"P13 failed load")) return false
+            if (!waitUntil(function() { return panel.pinState[panel.host].loaded && panel.pinsError.indexOf("Pins not loaded:")===0 },"P13 failed load")) return false
             panel.sessionPins=({})
             pinFixture()
             cursorTo("repo:o/beta")
-            var before=panel.savedPins.slice()
+            var before=panel.pinState[panel.host].saved.slice()
             kPress(Qt.Key_P)
             // After a failed load, p reloads instead of saving over the file.
             eq(panel.notice,"Pins not loaded; trying again","P13 p after failed load")
-            eq(JSON.stringify(panel.savedPins),JSON.stringify(before),"P13 nothing pinned after failed load")
+            eq(JSON.stringify(panel.pinState[panel.host].saved),JSON.stringify(before),"P13 nothing pinned after failed load")
         },
         function() {
-            if (!waitUntil(function() { return panel.pinsLoaded },"P13 reload done")) return false
+            if (!waitUntil(function() { return panel.pinState[panel.host].loaded },"P13 reload done")) return false
             panel.pinsCommand=["python3"]
-            panel.pinsLoaded=false
+            setPin({loaded:false})
             panel.loadPins()
         },
         function() {
-            if (!waitUntil(function() { return panel.pinsLoaded && !panel.pinsLoadFailed },"P13 good load")) return false
+            if (!waitUntil(function() { return panel.pinState[panel.host].loaded && !panel.pinState[panel.host].loadFailed },"P13 good load")) return false
             panel.pinsCommand=["/nonexistent-python"]
             pinFixture()
             cursorTo("repo:o/beta")
@@ -2201,7 +2210,7 @@ ShellRoot {
             cfg("gitlab.example.org")
         },
         function() {
-            if (!waitUntil(function() { return panel.host==="gitlab.example.org" && panel.pinsLoaded && panel.pinsLoadHost===panel.host },"W8 host restored")) return false
+            if (!waitUntil(function() { return panel.host==="gitlab.example.org" && panel.pinState[panel.host].loaded && panel.pinsLoadHost===panel.host && panel.pinsLoadLife===panel.hostLife },"W8 host restored")) return false
             sh('touch "$RUN_DONE"; rm -f "$RUN_DELAY"')
             kt=Date.now()+500
         },
@@ -2278,7 +2287,7 @@ ShellRoot {
         function() {
             // Restore: no pins, empty state file.
             cfg("gitlab.example.org")
-            panel.savedPins=[]
+            setPin({saved:[]})
             panel.sessionPins=({})
             panel.savePins("gitlab.example.org",[])
         },

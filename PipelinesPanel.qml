@@ -874,6 +874,11 @@ Item {
         statusInstance = String(Date.now()) + "-" + Math.random().toString(36).slice(2)
         publishStatus()
         rebuild()
+        if (!pinState[host]) {
+            var initial = Object.assign({}, pinState)
+            initial[host] = {config: [], saved: [], loaded: false, loadFailed: false}
+            pinState = initial
+        }
         loadPins()
         registrationProc.running = true
     }
@@ -1214,7 +1219,7 @@ Item {
                                             id: hostName
                                             visible: !!modelData.hostLabel
                                             width: Math.min(implicitWidth, parent.width * 0.4)
-                                            text: modelData.hostLabel
+                                            text: modelData.hostLabel || ""
                                             color: index === root.cursor ? Commons.Color.menu.selectedText : Commons.Color.menu.text
                                             opacity: 0.55
                                             font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.caption) }
