@@ -70,6 +70,7 @@ Item {
     property var hostsList: []
     property var ignoredHosts: []
     property string loggedIgnored: ""
+    property var shownIgnored: ({})
     property string openHost: ""
     property bool settingOpen: false
     property string missedAction: ""
@@ -102,8 +103,8 @@ Item {
     property bool workerBusy: false
     property bool helperStarted: false
     property double now: Date.now()
-    readonly property bool discoveryComplete: multi() ? !!configError || pollers().every(function(p) { return p.state.catalogueComplete || !!p.state.error || !!p.state.catalogueError || !!p.state.auth }) : polling.catalogueComplete
-    readonly property string cooldownText: multi() ? pollers().filter(function(p) { return now < p.state.cooldown }).map(function(p) { return p.host + ": GitLab paused until " + new Date(p.state.cooldown).toLocaleTimeString() }).join("\n") : now < polling.cooldown ? "GitLab paused until " + new Date(polling.cooldown).toLocaleTimeString() : ""
+    readonly property bool discoveryComplete: multi() ? !!configError || pollers().every(function(p) { return p.state.catalogueComplete || !!p.state.catalogueError || !!p.state.auth }) : polling.catalogueComplete
+    readonly property string cooldownText: multi() ? pollers().filter(function(p) { return now < p.state.cooldown }).map(function(p) { return p.host + ": GitLab paused until " + new Date(p.state.cooldown).toLocaleTimeString() }).join(" · ") : now < polling.cooldown ? "GitLab paused until " + new Date(polling.cooldown).toLocaleTimeString() : ""
     readonly property string errorHintText: multi() ? pollers().map(function(p) { return errorHint(p.state.error || p.state.catalogueError || "", p.state.catalogueError || "", !!p.state.auth, filtering) }).filter(function(x) { return !!x })[0] || "" : errorHint(error, polling.catalogueError || "", !!polling.auth, filtering)
     readonly property int checkedCount: repos.filter(function(repo) { return !!repo.checked || repo.archived || repo.disabled }).length
     readonly property var current: entries[cursor] || null
@@ -111,12 +112,6 @@ Item {
     function localPath(name) { return decodeURIComponent(Qt.resolvedUrl(name).toString().replace(/^file:\/\//, "")) }
     function pollers() { return [{host: host, life: hostLife, state: polling}].concat(more) }
     function pollerFor(h, life) { return pollers().filter(function(p) { return p.host === h && (life === undefined || p.life === life) })[0] || null }
-    function setState(i, s) {
-        if (i === 0) { polling = s; return }
-        var next = more.slice()
-        next[i - 1] = Object.assign({}, next[i - 1], {state: s})
-        more = next
-    }
     function multi() { return more.length > 0 }
     // Keys are "repo:<host>|path" or "<host>|path:...": match the prefix only, so gitlab.com never claims corp.gitlab.com.
     function ownsKey(k, h) { return k.indexOf("repo:" + h + "|") === 0 || k.indexOf(h + "|") === 0 }
@@ -189,13 +184,17 @@ Item {
         else pendingOpen = pendingOpen.concat([payload])
         if (pinsError) { notify(pinsError); pinsError = "" }
         showMissed()
+        var ignored = ignoredHosts.join("\u0000"), ignoredNotice = ""
+        if (ignored && !shownIgnored[ignored]) {
+            shownIgnored[ignored] = true
+            ignoredNotice = "Ignored hosts: " + ignoredHosts.join(", ") + "; at most 4 are shown"
+        }
         if (missedAction) {
             // Keep missed watch notices from showMissed() beside the action result.
-            notify((notice ? notice + " · " : "") + missedAction, 10000)
+            notify((notice ? notice + " · " : "") + missedAction + (ignoredNotice ? " · " + ignoredNotice : ""), 10000)
             actionFailed = missedFailed
             missedAction = ""
-        }
-        if (ignoredHosts.length) notify((notice ? notice + " · " : "") + "Ignored hosts: " + ignoredHosts.join(", ") + "; at most 4 are shown")
+        } else if (ignoredNotice) notify((notice ? notice + " · " : "") + ignoredNotice)
         selectionChanged(true)
         pump()
         Qt.callLater(function() { keys.forceActiveFocus() })
@@ -212,7 +211,11 @@ Item {
             else if (filterText === request.filter) { rebuild(true); selectionChanged(false) }
             else filterText = request.filter
             settingOpen = false
-        } else openHost = ""
+        } else if (request.notice && openHost) {
+            openHost = ""
+            rebuild(true)
+            selectionChanged(false)
+        }
         if (request.notice) notify(request.notice)
     }
     function markConfigured() {
@@ -286,7 +289,7 @@ Item {
         if (multi()) {
             var ps = pollers()
             out.hosts = ps.map(function(p) { var s = p.state; return {host: p.host,
-                discoveryComplete: !!configError || s.catalogueComplete || !!s.error || !!s.catalogueError || !!s.auth,
+                discoveryComplete: !!configError || s.catalogueComplete || !!s.catalogueError || !!s.auth,
                 error: s.error || (view === "mrs" ? s.mrs.error : s.catalogueError) || "", requests: s.requests,
                 cooldown: s.cooldown, lastRequest: s.lastRequest, lastStarted: s.lastStarted,
                 actionsOn: actionsFor(p.host), mrs: ((s.mrs || {}).list || []).length} })
@@ -676,7 +679,9 @@ Item {
                 if (nextHosts.some(function(h) { return h.host === p.host })) return
                 var count = Object.keys(p.state.watches || {}).length
                 if (count && !hostChanged) notifyQueue = notifyQueue.concat([Model.watchMessage({type: "removed", count: count}, p.host, "", p.host)])
-                budget[p.host] = {starts: p.state.starts, lastStarted: p.state.lastStarted, writeAt: p.state.writeAt, until: now + 60000}
+                budget[p.host] = {starts: p.state.starts, lastStarted: p.state.lastStarted, writeAt: p.state.writeAt,
+                    cooldown: p.state.cooldown, rateFailures: p.state.rateFailures, auth: p.state.auth,
+                    error: p.state.auth ? p.state.error : "", until: now + 60000}
                 if (confirm && confirm.host === p.host || pendingAction && pendingAction.host === p.host) dropAction("Host changed; nothing was sent")
                 delete pins[p.host]
             })
@@ -684,8 +689,12 @@ Item {
                 var found = old.filter(function(p) { return p.host === h.host })[0]
                 if (found) return found
                 var s = Polling.create(), b = budget[h.host]
-                if (b && now < b.until) { s.starts = b.starts; s.lastStarted = b.lastStarted; s.writeAt = b.writeAt }
+                if (b && now < b.until) {
+                    s.starts = b.starts; s.lastStarted = b.lastStarted; s.writeAt = b.writeAt
+                    s.cooldown = b.cooldown; s.rateFailures = b.rateFailures
+                }
                 if (opened) Polling.open(s, now)
+                if (b && now < b.until) { s.auth = b.auth; s.error = b.error }
                 Polling.view(s, view === "mrs", now)
                 return {host: h.host, life: ++lifeSerial, state: s}
             })
@@ -707,6 +716,11 @@ Item {
             polling = next[0].state
             more = next.slice(1)
             hostsList = nextHosts
+            if (newMulti) {
+                if (!next.some(function(p) { return p.host === openHost })) openHost = ""
+                if (!next.some(function(p) { return p.host === viewState.projects.openHost }))
+                    viewState = Object.assign({}, viewState, {projects: Object.assign({}, viewState.projects, {openHost: ""})})
+            }
             actionsOn = !!nextHosts[0].actions
             nextHosts.forEach(function(h, i) {
                 var s = next[i].state, names = h.projects
@@ -1258,7 +1272,7 @@ Item {
                             anchors.centerIn: parent
                             width: parent.width - 2 * root.zs(Style.space(16))
                             visible: root.entries.length === 0
-                            text: root.multi() && root.repos.length === 0 && root.errorLines().length ? "" : root.emptyText(root.multi() ? "" : root.error, root.multi() ? "" : root.errorHintText, root.multi() && root.errorLines().length ? "" : root.cooldownText, root.discoveryComplete, root.repos.length, root.filterText, root.view === "mrs", root.multi() ? {list: root.pollers().reduce(function(a, p) { return a.concat(p.state.mrs.list || []) }, [])} : root.polling.mrs)
+                            text: root.multi() && root.view === "mrs" && root.pollers().some(function(p) { return p.state.mrs.list === null && !p.state.mrs.error }) ? "Loading merge requests…" : root.multi() && root.view === "projects" && root.repos.length === 0 && root.errorLines().length ? "" : root.emptyText(root.multi() ? "" : root.error, root.multi() ? "" : root.errorHintText, root.multi() && root.errorLines().length ? "" : root.cooldownText, root.discoveryComplete, root.repos.length, root.filterText, root.view === "mrs", root.multi() ? {list: root.pollers().reduce(function(a, p) { return a.concat(p.state.mrs.list || []) }, [])} : root.polling.mrs)
                             color: root.error && !root.multi() ? Commons.Color.urgent : Commons.Color.menu.text
                             font { family: Style.font.menuFamily; pixelSize: root.zf(Style.font.body) }
                             wrapMode: Text.Wrap

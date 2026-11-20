@@ -805,8 +805,19 @@ ShellRoot {
             cursorTo("repo:"+secondHost+"|two/repo"); panel.togglePin()
             check(panel.pinned[secondHost+"|two/repo"] && !panel.pinned[firstHost+"|two/repo"],"M pin belongs only to second host")
             multiPoller(secondHost).repos.filter(function(r) { return r.repo==="one/sub/repo" })[0].id=1
-            panel.workerBusy=false
+            panel.workerBusy=true
             panel.switchView("mrs")
+            panel.pollers().forEach(function(p) { p.state.mrs.list=null })
+            panel.adopt()
+            eq(panel.emptyItem.text,"Loading merge requests…","M MR list waits for every host")
+            panel.pollers().forEach(function(p) { p.state.mrs.list=[] })
+            multiPoller(firstHost).error="temporary"
+            panel.adopt()
+            panel.repos=[]
+            eq(panel.emptyItem.text,"No open merge requests","M MR empty label stays visible beside host error")
+            multiPoller(firstHost).error=""
+            panel.adopt()
+            panel.workerBusy=false; panel.pump()
         },
         function() {
             if (!waitUntil(function() { return has("mr:"+secondHost+"|1!1") && has("mr:"+firstHost+"|1!1") && !panel.workerBusy },"M both hosts' MR lists")) return false
@@ -911,6 +922,11 @@ ShellRoot {
             panel.open(JSON.stringify({filter:"one/sub/repo",host:firstHost}))
             eq(panel.openHost,firstHost,"M first open selects first host")
             check(panel.entries.length>0 && panel.entries.every(function(r) { return r.host===firstHost }),"M first open filters rows by host")
+            panel.open("{}")
+            eq(panel.openHost,firstHost,"M toggle open keeps host filter")
+            panel.open(JSON.stringify({filter:"one/sub/repo",host:"absent.test"}))
+            eq(panel.openHost,"","M unmatched open clears host filter")
+            check(panel.entries.some(function(r) { return r.host===secondHost }),"M unmatched open rebuilds rows")
             panel.open(JSON.stringify({filter:"one/sub/repo",host:secondHost}))
             eq(panel.openHost,secondHost,"M same text selects second host")
             check(panel.entries.length>0 && panel.entries.every(function(r) { return r.host===secondHost }),"M second open rebuilds rows")
@@ -933,6 +949,14 @@ ShellRoot {
             eq(status.hosts.length,2,"M status reports hosts")
             eq(status.requests,status.hosts[0].requests+status.hosts[1].requests,"M status sums requests")
             eq(status.mrs,status.hosts[0].mrs+status.hosts[1].mrs,"M status sums MRs")
+            panel.workerBusy=true
+            panel.open(JSON.stringify({filter:"one/sub/repo",host:secondHost}))
+            panel.viewState.projects.openHost=secondHost
+            multiCfg([firstHost,"third.test"])
+            eq(panel.openHost,"","M removed host clears active filter")
+            eq(panel.viewState.projects.openHost,"","M removed host clears saved filter")
+            check(panel.entries.some(function(r) { return r.host===firstHost }),"M removed host filter rebuilds rows")
+            panel.workerBusy=false
             sh('rm -f "$MULTI" "$OTHER_AUTH" "$OTHER_DELAY"')
         },
         function() {

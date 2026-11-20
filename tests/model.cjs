@@ -652,7 +652,7 @@ console.log('Model: stage hierarchy, aggregation, filtering, progress, selection
   assert.equal(one[0].mrKey,'1!1'); assert.equal(one[0].hostLabel,'one.test');
   assert.equal(one[1].key,'mr:more:one.test'); assert.equal(two[1].key,'mr:more:two.test');
   assert.equal(one[1].title,'2 more on GitLab · one.test');
-  assert.equal(one[1].hostLabel,'one.test');
+  assert.equal(one[1].hostLabel,'');
   for (const row of one) assert.ok(model.accessibleName(row).endsWith(' on one.test'));
   assert.deepEqual(plain(model.mrRows(mrs,'two.test',0,'two.test','', 'two.test|')).map(row => row.key),['mr:two.test|1!1']);
 

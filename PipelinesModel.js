@@ -300,7 +300,7 @@ function mrRows(mrs, filter, now, host, selectedKey, q) {
     var total = mrs && typeof mrs.total === "number" ? mrs.total : 0;
     if (!query && (total === -1 || total > list.length)) result.push({key: q ? "mr:more:" + host : "mr:more", parent: "", kind: "more", depth: 0,
         title: (total === -1 ? "more on GitLab" : (total - list.length) + " more on GitLab") + (q ? " · " + host : ""), subtitle: "o opens GitLab",
-        status: "", info: "", repo: "", host: host, hostLabel: q ? host : "", multi: !!q,
+        status: "", info: "", repo: "", host: host, hostLabel: "", multi: !!q,
         url: "https://" + host + "/dashboard/merge_requests?scope=created_by_me&state=opened"});
     return result;
 }
