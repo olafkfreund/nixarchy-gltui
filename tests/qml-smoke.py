@@ -19,6 +19,14 @@ colors = tomllib.loads((Path.home() / '.local/state/omarchy/current/theme/colors
 for scenario in ('fresh', 'managed'):
     with tempfile.TemporaryDirectory(prefix='pipelines-qml-') as directory:
         root = Path(directory)
+        widget_source = source / 'bar-widget'
+        widget_available = widget_source.is_dir()
+        if widget_available:
+            widget_target = root / 'bar-widget'
+            widget_target.mkdir()
+            for name in ('manifest.json', 'BarWidget.qml', 'BarModel.js', 'LICENSE'):
+                assert (widget_source / name).is_file(), f'missing widget file: {name}'
+                (widget_target / name).symlink_to(widget_source / name)
         for name in ('Commons', 'Ui'):
             (root / name).symlink_to(shell / name)
         for name in ('PipelinesPanel.qml', 'PipelinesModel.js', 'Polling.js', 'keybindings.sh', 'menu.py', 'menu.example.json'):
@@ -50,6 +58,11 @@ else: data=[run] if request['repo']=='one/sub/repo' and request.get('status','ru
 print(json.dumps({'requestId':request['requestId'],'data':data,'total':len(data) if kind=='mrs' else 0,'nextPage':0,'error':'','errorType':'','remaining':4000}))
 ''')
         (root / 'actions.log').write_text('')
+        (root / 'omarchy-shell.log').write_text('')
+        (root / 'bin').mkdir()
+        toggle = root / 'bin' / 'omarchy-shell'
+        toggle.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$TOGGLE_LOG"\n')
+        toggle.chmod(0o755)
         (root / 'action.sh').write_text('''#!/bin/sh
 reply=$1
 delay=$2
@@ -76,6 +89,48 @@ printf '%s\\n' "$reply" | sed "s/@ID@/$id/g"
             menu_path.parent.mkdir(parents=True)
             (home / 'managed-menu').write_text('{}\n')
             menu_path.symlink_to(home / 'managed-menu')
+        widget_objects = '''
+    QtObject {
+        id: fakeBarA
+        property bool vertical: false
+        property int barSize: 32
+        property string fontFamily: "sans"
+        property color barForeground: "white"
+        property color urgent: "red"
+        property bool foregroundAnimationEnabled: false
+        property var lastTarget: null
+        property string lastTooltip: ""
+        function showTooltip(target, text) { lastTarget=target; lastTooltip=text }
+        function hideTooltip(target) { if (lastTarget===target) lastTarget=null }
+        function registerClickTarget(target) {}
+        function unregisterClickTarget(target) {}
+    }
+    QtObject {
+        id: fakeBarB
+        property bool vertical: true
+        property int barSize: 32
+        property string fontFamily: "sans"
+        property color barForeground: "white"
+        property color urgent: "red"
+        property bool foregroundAnimationEnabled: false
+        property var lastTarget: null
+        property string lastTooltip: ""
+        function showTooltip(target, text) { lastTarget=target; lastTooltip=text }
+        function hideTooltip(target) { if (lastTarget===target) lastTarget=null }
+        function registerClickTarget(target) {}
+        function unregisterClickTarget(target) {}
+    }
+    BarPlugin.BarWidget { id: widgetA; bar: fakeBarA; statusPath: Quickshell.env("WIDGET_STATUS_PATH"); width: implicitWidth; height: implicitHeight }
+    BarPlugin.BarWidget { id: widgetB; bar: fakeBarB; statusPath: Quickshell.env("WIDGET_STATUS_PATH"); width: implicitWidth; height: implicitHeight }
+    Loader {
+        id: widgetPanelLoader
+        active: false
+        sourceComponent: Component { PipelinesPanel { statusPath: Quickshell.env("WIDGET_STATUS_PATH") } }
+    }
+    FileView { id: widgetFile; path: Quickshell.env("WIDGET_STATUS_PATH"); blockLoading: true; printErrors: false }
+    FileView { id: widgetWriter; path: Quickshell.env("WIDGET_STATUS_PATH"); atomicWrites: true; printErrors: false }
+    FileView { id: toggleLog; path: Quickshell.env("TOGGLE_LOG"); blockLoading: true; printErrors: false }
+''' if widget_available else ''
         (root / 'shell.qml').write_text('''
 import QtQuick
 import QtTest
@@ -84,8 +139,10 @@ import Quickshell.Io
 import qs.Commons as Commons
 import "Polling.js" as Polling
 import "PipelinesModel.js" as Model
+''' + ('import "bar-widget" as BarPlugin\n' if widget_available else '') + '''
 ShellRoot {
-    PipelinesPanel { id: panel }
+    PipelinesPanel { id: panel; statusPath: Quickshell.env("STATUS_PATH") }
+''' + widget_objects + '''
     FileView {
         id: menuFile
         path: Quickshell.env("HOME") + "/.config/omarchy/extensions/omarchy-menu.jsonc"
@@ -653,11 +710,198 @@ ShellRoot {
             eq(panel.view,"projects","MR restore view")
             eq(panel.filterText,mrSaved.filter,"MR restore filter")
             listFocus()
+            if (widgetAvailable) stage=14
+            else console.log("SKIP widget: no bar-widget directory")
         },
         function() {
             if (!panel.searchItem.parent.parent.activeFocus) return false
             console.log("QML_CHECKS_PASSED")
             Qt.quit()
+        }
+    ]
+    readonly property bool widgetAvailable: Quickshell.env("WIDGET_AVAILABLE")==="1"
+    property int wi: 0
+    property double widgetWaitAt: 0
+    property double widgetCountsAt: 0
+    property int widgetRequests: 0
+    property double widgetWrittenAt: 0
+    property string widgetLastStatus: ""
+    function widgetStatus() {
+        widgetFile.reload()
+        try { return JSON.parse(widgetFile.text()) } catch (e) { return null }
+    }
+    function widgetButton(widget) {
+        var button=widget.children[0]
+        check(button && typeof button.triggerPress==="function" && typeof button.tooltipText==="string","widget child is WidgetButton")
+        return button
+    }
+    function widgetPayload(state, countsAt, cooldownUntil) {
+        return {version:1,instance:"fixture",host:"gitlab.example.org",state:state,
+            running:2,failed:1,countsAt:countsAt,cooldownUntil:cooldownUntil || 0,reason:"",writtenAt:Date.now()}
+    }
+    property var widgetSteps: [
+        function() {
+            eq(widgetA.statusView.state,"none","widget starts without a file")
+            eq(widgetB.statusView.state,"none","second widget starts without a file")
+            eq(widgetButton(widgetA).text,"\\uF296","empty widget shows only the glyph")
+            widgetPanelLoader.active=true
+        },
+        function() {
+            var status=widgetStatus()
+            if (!waitUntil(function() { return status && status.state==="none" && status.instance && widgetPanelLoader.item },"widget panel startup")) return false
+            eq(widgetA.statusView.state,"none","startup status remains dimmed")
+            eq(widgetPanelLoader.item.statusPath,Quickshell.env("WIDGET_STATUS_PATH"),"fixture panel uses isolated status path")
+            var p=widgetPanelLoader.item
+            p.workerBusy=true
+            p.configure('{"plugins":[{"id":"olafkfreund.gitlab-pipelines","host":"gitlab.example.org"}]}')
+            p.polling=Polling.create()
+            widgetCountsAt=Date.now()
+            p.polling.countsAt=widgetCountsAt
+            p.polling.repos=[{repo:"widget/one",active:2,checked:"x",runs:[{id:7,status:"completed",conclusion:"failed"}]}]
+            p.adopt()
+            widgetRequests=p.polling.requests
+        },
+        function() {
+            if (!waitUntil(function() { var s=widgetStatus(); return s && s.state==="ok" && s.running===2 && widgetA.statusView.state==="ok" && widgetB.statusView.state==="ok" },"widget follows fixture")) return false
+            var a=widgetButton(widgetA), b=widgetButton(widgetB)
+            eq(a.text,"\\uF296 ●2 ✕1","horizontal label has both counts")
+            eq(b.text,"\\uF296\\n●2\\n✕1","vertical label has the same counts")
+            check(a.active && !a.dimmed && b.active,"failure uses urgent colour")
+            check(a.tooltipText.indexOf("2 running pipelines, 1 failed project")>=0,"tooltip names both units")
+            eq(a.Accessible.name,a.tooltipText.replace(/\\n/g,", "),"accessible name follows tooltip")
+            a.children[a.children.length-1].entered()
+            check(fakeBarA.lastTarget===a,"whole button is tooltip target")
+            eq(fakeBarA.lastTooltip,a.tooltipText,"bar receives plain tooltip")
+            eq(widgetPanelLoader.item.polling.requests,widgetRequests,"widgets issue no requests")
+            widgetPanelLoader.item.polling.repos[0].active=3
+            widgetPanelLoader.item.adopt()
+        },
+        function() {
+            if (!waitUntil(function() { var s=widgetStatus(); return s && s.running===3 && widgetA.statusView.label.indexOf("●3")>=0 },"first atomic update")) return false
+            widgetPanelLoader.item.polling.repos[0].active=4
+            widgetPanelLoader.item.adopt()
+        },
+        function() {
+            var status=widgetStatus()
+            if (!waitUntil(function() { return status && status.running===4 && widgetB.statusView.label.indexOf("●4")>=0 && widgetPanelLoader.item.lastStatus===widgetPanelLoader.item.pendingStatus },"second atomic update")) return false
+            widgetWrittenAt=status.writtenAt
+            widgetPanelLoader.item.adopt()
+            widgetWaitAt=Date.now()
+        },
+        function() {
+            if (Date.now()-widgetWaitAt<600) return false
+            eq(widgetStatus().writtenAt,widgetWrittenAt,"unchanged status does not rewrite")
+            var p=widgetPanelLoader.item
+            p.configure('{"plugins":[{"id":"olafkfreund.gitlab-pipelines","host":"bad host"}]}')
+        },
+        function() {
+            if (!waitUntil(function() { return widgetStatus() && widgetStatus().state==="stopped" && widgetA.statusView.state==="stopped" },"configuration stop")) return false
+            var p=widgetPanelLoader.item
+            check(widgetButton(widgetA).active && widgetButton(widgetA).text.indexOf("!")>=0,"stopped widget is urgent")
+            p.polling.repos[0].active=5
+            p.adopt()
+        },
+        function() {
+            if (!waitUntil(function() { var s=widgetStatus(); return s && s.running===5 },"watch reply while stopped")) return false
+            eq(widgetStatus().state,"stopped","watch reply retains configuration stop")
+            widgetPanelLoader.item.configure('{"plugins":[{"id":"olafkfreund.gitlab-pipelines","host":"gitlab.example.org"}]}')
+        },
+        function() {
+            if (!waitUntil(function() { return widgetStatus() && widgetStatus().state==="ok" && widgetA.statusView.state==="ok" },"valid configuration clears stop")) return false
+            widgetPanelLoader.item.configure('{"plugins":[{"id":"olafkfreund.gitlab-pipelines","host":"gitlab.other.org"}]}')
+        },
+        function() {
+            if (!waitUntil(function() { var s=widgetStatus(); return s && s.host==="gitlab.other.org" && s.state==="none" && widgetA.statusView.state==="none" },"host reset publishes none")) return false
+            var p=widgetPanelLoader.item, s=Polling.create(), now=Date.now()
+            s.opened=false; s.discover=false; s.catalogueComplete=true; s.catalogueAt=now; s.countsAt=now
+            s.repos=[{repo:"w/one",checked:"x",active:1,activeFromTotal:true,runs:[wRuns()[0]]}]
+            p.polling=s; p.notifyCommand=["sh","-c","exit 0"]
+            eq(Polling.watch(s,"w/one","11",now),"watching","closed watch starts")
+            p.adopt()
+            widgetCountsAt=p.polling.countsAt
+            var request=Polling.next(p.polling,now+31000)
+            check(request && request.kind==="run","closed watch requests run")
+            var run=Object.assign({},wRuns()[0],{status:"completed",conclusion:"success"})
+            p.receivePage(JSON.stringify({requestId:request.requestId,data:run,nextPage:0,error:"",errorType:"",remaining:4000}),request)
+            eq(p.polling.countsAt,widgetCountsAt,"closed reply keeps project count time")
+        },
+        function() {
+            if (!waitUntil(function() { var s=widgetStatus(); return s && s.state==="ok" && s.countsAt===widgetCountsAt && s.running===0 && widgetA.statusView.state==="ok" && widgetA.statusView.label.indexOf("●")<0 },"closed watch publishes finish")) return false
+            eq(widgetStatus().countsAt,widgetCountsAt,"closed run leaves project count time unchanged")
+            widgetLastStatus=widgetPanelLoader.item.lastStatus
+            sh('rm -f "$WIDGET_STATUS_PATH" && mkdir "$WIDGET_STATUS_PATH"')
+        },
+        function() {
+            if (!waitUntil(function() { return !shp.running },"make status path unwritable")) return false
+            var p=widgetPanelLoader.item
+            p.polling.repos[0].active=3
+            p.adopt()
+            widgetWaitAt=Date.now()
+        },
+        function() {
+            var p=widgetPanelLoader.item
+            if (Date.now()-widgetWaitAt<600) return false
+            eq(p.lastStatus,widgetLastStatus,"failed save leaves last recorded status unchanged")
+            sh('rmdir "$WIDGET_STATUS_PATH"')
+        },
+        function() {
+            if (!waitUntil(function() { return !shp.running },"make status path writable")) return false
+            widgetPanelLoader.item.publishStatus()
+        },
+        function() {
+            if (!waitUntil(function() { var s=widgetStatus(); return s && s.running===3 && widgetA.statusView.label.indexOf("●3")>=0 },"retry after unwritable path")) return false
+            widgetPanelLoader.active=false
+        },
+        function() {
+            if (!waitUntil(function() { return !widgetPanelLoader.item },"widget panel destruction")) return false
+            if (!waitUntil(function() { var s=widgetStatus(); return s && s.state==="none" },"panel destruction writes none")) return false
+            widgetWriter.setText(JSON.stringify(widgetPayload("ok",Date.now(),0))+"\\n")
+        },
+        function() {
+            if (!waitUntil(function() { return widgetA.statusView.state==="ok" && widgetB.statusView.state==="ok" },"manual status file")) return false
+            sh('rm -f "$WIDGET_STATUS_PATH"')
+        },
+        function() {
+            if (!waitUntil(function() { return !shp.running && widgetA.statusView.state==="none" && widgetB.statusView.state==="none" },"deleted status file")) return false
+            widgetWriter.setText(JSON.stringify(widgetPayload("ok",Date.now(),0))+"\\n")
+        },
+        function() {
+            if (!waitUntil(function() { return widgetA.statusView.state==="ok" && widgetB.statusView.state==="ok" },"status restored before empty write")) return false
+            widgetWriter.setText("")
+        },
+        function() {
+            if (!waitUntil(function() { widgetFile.reload(); return widgetFile.text()==="" && widgetA.statusView.state==="none" && widgetB.statusView.state==="none" },"empty status file")) return false
+            widgetWriter.setText(JSON.stringify(widgetPayload("ok",Date.now(),0))+"\\n")
+        },
+        function() {
+            if (!waitUntil(function() { return widgetA.statusView.state==="ok" && widgetB.statusView.state==="ok" },"recreated status file")) return false
+            widgetWriter.setText(JSON.stringify(widgetPayload("rate",Date.now(),Date.now()+2000))+"\\n")
+        },
+        function() {
+            if (!waitUntil(function() { return widgetA.statusView.state==="rate" && widgetB.statusView.state==="rate" },"rate status loads")) return false
+            check(widgetButton(widgetA).dimmed && widgetButton(widgetA).tooltipText.indexOf("GitLab paused until ")===0,"rate view is dimmed")
+        },
+        function() {
+            if (!waitUntil(function() { return widgetA.statusView.state==="ok" && widgetB.statusView.state==="ok" },"rate expires to ok")) return false
+            widgetWriter.setText(JSON.stringify(widgetPayload("rate",0,Date.now()+2000))+"\\n")
+        },
+        function() {
+            if (!waitUntil(function() { return widgetA.statusView.state==="rate" && widgetB.statusView.state==="rate" },"rate without counts loads")) return false
+        },
+        function() {
+            if (!waitUntil(function() { return widgetA.statusView.state==="none" && widgetB.statusView.state==="none" },"rate without counts expires to none")) return false
+            var button=widgetButton(widgetA)
+            button.triggerPress(Qt.RightButton)
+            button.triggerPress(Qt.MiddleButton)
+            toggleLog.reload()
+            eq(toggleLog.text().trim(),"","other clicks do not toggle")
+            button.triggerPress(Qt.LeftButton)
+        },
+        function() {
+            if (!waitUntil(function() { toggleLog.reload(); return toggleLog.text().trim()!=="" },"left click toggle process")) return false
+            eq(toggleLog.text().trim().split("\\n").length,1,"only one click toggles")
+            eq(toggleLog.text().trim(),"shell toggle olafkfreund.gitlab-pipelines {}","toggle argument list")
+            stage=13
         }
     ]
     property int ei: 0
@@ -2316,6 +2560,9 @@ ShellRoot {
             } else if(stage===13) {
                 var mrstep=mrsteps[mi]
                 if (mrstep() !== false) mi++
+            } else if(stage===14) {
+                var widgetStep=widgetSteps[wi]
+                if (widgetStep() !== false) wi++
             }
         }
     }
@@ -2323,7 +2570,7 @@ ShellRoot {
 ''')
         try:
             result=subprocess.run(['quickshell','-p',str(root),'--no-color'],capture_output=True,text=True,timeout=200,
-                                  env={**os.environ, 'HOME':str(home), 'XDG_STATE_HOME':str(home / '.local/state'), 'PINS_DELAY':str(root / 'pins-delay'), 'RUN_DONE':str(root / 'run-done'), 'RUN_DELAY':str(root / 'run-delay'), 'MR_DELAY':str(root / 'mr-delay'), 'ACTION_SCRIPT':str(root / 'action.sh'), 'ACTION_LOG':str(root / 'actions.log'), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower()})
+                                  env={**os.environ, 'HOME':str(home), 'XDG_STATE_HOME':str(home / '.local/state'), 'PINS_DELAY':str(root / 'pins-delay'), 'RUN_DONE':str(root / 'run-done'), 'RUN_DELAY':str(root / 'run-delay'), 'MR_DELAY':str(root / 'mr-delay'), 'ACTION_SCRIPT':str(root / 'action.sh'), 'ACTION_LOG':str(root / 'actions.log'), 'MENU_SCENARIO':scenario, 'EXPECTED_BACKGROUND':colors['background'].lower(), 'STATUS_PATH':str(root / 'status.json'), 'WIDGET_STATUS_PATH':str(root / 'widget-status.json'), 'TOGGLE_LOG':str(root / 'omarchy-shell.log'), 'WIDGET_AVAILABLE':'1' if widget_available else '0', 'PATH':f"{root / 'bin'}:{os.environ.get('PATH', '')}"})
         except subprocess.TimeoutExpired as error:
             print(error.stdout, error.stderr)
             raise

@@ -5,6 +5,33 @@ const model = {};
 vm.createContext(model);
 vm.runInContext(fs.readFileSync('PipelinesModel.js', 'utf8'), model);
 const plain = value => JSON.parse(JSON.stringify(value));
+const failedRun = (id, conclusion) => ({id,status:'completed',conclusion});
+assert.deepEqual(plain(model.barCounts([
+  {repo:'no/runs'},
+  {repo:'cached/running',runs:[{id:1,status:'in_progress'},{id:2,status:'in_progress'}]},
+  {repo:'total/wins',active:0,runs:[{id:3,status:'in_progress'},failedRun(4,'failed')]},
+  {repo:'failed/latest',active:2,runs:[failedRun(5,'success'),failedRun(6,'failed')]},
+  {repo:'newer/success',runs:[failedRun(7,'failed'),failedRun(8,'success')]},
+  ...['archived','disabled','blocked','error'].map(flag => ({repo:flag,active:9,runs:[failedRun(9,'failed')],[flag]:flag==='error'?'unavailable':true}))
+])), {running:4,failed:2});
+const polling={repos:[{repo:'a/b',active:2,runs:[failedRun(7,'failed')]}],countsAt:100,cooldown:0,
+  auth:false,error:'temporary network error',catalogueError:'',mrs:{error:'merge request error'}};
+const status=(changes={},configError='',now=200) => plain(model.barStatus({...polling,...changes},configError,'gitlab.com','instance-1',now));
+assert.deepEqual(status(), {version:1,instance:'instance-1',host:'gitlab.com',state:'ok',running:2,failed:1,
+  countsAt:100,cooldownUntil:0,reason:'',writtenAt:200});
+assert.deepEqual(status({countsAt:undefined}), {...status(),state:'none',countsAt:0});
+assert.deepEqual(status({cooldown:300}), {...status(),state:'rate',cooldownUntil:300});
+assert.deepEqual(status({cooldown:200}), status());
+assert.deepEqual(status({cooldown:300,countsAt:undefined},'bad config'),
+  {...status(),state:'stopped',countsAt:0,reason:'bad config'});
+assert.equal(status({auth:true,error:'sign in',catalogueError:'catalogue denied'},'bad config').reason,'bad config');
+assert.deepEqual(status({auth:true,error:'sign in',catalogueError:'catalogue denied',cooldown:300}),
+  {...status(),state:'stopped',reason:'sign in'});
+assert.deepEqual(status({catalogueError:'catalogue denied',cooldown:300}),
+  {...status(),state:'stopped',reason:'catalogue denied'});
+assert.equal(status({auth:true,error:''}).state,'stopped');
+assert.equal(status({auth:true,error:''}).reason,'');
+assert.equal(status({auth:true,error:'',catalogueError:'catalogue denied'}).reason,'');
 for (const name of ['g/p','a.b/c_d-e']) assert.equal(model.validProject(name), true);
 for (const name of ['p','/g/p','g/../p','g/./p','g//p','g/p q',3]) assert.equal(model.validProject(name), false);
 assert.deepEqual(plain(model.pins(['a/1','bad','a/1','b/2'], ['b/2','c/3'])),

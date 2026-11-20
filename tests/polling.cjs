@@ -1079,6 +1079,66 @@ function watchFixture(count=2) {
   for(let i=1;i<=count;i++) assert.equal(polling.watch(s,'x/y',i,0),'watching');
   return s;
 }
+test('countsAt tracks project reads and empty catalogues, not run or job replies', () => {
+  const s=polling.create(); polling.open(s,0); s.discover=false; s.catalogueComplete=true;
+  assert.equal(s.countsAt,undefined);
+  s.repos=[{repo:'a/b',runs:[{id:7,status:'in_progress'}]}];
+  polling.activity(s,s.repos[0],s.repos[0].runs,1000,1);
+  assert.equal(s.countsAt,1000);
+  polling.select(s,'a/b','',{},2000,true);
+  const summary=polling.ensure(s,'summary','a/b','','interactive',2000);
+  summary.phase=1;
+  let req=polling.next(s,2000); assert.equal(req.kind,'summary');
+  polling.complete(s,response(req,[]),2100);
+  assert.equal(s.countsAt,2100);
+  delete s.tasks[summary.key];
+  polling.select(s,'','',{},2100,true);
+  polling.ensure(s,'run','a/b','7','interactive',3200);
+  req=polling.next(s,3200); assert.equal(req.kind,'run');
+  polling.complete(s,response(req,{id:7,status:'completed'}),3300);
+  assert.equal(s.countsAt,2100);
+  s.repos[0].summaryAt=4000;
+  polling.select(s,'a/b','7',{'a/b:7':true},4400,true);
+  polling.ensure(s,'jobs','a/b','7','interactive',4400);
+  req=polling.next(s,4400); assert.equal(req.kind,'jobs');
+  polling.complete(s,response(req,[]),4500);
+  assert.equal(s.countsAt,2100);
+  assert.equal(polling.resetHost(s).countsAt,undefined);
+  for (const repos of [[],[{repo:'a/b',archived:true},{repo:'c/d',disabled:true},{repo:'e/f',blocked:true}]]) {
+    const x=polling.create(); polling.open(x,0);
+    req=polling.next(x,0); assert.equal(req.kind,'catalogue');
+    polling.complete(x,response(req,repos),3000);
+    assert.equal(x.countsAt,3000);
+  }
+  const x=polling.create(); polling.open(x,0);
+  req=polling.next(x,0);
+  polling.complete(x,response(req,[{repo:'a/b'}]),3000);
+  assert.equal(x.countsAt,undefined);
+});
+test('watch completion corrects totals without subtracting runs already absent from activity', () => {
+  for (const [count,expected] of [[1,0],[2,1]]) {
+    const s=watchFixture(count), r=s.repos[0];
+    polling.activity(s,r,r.runs,1000,count);
+    polling.close(s);
+    const req=polling.next(s,30000); assert.equal(req.kind,'run');
+    polling.complete(s,response(req,{id:Number(req.run),status:'completed',conclusion:'success'}),30000);
+    assert.equal(r.active,expected);
+    assert.equal(s.countsAt,1000);
+  }
+  const s=watchFixture(1), r=s.repos[0];
+  polling.activity(s,r,[],1000,100);
+  assert.equal(r.runs[0].awaitingFinal,true);
+  assert.equal(r.active,100);
+  polling.close(s);
+  const req=polling.next(s,30000);
+  polling.complete(s,response(req,{id:1,status:'completed',conclusion:'success'}),30000);
+  assert.equal(r.active,100);
+  const x=watchFixture(1), repo=x.repos[0];
+  polling.close(x);
+  const lookup=polling.next(x,30000);
+  polling.complete(x,response(lookup,{id:1,status:'completed',conclusion:'success'}),30000);
+  assert.equal(repo.active,0);
+});
 test('watch codes, finished conclusions, cap, and unfinished statuses', () => {
   const s=watchFixture(5);
   assert.equal(polling.watch(s,'x/y',1,0),'unwatched');

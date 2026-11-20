@@ -70,7 +70,17 @@ Item {
     property alias filterText: searchField.text
     readonly property bool filtering: searchField.activeFocus
     property string error: ""
+    property string configError: ""
     property string host: "gitlab.com"
+    property string statusPath: {
+        var runtime = Quickshell.env("XDG_RUNTIME_DIR")
+        var display = Quickshell.env("WAYLAND_DISPLAY")
+        return runtime && display ? runtime + "/omarchy-gitlab-pipelines-" + display + ".json" : ""
+    }
+    property string statusInstance: ""
+    property string lastStatus: ""
+    property string pendingStatus: ""
+    onStatusPathChanged: { lastStatus = ""; pendingStatus = "" }
     property string updated: ""
     property var polling: Polling.create()
     readonly property bool watching: Object.keys(polling.watches || {}).length > 0
@@ -227,7 +237,19 @@ Item {
             lastRequest: polling.lastRequest, lastStarted: polling.lastStarted,
             filter: filterText, editing: filtering, selected: current ? current.key : "", scrollY: list.contentY,
             actionsOn: actionsOn, confirm: confirm ? confirm.text : "", actionBusy: actionBusy,
-            view: view, mrs: ((polling.mrs || {}).list || []).length})
+            view: view, mrs: ((polling.mrs || {}).list || []).length,
+            statusPath: statusPath, statusState: lastStatus ? JSON.parse(lastStatus).state : ""})
+    }
+    function publishStatus() {
+        if (!statusPath || !statusInstance) return
+        var payload = Model.barStatus(polling, configError, host, statusInstance, Date.now())
+        var writtenAt = payload.writtenAt
+        delete payload.writtenAt
+        var next = JSON.stringify(payload)
+        if (next === lastStatus) return
+        pendingStatus = next
+        payload.writtenAt = writtenAt
+        statusFile.setText(JSON.stringify(payload) + "\n")
     }
 
     function rebuild(resetSelection, selectKey) {
@@ -540,6 +562,7 @@ Item {
             var entry = (config.plugins || []).filter(function(p) { return p.id === "olafkfreund.gitlab-pipelines" })[0]
             var configuredHost = entry && typeof entry.host === "string" ? entry.host : "gitlab.com"
             if (!/^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$/.test(configuredHost)) throw new Error("invalid host " + configuredHost)
+            configError = ""
             var hostChanged = configuredHost !== host
             actionsOn = !!entry && entry.actions === true
             if (hostChanged) {
@@ -567,8 +590,9 @@ Item {
             applyPins()
             // After configPins and projects are set, so even a synchronous failed start sees this host's config.
             if (hostChanged) loadPins()
-        } catch (e) { error = "Configuration: " + e.message }
+        } catch (e) { configError = error = "Configuration: " + e.message }
         markConfigured()
+        publishStatus()
     }
     function selectionChanged(immediate) {
         if (!polling) return
@@ -592,6 +616,7 @@ Item {
         if (view === "mrs") {
             if ((current && current.kind === "mr" ? current.key.slice(3) : "") !== polling.mrSelected) selectionChanged(false)
         } else if ((current && current.repo || "") !== polling.selected || (current && current.run || "") !== polling.inspected) selectionChanged(false)
+        publishStatus()
     }
     function refresh(catalogue) {
         selectionChanged(true)
@@ -670,9 +695,22 @@ Item {
     }
 
     Component.onCompleted: {
+        statusInstance = String(Date.now()) + "-" + Math.random().toString(36).slice(2)
+        publishStatus()
         rebuild()
         loadPins()
         registrationProc.running = true
+    }
+    Component.onDestruction: {
+        if (statusPath) {
+            var payload = Model.barStatus(polling, "", host, statusInstance, Date.now())
+            payload.state = "none"
+            var writtenAt = payload.writtenAt
+            delete payload.writtenAt
+            pendingStatus = JSON.stringify(payload)
+            payload.writtenAt = writtenAt
+            statusFile.setText(JSON.stringify(payload) + "\n")
+        }
     }
     Process {
         id: registrationProc
@@ -752,11 +790,19 @@ Item {
     }
     ListModel { id: visibleRows; dynamicRoles: true }
     FileView {
+        id: statusFile
+        path: root.statusPath
+        atomicWrites: true
+        blockWrites: true
+        printErrors: false
+        onSaved: root.lastStatus = root.pendingStatus
+    }
+    FileView {
         path: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
         watchChanges: true
         printErrors: false
         onLoaded: root.configure(text())
-        onLoadFailed: root.markConfigured()
+        onLoadFailed: { root.configError = ""; root.markConfigured(); root.publishStatus() }
         onFileChanged: reload()
     }
     Timer { interval: root.opened ? 100 : 1000; running: root.opened || root.watching; repeat: true; onTriggered: root.pump() }

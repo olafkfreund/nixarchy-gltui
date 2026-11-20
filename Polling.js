@@ -7,7 +7,7 @@ function create() {
     // Every exported writer invalidates wakeAt; seeds is test-only.
     return {opened:false, generation:0, serial:0, order:0, slot:0, starts:[], cooldown:0,
         rateFailures:0, auth:false, tasks:{}, flight:null, repos:[], details:{}, selected:"", inspected:"",
-        stableAt:0, expanded:{}, pinned:{}, catalogueAt:0, catalogueComplete:false, discover:true, periodic:false,
+        stableAt:0, expanded:{}, pinned:{}, catalogueAt:0, catalogueComplete:false, countsAt:undefined, discover:true, periodic:false,
         error:"", catalogueError:"", requests:0, lastRequest:"", lastStarted:0, writeAt:0, wakeAt:0, seeds:0,
         watches:{}, queued:{}, events:[], bridgeRoute:"bridges", mrView:false, mrSelected:"",
         mrs:{list:null,total:0,listAt:undefined,error:"",status:{}}};
@@ -341,6 +341,7 @@ function kept(s,r,run) {
 function hiddenCount(total,items) { return total<0 ? -1 : Math.max(0,total-items.length); }
 function activity(s,r,items,now,total) {
     s.wakeAt=0;
+    s.countsAt=now;
     var ids={}; items.forEach(function(run) { ids[run.id]=true });
     var previous=r.runs || [], partial=total<0 || total>items.length, dropped={};
     mergeRuns(s,r,items);
@@ -451,14 +452,16 @@ function complete(s,reply,now) {
     if (t.kind==="run") {
         if (s.watches[t.repo+":"+t.run]) s.watches[t.repo+":"+t.run].checkedAt=now;
         if (r) {
+            var old=runFor(s,t.repo,t.run), counted=old && old.status==="in_progress" && !old.awaitingFinal;
             var resolved=Object.assign({},data,{awaitingFinal:false,followupAt:now});
             mergeRuns(s,r,[resolved]);
             var id=t.repo+":"+t.run;
             // Only a lookup that backs off raises the level; mergeRuns clears it once the run leaves the queue.
             if (resolved.status==="queued" && t.repo!==s.selected && !s.watches[id]) s.queued[id]=Math.min(5,(s.queued[id]||0)+1);
             var running=(r.runs || []).filter(function(run) { return run.status==="in_progress" && !run.awaitingFinal }).length;
-            // GitLab's total already excludes runs that left; a lookup can only add running ones it has not counted yet.
-            r.active=r.activeFromTotal ? Math.max(r.active || 0,running) : running;
+            // A finished watch leaves the cached total only if activity had still counted it.
+            if (r.activeFromTotal && counted && resolved.status!=="in_progress") r.active=Math.max(running,(r.active || 0)-1);
+            else r.active=r.activeFromTotal ? Math.max(r.active || 0,running) : running;
             if (r.active>0) r.idle=0;
             if (s.opened && resolved.status==="completed" && t.repo===s.selected && t.run===s.inspected && s.expanded[t.repo+":"+t.run])
                 ensure(s,"jobs",t.repo,t.run,"interactive",now);
@@ -488,6 +491,7 @@ function complete(s,reply,now) {
         // Most recently active first; gitlab.com cannot sort membership by activity server-side.
         s.repos.sort(function(a,b) { return String(b.lastActivity || "").localeCompare(String(a.lastActivity || "")) || names.indexOf(a.repo)-names.indexOf(b.repo) });
         s.catalogueComplete=true; s.catalogueAt=now; s.discover=false; s.periodic=false;
+        if (!s.repos.some(function(repo) { return !repo.archived && !repo.disabled && !repo.blocked; })) s.countsAt=now;
     } else if (r && t.kind==="activity") activity(s,r,t.items,now,reply.total);
     else if (r && t.kind==="summary") {
         t.all=union(t.all,t.items);
